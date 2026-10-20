@@ -1,0 +1,1603 @@
+script: "/developer/ui/menus/settings_menu.gui_script"
+fonts {
+  name: "main"
+  font: "/builtins/fonts/default.font"
+}
+nodes {
+  position {
+    x: 960.0
+    y: 540.0
+  }
+  size {
+    x: 1920.0
+    y: 1080.0
+  }
+  color {
+    x: 0.0
+    y: 0.0
+    z: 0.0
+  }
+  type: TYPE_BOX
+  id: "backdrop"
+  adjust_mode: ADJUST_MODE_FIT
+  alpha: 0.92
+}
+nodes {
+  position {
+    x: 960.0
+    y: 540.0
+  }
+  size {
+    x: 650.0
+    y: 580.0
+  }
+  color {
+    x: 0.08
+    y: 0.08
+    z: 0.12
+  }
+  type: TYPE_BOX
+  id: "root"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    y: 260.0
+  }
+  size {
+    x: 400.0
+    y: 50.0
+  }
+  color {
+    x: 0.50
+    y: 0.75
+    z: 1.0
+  }
+  type: TYPE_TEXT
+  text: "SETTINGS"
+  font: "main"
+  id: "title"
+  shadow {
+    x: 1.0
+    y: 1.0
+    z: 1.0
+  }
+  parent: "root"
+  inherit_alpha: true
+  outline_alpha: 0.5
+  shadow_alpha: 0.3
+}
+nodes {
+  position {
+    y: 200.0
+  }
+  size {
+    x: 600.0
+    y: 40.0
+  }
+  color {
+    x: 0.08
+    y: 0.08
+    z: 0.12
+  }
+  type: TYPE_BOX
+  id: "tab_bar"
+  parent: "root"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    x: -200.0
+  }
+  size {
+    x: 196.0
+    y: 38.0
+  }
+  color {
+    x: 0.12
+    y: 0.25
+    z: 0.50
+  }
+  type: TYPE_BOX
+  id: "tab_audio"
+  parent: "tab_bar"
+  inherit_alpha: true
+}
+nodes {
+  size {
+    x: 180.0
+    y: 30.0
+  }
+  color {
+    x: 0.95
+    y: 0.95
+    z: 0.95
+  }
+  type: TYPE_TEXT
+  text: "AUDIO"
+  font: "main"
+  id: "tab_audio_label"
+  parent: "tab_audio"
+  inherit_alpha: true
+}
+nodes {
+  size {
+    x: 196.0
+    y: 38.0
+  }
+  color {
+    x: 0.22
+    y: 0.22
+    z: 0.28
+  }
+  type: TYPE_BOX
+  id: "tab_graphics"
+  parent: "tab_bar"
+  inherit_alpha: true
+}
+nodes {
+  size {
+    x: 180.0
+    y: 30.0
+  }
+  color {
+    x: 0.85
+    y: 0.85
+    z: 0.85
+  }
+  type: TYPE_TEXT
+  text: "GRAPHICS"
+  font: "main"
+  id: "tab_graphics_label"
+  parent: "tab_graphics"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    x: 200.0
+  }
+  size {
+    x: 196.0
+    y: 38.0
+  }
+  color {
+    x: 0.22
+    y: 0.22
+    z: 0.28
+  }
+  type: TYPE_BOX
+  id: "tab_controls"
+  parent: "tab_bar"
+  inherit_alpha: true
+}
+nodes {
+  size {
+    x: 180.0
+    y: 30.0
+  }
+  color {
+    x: 0.85
+    y: 0.85
+    z: 0.85
+  }
+  type: TYPE_TEXT
+  text: "CONTROLS"
+  font: "main"
+  id: "tab_controls_label"
+  parent: "tab_controls"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    y: -20.0
+  }
+  size {
+    x: 600.0
+    y: 360.0
+  }
+  color {
+    x: 0.08
+    y: 0.08
+    z: 0.12
+  }
+  type: TYPE_BOX
+  id: "content_area"
+  parent: "root"
+  inherit_alpha: true
+}
+nodes {
+  size {
+    x: 550.0
+    y: 280.0
+  }
+  color {
+    x: 0.08
+    y: 0.08
+    z: 0.12
+  }
+  type: TYPE_BOX
+  id: "page_audio"
+  parent: "content_area"
+  inherit_alpha: true
+  alpha: 0.0
+}
+nodes {
+  position {
+    x: -200.0
+    y: 60.0
+  }
+  size {
+    x: 150.0
+    y: 20.0
+  }
+  color {
+    x: 0.88
+    y: 0.88
+    z: 0.90
+  }
+  type: TYPE_TEXT
+  text: "Master Volume"
+  font: "main"
+  id: "label_master"
+  pivot: PIVOT_W
+  parent: "page_audio"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    x: 50.0
+    y: 60.0
+  }
+  size {
+    x: 200.0
+    y: 12.0
+  }
+  color {
+    x: 0.22
+    y: 0.22
+    z: 0.28
+  }
+  type: TYPE_BOX
+  id: "slider_master_bg"
+  parent: "page_audio"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    x: -100.0
+  }
+  size {
+    x: 160.0
+    y: 12.0
+  }
+  color {
+    x: 0.50
+    y: 0.75
+    z: 1.0
+  }
+  type: TYPE_BOX
+  id: "slider_master_fg"
+  pivot: PIVOT_W
+  parent: "slider_master_bg"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    x: 160.0
+  }
+  size {
+    x: 50.0
+    y: 20.0
+  }
+  color {
+    x: 0.88
+    y: 0.88
+    z: 0.90
+  }
+  type: TYPE_TEXT
+  text: "80%"
+  font: "main"
+  id: "value_master"
+  parent: "slider_master_bg"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    x: -200.0
+    y: 20.0
+  }
+  size {
+    x: 150.0
+    y: 20.0
+  }
+  color {
+    x: 0.88
+    y: 0.88
+    z: 0.90
+  }
+  type: TYPE_TEXT
+  text: "Music Volume"
+  font: "main"
+  id: "label_music"
+  pivot: PIVOT_W
+  parent: "page_audio"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    x: 50.0
+    y: 20.0
+  }
+  size {
+    x: 200.0
+    y: 12.0
+  }
+  color {
+    x: 0.22
+    y: 0.22
+    z: 0.28
+  }
+  type: TYPE_BOX
+  id: "slider_music_bg"
+  parent: "page_audio"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    x: -100.0
+  }
+  size {
+    x: 140.0
+    y: 12.0
+  }
+  color {
+    x: 0.50
+    y: 0.75
+    z: 1.0
+  }
+  type: TYPE_BOX
+  id: "slider_music_fg"
+  pivot: PIVOT_W
+  parent: "slider_music_bg"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    x: 160.0
+  }
+  size {
+    x: 50.0
+    y: 20.0
+  }
+  color {
+    x: 0.88
+    y: 0.88
+    z: 0.90
+  }
+  type: TYPE_TEXT
+  text: "70%"
+  font: "main"
+  id: "value_music"
+  parent: "slider_music_bg"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    x: -200.0
+    y: -20.0
+  }
+  size {
+    x: 150.0
+    y: 20.0
+  }
+  color {
+    x: 0.88
+    y: 0.88
+    z: 0.90
+  }
+  type: TYPE_TEXT
+  text: "SFX Volume"
+  font: "main"
+  id: "label_sfx"
+  pivot: PIVOT_W
+  parent: "page_audio"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    x: 50.0
+    y: -20.0
+  }
+  size {
+    x: 200.0
+    y: 12.0
+  }
+  color {
+    x: 0.22
+    y: 0.22
+    z: 0.28
+  }
+  type: TYPE_BOX
+  id: "slider_sfx_bg"
+  parent: "page_audio"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    x: -100.0
+  }
+  size {
+    x: 160.0
+    y: 12.0
+  }
+  color {
+    x: 0.50
+    y: 0.75
+    z: 1.0
+  }
+  type: TYPE_BOX
+  id: "slider_sfx_fg"
+  pivot: PIVOT_W
+  parent: "slider_sfx_bg"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    x: 160.0
+  }
+  size {
+    x: 50.0
+    y: 20.0
+  }
+  color {
+    x: 0.88
+    y: 0.88
+    z: 0.90
+  }
+  type: TYPE_TEXT
+  text: "80%"
+  font: "main"
+  id: "value_sfx"
+  parent: "slider_sfx_bg"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    x: -50.0
+    y: -70.0
+  }
+  size {
+    x: 120.0
+    y: 36.0
+  }
+  color {
+    x: 0.22
+    y: 0.22
+    z: 0.28
+  }
+  type: TYPE_BOX
+  id: "btn_mute"
+  parent: "page_audio"
+  inherit_alpha: true
+}
+nodes {
+  size {
+    x: 100.0
+    y: 25.0
+  }
+  type: TYPE_TEXT
+  text: "MUTE"
+  font: "main"
+  id: "btn_mute_label"
+  parent: "btn_mute"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    x: 100.0
+    y: -70.0
+  }
+  size {
+    x: 140.0
+    y: 36.0
+  }
+  color {
+    x: 0.22
+    y: 0.22
+    z: 0.28
+  }
+  type: TYPE_BOX
+  id: "btn_reset_audio"
+  parent: "page_audio"
+  inherit_alpha: true
+}
+nodes {
+  size {
+    x: 120.0
+    y: 25.0
+  }
+  color {
+    x: 0.95
+    y: 0.95
+    z: 0.95
+  }
+  type: TYPE_TEXT
+  text: "RESET"
+  font: "main"
+  id: "btn_reset_audio_label"
+  parent: "btn_reset_audio"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    y: 60.0
+  }
+  size {
+    x: 520.0
+    y: 35.0
+  }
+  color {
+    x: 0.12
+    y: 0.25
+    z: 0.50
+  }
+  type: TYPE_BOX
+  id: "master_highlight"
+  parent: "page_audio"
+  inherit_alpha: true
+  alpha: 0.0
+}
+nodes {
+  position {
+    y: 20.0
+  }
+  size {
+    x: 520.0
+    y: 35.0
+  }
+  color {
+    x: 0.12
+    y: 0.25
+    z: 0.50
+  }
+  type: TYPE_BOX
+  id: "music_highlight"
+  parent: "page_audio"
+  inherit_alpha: true
+  alpha: 0.0
+}
+nodes {
+  position {
+    y: -20.0
+  }
+  size {
+    x: 520.0
+    y: 35.0
+  }
+  color {
+    x: 0.12
+    y: 0.25
+    z: 0.50
+  }
+  type: TYPE_BOX
+  id: "sfx_highlight"
+  parent: "page_audio"
+  inherit_alpha: true
+  alpha: 0.0
+}
+nodes {
+  position {
+    y: -70.0
+  }
+  size {
+    x: 520.0
+    y: 45.0
+  }
+  color {
+    x: 0.12
+    y: 0.25
+    z: 0.50
+  }
+  type: TYPE_BOX
+  id: "mute_highlight"
+  parent: "page_audio"
+  inherit_alpha: true
+  alpha: 0.0
+}
+nodes {
+  position {
+    y: -70.0
+  }
+  size {
+    x: 520.0
+    y: 45.0
+  }
+  color {
+    x: 0.12
+    y: 0.25
+    z: 0.50
+  }
+  type: TYPE_BOX
+  id: "audio_reset_highlight"
+  parent: "page_audio"
+  inherit_alpha: true
+  alpha: 0.0
+}
+nodes {
+  size {
+    x: 550.0
+    y: 280.0
+  }
+  color {
+    x: 0.08
+    y: 0.08
+    z: 0.12
+  }
+  type: TYPE_BOX
+  id: "page_graphics"
+  parent: "content_area"
+  inherit_alpha: true
+  alpha: 0.0
+  enabled: false
+}
+nodes {
+  position {
+    y: 80.0
+  }
+  size {
+    x: 300.0
+    y: 36.0
+  }
+  color {
+    x: 0.22
+    y: 0.22
+    z: 0.28
+  }
+  type: TYPE_BOX
+  id: "btn_window_mode"
+  parent: "page_graphics"
+  inherit_alpha: true
+}
+nodes {
+  size {
+    x: 280.0
+    y: 25.0
+  }
+  color {
+    x: 0.88
+    y: 0.88
+    z: 0.90
+  }
+  type: TYPE_TEXT
+  text: "Window Mode: Windowed"
+  font: "main"
+  id: "btn_window_mode_label"
+  parent: "btn_window_mode"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    y: 30.0
+  }
+  size {
+    x: 300.0
+    y: 36.0
+  }
+  color {
+    x: 0.22
+    y: 0.22
+    z: 0.28
+  }
+  type: TYPE_BOX
+  id: "btn_vsync"
+  parent: "page_graphics"
+  inherit_alpha: true
+}
+nodes {
+  size {
+    x: 280.0
+    y: 25.0
+  }
+  color {
+    x: 0.88
+    y: 0.88
+    z: 0.90
+  }
+  type: TYPE_TEXT
+  text: "VSync: ON"
+  font: "main"
+  id: "btn_vsync_label"
+  parent: "btn_vsync"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    y: -20.0
+  }
+  size {
+    x: 300.0
+    y: 36.0
+  }
+  color {
+    x: 0.22
+    y: 0.22
+    z: 0.28
+  }
+  type: TYPE_BOX
+  id: "btn_show_fps"
+  parent: "page_graphics"
+  inherit_alpha: true
+}
+nodes {
+  size {
+    x: 280.0
+    y: 25.0
+  }
+  color {
+    x: 0.88
+    y: 0.88
+    z: 0.90
+  }
+  type: TYPE_TEXT
+  text: "Show FPS: OFF"
+  font: "main"
+  id: "btn_show_fps_label"
+  parent: "btn_show_fps"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    y: -80.0
+  }
+  size {
+    x: 160.0
+    y: 36.0
+  }
+  color {
+    x: 0.22
+    y: 0.22
+    z: 0.28
+  }
+  type: TYPE_BOX
+  id: "btn_reset_graphics"
+  parent: "page_graphics"
+  inherit_alpha: true
+}
+nodes {
+  size {
+    x: 140.0
+    y: 25.0
+  }
+  color {
+    x: 0.88
+    y: 0.88
+    z: 0.90
+  }
+  type: TYPE_TEXT
+  text: "RESET"
+  font: "main"
+  id: "btn_reset_graphics_label"
+  parent: "btn_reset_graphics"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    y: 80.0
+  }
+  size {
+    x: 520.0
+    y: 40.0
+  }
+  color {
+    x: 0.12
+    y: 0.25
+    z: 0.50
+  }
+  type: TYPE_BOX
+  id: "window_mode_highlight"
+  parent: "page_graphics"
+  inherit_alpha: true
+  alpha: 0.0
+}
+nodes {
+  position {
+    y: 30.0
+  }
+  size {
+    x: 520.0
+    y: 40.0
+  }
+  color {
+    x: 0.12
+    y: 0.25
+    z: 0.50
+  }
+  type: TYPE_BOX
+  id: "vsync_highlight"
+  parent: "page_graphics"
+  inherit_alpha: true
+  alpha: 0.0
+}
+nodes {
+  position {
+    y: -20.0
+  }
+  size {
+    x: 520.0
+    y: 40.0
+  }
+  color {
+    x: 0.12
+    y: 0.25
+    z: 0.50
+  }
+  type: TYPE_BOX
+  id: "show_fps_highlight"
+  parent: "page_graphics"
+  inherit_alpha: true
+  alpha: 0.0
+}
+nodes {
+  position {
+    y: -80.0
+  }
+  size {
+    x: 520.0
+    y: 40.0
+  }
+  color {
+    x: 0.12
+    y: 0.25
+    z: 0.50
+  }
+  type: TYPE_BOX
+  id: "graphics_reset_highlight"
+  parent: "page_graphics"
+  inherit_alpha: true
+  alpha: 0.0
+}
+nodes {
+  size {
+    x: 550.0
+    y: 380.0
+  }
+  color {
+    x: 0.08
+    y: 0.08
+    z: 0.12
+  }
+  type: TYPE_BOX
+  id: "page_controls"
+  parent: "content_area"
+  inherit_alpha: true
+  alpha: 0.0
+  enabled: false
+}
+nodes {
+  position {
+    y: 140.0
+  }
+  size {
+    x: 500.0
+    y: 25.0
+  }
+  color {
+    x: 0.50
+    y: 0.75
+    z: 1.0
+  }
+  type: TYPE_TEXT
+  text: "Control Remapping"
+  font: "main"
+  id: "controls_title"
+  parent: "page_controls"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    y: 118.0
+  }
+  size {
+    x: 450.0
+    y: 20.0
+  }
+  color {
+    x: 0.55
+    y: 0.55
+    z: 0.62
+  }
+  type: TYPE_TEXT
+  text: "Click a button to rebind its key"
+  font: "main"
+  id: "controls_subtitle"
+  parent: "page_controls"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    y: 90.0
+  }
+  size {
+    x: 500.0
+    y: 220.0
+  }
+  type: TYPE_BOX
+  id: "controls_list"
+  parent: "page_controls"
+  inherit_alpha: true
+  alpha: 0.0
+}
+nodes {
+  position {
+    y: 80.0
+  }
+  size {
+    x: 500.0
+    y: 28.0
+  }
+  color {
+    x: 0.12
+    y: 0.12
+    z: 0.16
+  }
+  type: TYPE_BOX
+  id: "controls_jump_bg"
+  parent: "page_controls"
+  inherit_alpha: true
+  alpha: 0.0
+}
+nodes {
+  position {
+    x: -150.0
+    y: 80.0
+  }
+  size {
+    x: 200.0
+    y: 20.0
+  }
+  color {
+    x: 0.88
+    y: 0.88
+    z: 0.90
+  }
+  type: TYPE_TEXT
+  text: "Jump:"
+  font: "main"
+  id: "controls_jump_label"
+  pivot: PIVOT_W
+  parent: "page_controls"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    x: 50.0
+    y: 80.0
+  }
+  size {
+    x: 200.0
+    y: 20.0
+  }
+  color {
+    x: 0.88
+    y: 0.88
+    z: 0.90
+  }
+  type: TYPE_TEXT
+  text: "A BUTTON"
+  font: "main"
+  id: "controls_jump_value"
+  pivot: PIVOT_W
+  parent: "page_controls"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    y: 54.0
+  }
+  size {
+    x: 500.0
+    y: 28.0
+  }
+  color {
+    x: 0.12
+    y: 0.12
+    z: 0.16
+  }
+  type: TYPE_BOX
+  id: "controls_dash_bg"
+  parent: "page_controls"
+  inherit_alpha: true
+  alpha: 0.0
+}
+nodes {
+  position {
+    x: -150.0
+    y: 54.0
+  }
+  size {
+    x: 200.0
+    y: 20.0
+  }
+  color {
+    x: 0.88
+    y: 0.88
+    z: 0.90
+  }
+  type: TYPE_TEXT
+  text: "Dash:"
+  font: "main"
+  id: "controls_dash_label"
+  pivot: PIVOT_W
+  parent: "page_controls"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    x: 50.0
+    y: 54.0
+  }
+  size {
+    x: 200.0
+    y: 20.0
+  }
+  color {
+    x: 0.88
+    y: 0.88
+    z: 0.90
+  }
+  type: TYPE_TEXT
+  text: "RIGHT TRIGGER"
+  font: "main"
+  id: "controls_dash_value"
+  pivot: PIVOT_W
+  parent: "page_controls"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    y: 28.0
+  }
+  size {
+    x: 500.0
+    y: 28.0
+  }
+  color {
+    x: 0.12
+    y: 0.12
+    z: 0.16
+  }
+  type: TYPE_BOX
+  id: "controls_attack_bg"
+  parent: "page_controls"
+  inherit_alpha: true
+  alpha: 0.0
+}
+nodes {
+  position {
+    x: -150.0
+    y: 28.0
+  }
+  size {
+    x: 200.0
+    y: 20.0
+  }
+  color {
+    x: 0.88
+    y: 0.88
+    z: 0.90
+  }
+  type: TYPE_TEXT
+  text: "Attack:"
+  font: "main"
+  id: "controls_attack_label"
+  pivot: PIVOT_W
+  parent: "page_controls"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    x: 50.0
+    y: 28.0
+  }
+  size {
+    x: 200.0
+    y: 20.0
+  }
+  color {
+    x: 0.88
+    y: 0.88
+    z: 0.90
+  }
+  type: TYPE_TEXT
+  text: "X BUTTON"
+  font: "main"
+  id: "controls_attack_value"
+  pivot: PIVOT_W
+  parent: "page_controls"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    y: 2.0
+  }
+  size {
+    x: 500.0
+    y: 28.0
+  }
+  color {
+    x: 0.12
+    y: 0.12
+    z: 0.16
+  }
+  type: TYPE_BOX
+  id: "controls_special_bg"
+  parent: "page_controls"
+  inherit_alpha: true
+  alpha: 0.0
+}
+nodes {
+  position {
+    x: -150.0
+    y: 2.0
+  }
+  size {
+    x: 200.0
+    y: 20.0
+  }
+  color {
+    x: 0.88
+    y: 0.88
+    z: 0.90
+  }
+  type: TYPE_TEXT
+  text: "Special:"
+  font: "main"
+  id: "controls_special_label"
+  pivot: PIVOT_W
+  parent: "page_controls"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    x: 50.0
+    y: 2.0
+  }
+  size {
+    x: 200.0
+    y: 20.0
+  }
+  color {
+    x: 0.88
+    y: 0.88
+    z: 0.90
+  }
+  type: TYPE_TEXT
+  text: "Y BUTTON"
+  font: "main"
+  id: "controls_special_value"
+  pivot: PIVOT_W
+  parent: "page_controls"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    y: -24.0
+  }
+  size {
+    x: 500.0
+    y: 28.0
+  }
+  color {
+    x: 0.12
+    y: 0.12
+    z: 0.16
+  }
+  type: TYPE_BOX
+  id: "controls_ranged_bg"
+  parent: "page_controls"
+  inherit_alpha: true
+  alpha: 0.0
+}
+nodes {
+  position {
+    x: -150.0
+    y: -24.0
+  }
+  size {
+    x: 200.0
+    y: 20.0
+  }
+  color {
+    x: 0.88
+    y: 0.88
+    z: 0.90
+  }
+  type: TYPE_TEXT
+  text: "Ranged Attack:"
+  font: "main"
+  id: "controls_ranged_label"
+  pivot: PIVOT_W
+  parent: "page_controls"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    x: 50.0
+    y: -24.0
+  }
+  size {
+    x: 200.0
+    y: 20.0
+  }
+  color {
+    x: 0.88
+    y: 0.88
+    z: 0.90
+  }
+  type: TYPE_TEXT
+  text: "B BUTTON"
+  font: "main"
+  id: "controls_ranged_value"
+  pivot: PIVOT_W
+  parent: "page_controls"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    y: -50.0
+  }
+  size {
+    x: 500.0
+    y: 28.0
+  }
+  color {
+    x: 0.12
+    y: 0.12
+    z: 0.16
+  }
+  type: TYPE_BOX
+  id: "controls_interact_bg"
+  parent: "page_controls"
+  inherit_alpha: true
+  alpha: 0.0
+}
+nodes {
+  position {
+    x: -150.0
+    y: -50.0
+  }
+  size {
+    x: 200.0
+    y: 20.0
+  }
+  color {
+    x: 0.88
+    y: 0.88
+    z: 0.90
+  }
+  type: TYPE_TEXT
+  text: "Interact:"
+  font: "main"
+  id: "controls_interact_label"
+  pivot: PIVOT_W
+  parent: "page_controls"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    x: 50.0
+    y: -50.0
+  }
+  size {
+    x: 200.0
+    y: 20.0
+  }
+  color {
+    x: 0.88
+    y: 0.88
+    z: 0.90
+  }
+  type: TYPE_TEXT
+  text: "DOWN DPAD"
+  font: "main"
+  id: "controls_interact_value"
+  pivot: PIVOT_W
+  parent: "page_controls"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    y: -76.0
+  }
+  size {
+    x: 500.0
+    y: 28.0
+  }
+  color {
+    x: 0.12
+    y: 0.12
+    z: 0.16
+  }
+  type: TYPE_BOX
+  id: "controls_map_bg"
+  parent: "page_controls"
+  inherit_alpha: true
+  alpha: 0.0
+}
+nodes {
+  position {
+    x: -150.0
+    y: -76.0
+  }
+  size {
+    x: 200.0
+    y: 20.0
+  }
+  color {
+    x: 0.88
+    y: 0.88
+    z: 0.90
+  }
+  type: TYPE_TEXT
+  text: "Minimap:"
+  font: "main"
+  id: "controls_map_label"
+  pivot: PIVOT_W
+  parent: "page_controls"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    x: 50.0
+    y: -76.0
+  }
+  size {
+    x: 200.0
+    y: 20.0
+  }
+  color {
+    x: 0.88
+    y: 0.88
+    z: 0.90
+  }
+  type: TYPE_TEXT
+  text: "LEFT BUMPER"
+  font: "main"
+  id: "controls_map_value"
+  pivot: PIVOT_W
+  parent: "page_controls"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    y: -102.0
+  }
+  size {
+    x: 500.0
+    y: 28.0
+  }
+  color {
+    x: 0.12
+    y: 0.12
+    z: 0.16
+  }
+  type: TYPE_BOX
+  id: "controls_inventory_bg"
+  parent: "page_controls"
+  inherit_alpha: true
+  alpha: 0.0
+}
+nodes {
+  position {
+    x: -150.0
+    y: -102.0
+  }
+  size {
+    x: 200.0
+    y: 20.0
+  }
+  color {
+    x: 0.88
+    y: 0.88
+    z: 0.90
+  }
+  type: TYPE_TEXT
+  text: "Inventory:"
+  font: "main"
+  id: "controls_inventory_label"
+  pivot: PIVOT_W
+  parent: "page_controls"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    x: 50.0
+    y: -102.0
+  }
+  size {
+    x: 200.0
+    y: 20.0
+  }
+  color {
+    x: 0.88
+    y: 0.88
+    z: 0.90
+  }
+  type: TYPE_TEXT
+  text: "LEFT DPAD"
+  font: "main"
+  id: "controls_inventory_value"
+  pivot: PIVOT_W
+  parent: "page_controls"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    y: -165.0
+  }
+  size {
+    x: 220.0
+    y: 36.0
+  }
+  color {
+    x: 0.22
+    y: 0.22
+    z: 0.28
+  }
+  type: TYPE_BOX
+  id: "btn_reset_controls"
+  parent: "page_controls"
+  inherit_alpha: true
+}
+nodes {
+  size {
+    x: 200.0
+    y: 25.0
+  }
+  color {
+    x: 0.95
+    y: 0.95
+    z: 0.95
+  }
+  type: TYPE_TEXT
+  text: "RESET TO DEFAULTS"
+  font: "main"
+  id: "btn_reset_controls_label"
+  parent: "btn_reset_controls"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    y: -250.0
+  }
+  size {
+    x: 220.0
+    y: 36.0
+  }
+  color {
+    x: 0.22
+    y: 0.22
+    z: 0.28
+  }
+  type: TYPE_BOX
+  id: "btn_back"
+  parent: "root"
+  inherit_alpha: true
+}
+nodes {
+  size {
+    x: 200.0
+    y: 25.0
+  }
+  type: TYPE_TEXT
+  text: "BACK"
+  font: "main"
+  id: "btn_back_label"
+  parent: "btn_back"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    x: 640.0
+    y: 360.0
+  }
+  size {
+    x: 1280.0
+    y: 720.0
+  }
+  color {
+    x: 0.0
+    y: 0.0
+    z: 0.0
+  }
+  type: TYPE_BOX
+  id: "restart_overlay"
+  inherit_alpha: true
+  alpha: 0.8
+  enabled: false
+}
+nodes {
+  position {
+    x: 640.0
+    y: 360.0
+  }
+  size {
+    x: 500.0
+    y: 200.0
+  }
+  color {
+    x: 0.6
+    y: 0.4
+    z: 0.0
+  }
+  type: TYPE_BOX
+  id: "restart_panel"
+  inherit_alpha: true
+  enabled: false
+}
+nodes {
+  position {
+    x: 640.0
+    y: 420.0
+  }
+  size {
+    x: 240.0
+    y: 30.0
+  }
+  color {
+    x: 0.50
+    y: 0.75
+    z: 1.0
+  }
+  type: TYPE_TEXT
+  text: "Restart Required"
+  font: "main"
+  id: "restart_title"
+  inherit_alpha: true
+  enabled: false
+}
+nodes {
+  position {
+    x: 640.0
+    y: 360.0
+  }
+  size {
+    x: 400.0
+    y: 60.0
+  }
+  color {
+    x: 0.9
+    y: 0.9
+    z: 0.9
+  }
+  type: TYPE_TEXT
+  text: "VSync changes require a restart.\n"
+  "\n"
+  "Restart now?"
+  font: "main"
+  id: "restart_message"
+  inherit_alpha: true
+  enabled: false
+}
+nodes {
+  position {
+    x: 640.0
+    y: 300.0
+  }
+  size {
+    x: 260.0
+    y: 25.0
+  }
+  color {
+    x: 0.7
+    y: 0.7
+    z: 0.7
+  }
+  type: TYPE_TEXT
+  text: "A: Restart  |  B: Cancel"
+  font: "main"
+  id: "restart_hint"
+  inherit_alpha: true
+  enabled: false
+}
+material: "/builtins/materials/gui.material"

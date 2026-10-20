@@ -1,0 +1,113 @@
+-- developer/ui/menus/fast_travel.gui_script
+local Pause = require "mvtk.core.pause"
+local InputCtl = require "mvtk.rooms.input_controller"
+local FastTravel = require "mvtk.core.fast_travel"
+
+local v3 = vmath.vector3
+
+local function n(id) local ok, node = pcall(gui.get_node, id); return ok and node or nil end
+
+function init(self)
+  msg.post(".", "acquire_input_focus")
+  self._enabled = false
+  msg.post(".", "disable")
+
+  self.title = n("title")
+  self.subtitle = n("subtitle")
+  self.hint = n("hint")
+  self.content_area = n("content_area")
+  self.row_label_template = n("row_label")
+  self.row_val_template = n("row_val")
+
+  self.rows = {}
+  self.sel = 1
+end
+
+local function list_points()
+  local out = {}
+  for id, _ in pairs(FastTravel.points or {}) do out[#out + 1] = id end
+  table.sort(out)
+  return out
+end
+
+local function refresh(self)
+  local items = list_points()
+  self.items = items
+
+  -- Clear old rows
+  for _, r in ipairs(self.rows) do pcall(gui.delete_node, r) end
+  self.rows = {}
+
+  local y0 = 180
+  for i, id in ipairs(items) do
+    local row = gui.clone(self.row_label_template)
+    gui.set_enabled(row, true)
+    gui.set_text(row, tostring(id))
+    gui.set_position(row, v3(-200, y0 - (i - 1) * 32, 0))
+    self.rows[i] = row
+  end
+
+  -- Highlight selection
+  for i, row in ipairs(self.rows) do
+    local selected = (i == self.sel)
+    local c = selected and vmath.vector4(1, 1, 1, 1) or vmath.vector4(0.88, 0.88, 0.90, 1)
+    gui.set_color(row, c)
+    gui.set_scale(row, selected and v3(1.05, 1.05, 1) or v3(1, 1, 1))
+  end
+end
+
+local function open(self)
+  self._enabled = true
+  msg.post(".", "enable")
+  if InputCtl and InputCtl.set_blocked then InputCtl.set_blocked(true) end
+  if Pause and Pause.set then Pause.set(true) end
+
+  refresh(self)
+
+  local items = self.items or {}
+  if #items <= 1 or not FastTravel.can_menu_travel() then
+    gui.set_text(self.hint, FastTravel.can_menu_travel() and "No other points discovered." or "Fast travel disabled.")
+  else
+    gui.set_text(self.hint, "D-Pad: Select   A: Travel   B: Close")
+  end
+end
+
+local function close(self)
+  self._enabled = false
+  msg.post(".", "disable")
+  if InputCtl and InputCtl.set_blocked then InputCtl.set_blocked(false) end
+  if Pause and Pause.set then Pause.set(false) end
+end
+
+function on_message(self, message_id, message, sender)
+  if message_id == hash("open_fast_travel") then
+    open(self)
+  elseif message_id == hash("close_fast_travel") then
+    close(self)
+  end
+end
+
+function on_input(self, action_id, action)
+  if not self._enabled or not action or not action.pressed then return end
+  if action_id == hash("key_down") or action_id == hash("key_s")
+      or action_id == hash("gamepad_lpad_down")
+      or action_id == hash("gamepad_lstick_down") then
+    self.sel = math.min(#(self.items or {}), (self.sel or 1) + 1)
+    refresh(self)
+  elseif action_id == hash("key_up") or action_id == hash("key_w")
+      or action_id == hash("gamepad_lpad_up")
+      or action_id == hash("gamepad_lstick_up") then
+    self.sel = math.max(1, (self.sel or 1) - 1)
+    refresh(self)
+  elseif action_id == hash("gamepad_rpad_down") or action_id == hash("key_enter") then
+    local items = self.items or {}
+    local id = items[self.sel or 1]
+    if id and FastTravel.can_menu_travel() and #items > 1 then
+      FastTravel.teleport_to(id)
+      close(self)
+    end
+  elseif action_id == hash("gamepad_rpad_right") or action_id == hash("gamepad_back")
+      or action_id == hash("key_escape") or action_id == hash("key_m") then
+    close(self)
+  end
+end

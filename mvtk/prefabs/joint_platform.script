@@ -1,0 +1,112 @@
+-- mvtk/prefabs/joint_platform.script
+-- Kinematic rail platform / elevator. (Filename retained for Tiled wiring
+-- stability.) The platform body is KINEMATIC, so it is moved by deterministic
+-- transform animation -- the correct, predictable technique for a platformer's
+-- moving platforms. Preserves the moving_platform passenger contract. A real
+-- motor-driven joint would require a dynamic body + separate anchor GO and
+-- in-engine tuning; see docs/CREATOR_WORKFLOW.html.
+
+go.property("path_dx", 0.0)
+go.property("path_dy", 160.0)
+go.property("duration", 2.0)
+go.property("wait", 0.0)
+go.property("enabled", true)
+go.property("loop_mode", "pingpong")
+go.property("room_id", "")
+
+local v3 = vmath.vector3
+local C = require "mvtk.core.constants"
+local PassengerCarrier = require "mvtk.prefabs.passenger_carrier"
+local ToggleMessages = require "mvtk.prefabs.toggle_messages"
+local FrameClock = require "mvtk.core.frame_clock"
+
+local function ease_in_out(t)
+    return t < 0.5 and 2 * t * t or 1 - math.pow(-2 * t + 2, 2) / 2
+end
+
+local function move_to(self, target_pos)
+    local delta = target_pos - self.last_pos
+    go.set_position(target_pos)
+    self.last_pos = v3(target_pos)
+
+    self.passenger_carrier:apply_delta(delta.x, delta.y)
+end
+
+local function start_wait(self)
+    if (self.wait or 0) > 0 then
+        self.waiting = true
+        timer.delay(self.wait, false, function()
+            self.waiting = false
+        end)
+    end
+end
+
+local function apply_enabled(self, enabled)
+    self.enabled = enabled
+end
+
+function init(self)
+    self.start = go.get_position()
+    self.last_pos = v3(self.start)
+    self.t = 0
+    self.dir = 1
+    self.waiting = false
+    self.passenger_carrier = PassengerCarrier.new()
+end
+
+function update(self, dt)
+    dt = FrameClock.snap(dt)
+    if not self.enabled or self.waiting then
+        return
+    end
+
+    local dur = math.max(0.0001, self.duration or 2.0)
+    if self.loop_mode == "loop" then
+        self.t = self.t + dt
+        if self.t >= dur then
+            self.t = self.t - dur
+        end
+    else
+        self.t = self.t + dt * (self.dir or 1)
+        if self.t >= dur then
+            self.t = dur
+            self.dir = -1
+            start_wait(self)
+        elseif self.t <= 0 then
+            self.t = 0
+            self.dir = 1
+            start_wait(self)
+        end
+    end
+
+    local t01 = self.t / dur
+    if self.loop_mode == "loop" then
+        t01 = t01 % 1
+    end
+    local eased = ease_in_out(t01)
+    move_to(self, v3(
+        self.start.x + (self.path_dx or 0) * eased,
+        self.start.y + (self.path_dy or 0) * eased,
+        self.start.z
+    ))
+end
+
+function on_message(self, message_id, message, sender)
+    if message_id == hash("trigger_response") then
+        local entity = message.other_id or sender
+        local other_group = message.other_group or message.group
+        if other_group == C.GROUPS.PLAYER or other_group == C.GROUPS.ENEMY then
+            if message.enter then
+                self.passenger_carrier:add(entity, other_group)
+            else
+                self.passenger_carrier:remove(entity)
+            end
+        end
+    elseif ToggleMessages.handle(self, message_id, message, apply_enabled) then
+    elseif message_id == hash("reset") then
+        self.t = 0
+        self.dir = 1
+        self.waiting = false
+        move_to(self, self.start)
+    end
+end

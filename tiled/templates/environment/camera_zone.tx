@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<template>
+ <object name="Camera Zone" type="camera_zone" width="640" height="480">
+  <properties>
+   <property name="camera_mode" propertytype="camera_modes" value="follow"/>
+   <property name="zone_id" value="camera_zone_1"/>
+   <property name="framing" type="class" propertytype="camera_zone_framing">
+    <properties>
+     <property name="bounds_padding" type="int" value="0"/>
+     <property name="focus_x" type="int" value="0"/>
+     <property name="focus_y" type="int" value="0"/>
+     <property name="parallax_override" value=""/>
+     <property name="zoom_level" type="float" value="1"/>
+     <property name="auto_fit" type="bool" value="false"/>
+    </properties>
+   </property>
+   <property name="follow" type="class" propertytype="camera_zone_follow">
+    <properties>
+     <property name="deadzone_height" type="int" value="0"/>
+     <property name="deadzone_width" type="int" value="0"/>
+     <property name="smooth_follow" type="bool" value="true"/>
+     <property name="transition_speed" type="float" value="1"/>
+    </properties>
+   </property>
+   <property name="axis_locks" type="class" propertytype="camera_zone_axis_locks">
+    <properties>
+     <property name="lock_x" type="bool" value="false"/>
+     <property name="lock_y" type="bool" value="false"/>
+    </properties>
+   </property>
+   <property name="mvtk_template_version" type="string" value="2.7.0"/>
+  </properties>
+ </object>
+</template>

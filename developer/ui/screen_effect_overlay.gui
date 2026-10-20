@@ -1,0 +1,14 @@
+script: "/developer/ui/screen_effect_overlay.gui_script"
+material: "/builtins/materials/gui.material"
+adjust_reference: ADJUST_REFERENCE_PARENT
+nodes {
+  position { x: 0.0 y: 0.0 z: 0.0 }
+  type: TYPE_BOX
+  size { x: 1920.0 y: 1080.0 z: 0.0 }
+  color { x: 0.0 y: 0.0 z: 0.0 w: 0.0 }
+  blend_mode: BLEND_MODE_ALPHA
+  pivot: PIVOT_SW
+  adjust_mode: ADJUST_MODE_FIT
+  id: "overlay"
+}
+adjust_reference: ADJUST_REFERENCE_PARENT

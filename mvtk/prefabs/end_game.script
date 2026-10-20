@@ -1,0 +1,36 @@
+-- Baked region: editable dimensions and identity; no runtime object spawning.
+local Completion=require "mvtk.game.completion"
+local Proxy=require "mvtk.prefabs.tiled_proxy_util"
+local C=require "mvtk.core.constants"
+local Util=require "mvtk.core.util"
+local PU=require "mvtk.prefabs.prefab_utils"
+-- Once per session across all end zones (intentionally module-wide).
+local disabled_hint_shown=false
+go.property("completion_id","ending")
+go.property("zone_width",128)
+go.property("zone_height",128)
+go.property("room_id","")
+function init(self)
+    self.ending_id=Proxy.plain(self.completion_id,""); self.inside=false; self.token=go.get_id()
+    -- Editor-visible region bounds, not a physical blocker. Recorded so a room
+    -- hide/show does not turn it into an invisible wall.
+    Util.post_component_enabled("#co",false)
+end
+function update(self,dt)
+    local player=C.URL and C.URL.PLAYER
+    if not player or not go.exists(player) then return end
+    local p=go.get_world_position(player); local center=go.get_world_position()
+    local inside=math.abs(p.x-center.x)<=self.zone_width/2 and math.abs(p.y-center.y)<=self.zone_height/2
+    if inside and not self.inside and not disabled_hint_shown and PU.is_dev_build() then
+        -- Development hint: an inactive ending otherwise looks like nothing happened.
+        local cfg=Completion.config()
+        if not (cfg and cfg.enabled==true) then
+            disabled_hint_shown=true
+            PU.toast("Ending is disabled: enable it in Project > Game Settings... > Ending, Save, then Build.",5.0)
+        end
+    end
+    if inside then Completion.enter(self.ending_id,self.token)
+    elseif self.inside then Completion.leave(self.ending_id,self.token) end
+    self.inside=inside
+end
+function final(self) if self.inside then Completion.leave(self.ending_id,self.token) end end

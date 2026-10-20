@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<template>
+ <object name="Save Point" type="save_point" width="32" height="32">
+  <properties>
+   <property name="save_id" type="string" value=""/>
+   <property name="display_name" type="string" value="Save Point"/>
+   <property name="services" type="class" propertytype="save_point_services">
+    <properties>
+     <property name="heal_on_save" type="bool" value="true"/>
+     <property name="restore_energy" type="bool" value="true"/>
+     <property name="is_fast_travel" type="bool" value="false"/>
+     <property name="show_on_map" type="bool" value="true"/>
+    </properties>
+   </property>
+   <property name="interaction" type="class" propertytype="save_point_interaction">
+    <properties>
+     <property name="requires_interact" type="bool" value="true"/>
+    </properties>
+   </property>
+   <property name="feedback_and_visuals" type="class" propertytype="save_point_feedback_and_visuals">
+    <properties>
+     <property name="sound_id" propertytype="sound_effects" value="none"/>
+    </properties>
+   </property>
+   <property name="art_item" type="string" value=""/>
+   <property name="art_feedback" type="class" propertytype="save_point_art_feedback">
+    <properties>
+     <property name="consume_effect" type="string" propertytype="particle_effects" value="none"/>
+     <property name="interact_effect" type="string" propertytype="particle_effects" value="none"/>
+     <property name="effect_offset_x" type="float" value="0"/>
+     <property name="effect_offset_y" type="float" value="0"/>
+     <property name="effect_scale" type="float" value="1"/>
+     <property name="effect_cooldown" type="float" value="0"/>
+    </properties>
+   </property>
+   <property name="mvtk_template_version" type="string" value="2.7.0"/>
+  </properties>
+ </object>
+</template>

@@ -1,0 +1,465 @@
+extrude_borders: 0
+inner_padding: 0
+max_page_width: 0
+max_page_height: 0
+
+animations {
+  id: "idle"
+  images { image: "/developer/assets/atlas/boss_placeholders/sky_tyrant.png" }
+  playback: PLAYBACK_NONE
+  fps: 1
+  flip_horizontal: 0
+  flip_vertical: 0
+}
+
+animations {
+  id: "walk"
+  images { image: "/developer/assets/atlas/boss_placeholders/sky_tyrant.png" }
+  playback: PLAYBACK_NONE
+  fps: 1
+  flip_horizontal: 0
+  flip_vertical: 0
+}
+
+animations {
+  id: "run"
+  images { image: "/developer/assets/atlas/boss_placeholders/sky_tyrant.png" }
+  playback: PLAYBACK_NONE
+  fps: 1
+  flip_horizontal: 0
+  flip_vertical: 0
+}
+
+animations {
+  id: "fly"
+  images { image: "/developer/assets/atlas/boss_placeholders/sky_tyrant.png" }
+  playback: PLAYBACK_NONE
+  fps: 1
+  flip_horizontal: 0
+  flip_vertical: 0
+}
+
+animations {
+  id: "hover"
+  images { image: "/developer/assets/atlas/boss_placeholders/sky_tyrant.png" }
+  playback: PLAYBACK_NONE
+  fps: 1
+  flip_horizontal: 0
+  flip_vertical: 0
+}
+
+animations {
+  id: "attack"
+  images { image: "/developer/assets/atlas/boss_placeholders/sky_tyrant.png" }
+  playback: PLAYBACK_NONE
+  fps: 1
+  flip_horizontal: 0
+  flip_vertical: 0
+}
+
+animations {
+  id: "attack_alt"
+  images { image: "/developer/assets/atlas/boss_placeholders/sky_tyrant.png" }
+  playback: PLAYBACK_NONE
+  fps: 1
+  flip_horizontal: 0
+  flip_vertical: 0
+}
+
+animations {
+  id: "attack_combo"
+  images { image: "/developer/assets/atlas/boss_placeholders/sky_tyrant.png" }
+  playback: PLAYBACK_NONE
+  fps: 1
+  flip_horizontal: 0
+  flip_vertical: 0
+}
+
+animations {
+  id: "slam"
+  images { image: "/developer/assets/atlas/boss_placeholders/sky_tyrant.png" }
+  playback: PLAYBACK_NONE
+  fps: 1
+  flip_horizontal: 0
+  flip_vertical: 0
+}
+
+animations {
+  id: "slam_windup"
+  images { image: "/developer/assets/atlas/boss_placeholders/sky_tyrant.png" }
+  playback: PLAYBACK_NONE
+  fps: 1
+  flip_horizontal: 0
+  flip_vertical: 0
+}
+
+animations {
+  id: "charge"
+  images { image: "/developer/assets/atlas/boss_placeholders/sky_tyrant.png" }
+  playback: PLAYBACK_NONE
+  fps: 1
+  flip_horizontal: 0
+  flip_vertical: 0
+}
+
+animations {
+  id: "charge_windup"
+  images { image: "/developer/assets/atlas/boss_placeholders/sky_tyrant.png" }
+  playback: PLAYBACK_NONE
+  fps: 1
+  flip_horizontal: 0
+  flip_vertical: 0
+}
+
+animations {
+  id: "sweep"
+  images { image: "/developer/assets/atlas/boss_placeholders/sky_tyrant.png" }
+  playback: PLAYBACK_NONE
+  fps: 1
+  flip_horizontal: 0
+  flip_vertical: 0
+}
+
+animations {
+  id: "spin_attack"
+  images { image: "/developer/assets/atlas/boss_placeholders/sky_tyrant.png" }
+  playback: PLAYBACK_NONE
+  fps: 1
+  flip_horizontal: 0
+  flip_vertical: 0
+}
+
+animations {
+  id: "roar"
+  images { image: "/developer/assets/atlas/boss_placeholders/sky_tyrant.png" }
+  playback: PLAYBACK_NONE
+  fps: 1
+  flip_horizontal: 0
+  flip_vertical: 0
+}
+
+animations {
+  id: "breath_attack"
+  images { image: "/developer/assets/atlas/boss_placeholders/sky_tyrant.png" }
+  playback: PLAYBACK_NONE
+  fps: 1
+  flip_horizontal: 0
+  flip_vertical: 0
+}
+
+animations {
+  id: "ranged_attack"
+  images { image: "/developer/assets/atlas/boss_placeholders/sky_tyrant.png" }
+  playback: PLAYBACK_NONE
+  fps: 1
+  flip_horizontal: 0
+  flip_vertical: 0
+}
+
+animations {
+  id: "projectile_burst"
+  images { image: "/developer/assets/atlas/boss_placeholders/sky_tyrant.png" }
+  playback: PLAYBACK_NONE
+  fps: 1
+  flip_horizontal: 0
+  flip_vertical: 0
+}
+
+animations {
+  id: "summon"
+  images { image: "/developer/assets/atlas/boss_placeholders/sky_tyrant.png" }
+  playback: PLAYBACK_NONE
+  fps: 1
+  flip_horizontal: 0
+  flip_vertical: 0
+}
+
+animations {
+  id: "summon_channel"
+  images { image: "/developer/assets/atlas/boss_placeholders/sky_tyrant.png" }
+  playback: PLAYBACK_NONE
+  fps: 1
+  flip_horizontal: 0
+  flip_vertical: 0
+}
+
+animations {
+  id: "spawn_minions"
+  images { image: "/developer/assets/atlas/boss_placeholders/sky_tyrant.png" }
+  playback: PLAYBACK_NONE
+  fps: 1
+  flip_horizontal: 0
+  flip_vertical: 0
+}
+
+animations {
+  id: "block"
+  images { image: "/developer/assets/atlas/boss_placeholders/sky_tyrant.png" }
+  playback: PLAYBACK_NONE
+  fps: 1
+  flip_horizontal: 0
+  flip_vertical: 0
+}
+
+animations {
+  id: "shield"
+  images { image: "/developer/assets/atlas/boss_placeholders/sky_tyrant.png" }
+  playback: PLAYBACK_NONE
+  fps: 1
+  flip_horizontal: 0
+  flip_vertical: 0
+}
+
+animations {
+  id: "shield_break"
+  images { image: "/developer/assets/atlas/boss_placeholders/sky_tyrant.png" }
+  playback: PLAYBACK_NONE
+  fps: 1
+  flip_horizontal: 0
+  flip_vertical: 0
+}
+
+animations {
+  id: "parry"
+  images { image: "/developer/assets/atlas/boss_placeholders/sky_tyrant.png" }
+  playback: PLAYBACK_NONE
+  fps: 1
+  flip_horizontal: 0
+  flip_vertical: 0
+}
+
+animations {
+  id: "counter"
+  images { image: "/developer/assets/atlas/boss_placeholders/sky_tyrant.png" }
+  playback: PLAYBACK_NONE
+  fps: 1
+  flip_horizontal: 0
+  flip_vertical: 0
+}
+
+animations {
+  id: "enrage"
+  images { image: "/developer/assets/atlas/boss_placeholders/sky_tyrant.png" }
+  playback: PLAYBACK_NONE
+  fps: 1
+  flip_horizontal: 0
+  flip_vertical: 0
+}
+
+animations {
+  id: "phase_transition"
+  images { image: "/developer/assets/atlas/boss_placeholders/sky_tyrant.png" }
+  playback: PLAYBACK_NONE
+  fps: 1
+  flip_horizontal: 0
+  flip_vertical: 0
+}
+
+animations {
+  id: "power_up"
+  images { image: "/developer/assets/atlas/boss_placeholders/sky_tyrant.png" }
+  playback: PLAYBACK_NONE
+  fps: 1
+  flip_horizontal: 0
+  flip_vertical: 0
+}
+
+animations {
+  id: "transform"
+  images { image: "/developer/assets/atlas/boss_placeholders/sky_tyrant.png" }
+  playback: PLAYBACK_NONE
+  fps: 1
+  flip_horizontal: 0
+  flip_vertical: 0
+}
+
+animations {
+  id: "evolve"
+  images { image: "/developer/assets/atlas/boss_placeholders/sky_tyrant.png" }
+  playback: PLAYBACK_NONE
+  fps: 1
+  flip_horizontal: 0
+  flip_vertical: 0
+}
+
+animations {
+  id: "teleport_out"
+  images { image: "/developer/assets/atlas/boss_placeholders/sky_tyrant.png" }
+  playback: PLAYBACK_NONE
+  fps: 1
+  flip_horizontal: 0
+  flip_vertical: 0
+}
+
+animations {
+  id: "teleport_in"
+  images { image: "/developer/assets/atlas/boss_placeholders/sky_tyrant.png" }
+  playback: PLAYBACK_NONE
+  fps: 1
+  flip_horizontal: 0
+  flip_vertical: 0
+}
+
+animations {
+  id: "dash"
+  images { image: "/developer/assets/atlas/boss_placeholders/sky_tyrant.png" }
+  playback: PLAYBACK_NONE
+  fps: 1
+  flip_horizontal: 0
+  flip_vertical: 0
+}
+
+animations {
+  id: "leap"
+  images { image: "/developer/assets/atlas/boss_placeholders/sky_tyrant.png" }
+  playback: PLAYBACK_NONE
+  fps: 1
+  flip_horizontal: 0
+  flip_vertical: 0
+}
+
+animations {
+  id: "stomp"
+  images { image: "/developer/assets/atlas/boss_placeholders/sky_tyrant.png" }
+  playback: PLAYBACK_NONE
+  fps: 1
+  flip_horizontal: 0
+  flip_vertical: 0
+}
+
+animations {
+  id: "hurt"
+  images { image: "/developer/assets/atlas/boss_placeholders/sky_tyrant.png" }
+  playback: PLAYBACK_NONE
+  fps: 1
+  flip_horizontal: 0
+  flip_vertical: 0
+}
+
+animations {
+  id: "stagger"
+  images { image: "/developer/assets/atlas/boss_placeholders/sky_tyrant.png" }
+  playback: PLAYBACK_NONE
+  fps: 1
+  flip_horizontal: 0
+  flip_vertical: 0
+}
+
+animations {
+  id: "stun"
+  images { image: "/developer/assets/atlas/boss_placeholders/sky_tyrant.png" }
+  playback: PLAYBACK_NONE
+  fps: 1
+  flip_horizontal: 0
+  flip_vertical: 0
+}
+
+animations {
+  id: "die"
+  images { image: "/developer/assets/atlas/boss_placeholders/sky_tyrant.png" }
+  playback: PLAYBACK_NONE
+  fps: 1
+  flip_horizontal: 0
+  flip_vertical: 0
+}
+
+animations {
+  id: "death"
+  images { image: "/developer/assets/atlas/boss_placeholders/sky_tyrant.png" }
+  playback: PLAYBACK_NONE
+  fps: 1
+  flip_horizontal: 0
+  flip_vertical: 0
+}
+
+animations {
+  id: "death_phase_1"
+  images { image: "/developer/assets/atlas/boss_placeholders/sky_tyrant.png" }
+  playback: PLAYBACK_NONE
+  fps: 1
+  flip_horizontal: 0
+  flip_vertical: 0
+}
+
+animations {
+  id: "death_final"
+  images { image: "/developer/assets/atlas/boss_placeholders/sky_tyrant.png" }
+  playback: PLAYBACK_NONE
+  fps: 1
+  flip_horizontal: 0
+  flip_vertical: 0
+}
+
+animations {
+  id: "spawn"
+  images { image: "/developer/assets/atlas/boss_placeholders/sky_tyrant.png" }
+  playback: PLAYBACK_NONE
+  fps: 1
+  flip_horizontal: 0
+  flip_vertical: 0
+}
+
+animations {
+  id: "intro"
+  images { image: "/developer/assets/atlas/boss_placeholders/sky_tyrant.png" }
+  playback: PLAYBACK_NONE
+  fps: 1
+  flip_horizontal: 0
+  flip_vertical: 0
+}
+
+animations {
+  id: "taunt"
+  images { image: "/developer/assets/atlas/boss_placeholders/sky_tyrant.png" }
+  playback: PLAYBACK_NONE
+  fps: 1
+  flip_horizontal: 0
+  flip_vertical: 0
+}
+
+animations {
+  id: "celebrate"
+  images { image: "/developer/assets/atlas/boss_placeholders/sky_tyrant.png" }
+  playback: PLAYBACK_NONE
+  fps: 1
+  flip_horizontal: 0
+  flip_vertical: 0
+}
+
+animations {
+  id: "rest"
+  images { image: "/developer/assets/atlas/boss_placeholders/sky_tyrant.png" }
+  playback: PLAYBACK_NONE
+  fps: 1
+  flip_horizontal: 0
+  flip_vertical: 0
+}
+
+animations {
+  id: "vulnerable"
+  images { image: "/developer/assets/atlas/boss_placeholders/sky_tyrant.png" }
+  playback: PLAYBACK_NONE
+  fps: 1
+  flip_horizontal: 0
+  flip_vertical: 0
+}
+
+animations {
+  id: "boss_warden"
+  images { image: "/developer/assets/atlas/boss_placeholders/sky_tyrant.png" }
+  playback: PLAYBACK_NONE
+  fps: 1
+  flip_horizontal: 0
+  flip_vertical: 0
+}
+
+animations {
+  id: "boss_tyrant"
+  images { image: "/developer/assets/atlas/boss_placeholders/sky_tyrant.png" }
+  playback: PLAYBACK_NONE
+  fps: 1
+  flip_horizontal: 0
+  flip_vertical: 0
+}
+
+margin: 0

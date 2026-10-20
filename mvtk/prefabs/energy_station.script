@@ -1,0 +1,349 @@
+-- mvtk/prefabs/energy_station.script
+-- ============================================================================
+-- ENERGY STATION (Mana/MP Refill Point)
+-- ============================================================================
+-- Interactable station that restores player energy/mana.
+-- Similar to health_station but for the energy resource.
+--
+-- TILED PROPERTIES:
+--   station_id       - Unique station identifier (optional)
+--   prompt_text      - Interaction label (default: "Restore Energy")
+--   restore_amount   - How much energy to restore (0 = full)
+--   restore_percent  - Restore % of max energy (0.0-1.0)
+--   resource_type    - "energy" or "stamina" (default: energy)
+--   uses             - Number of uses before depleted (-1 = infinite)
+--   cooldown         - Seconds before can be used again
+--   cost             - Currency cost to use (0 = free)
+--   require_interact - If true, requires button press; if false, auto-trigger
+--   sound_id         - Sound to play when used
+--   particle_id      - Particle effect when used
+--
+-- CONFIGURATION:
+--   All values come from Tiled properties.
+--   DO NOT hardcode values here.
+-- ============================================================================
+
+local PU = require "mvtk.prefabs.prefab_utils"
+local Util = require "mvtk.core.util"
+
+local function play_sprite_animation(animation)
+    local states = { depleted="depleted", used="used", health_station_idle="default", energy_station_idle="default" }
+    if states[animation] then require("mvtk.tiled.object_presentation").restore(states[animation]) end
+    if Util.component_exists("#sprite") then
+        msg.post("#sprite", hash("play_animation"), { id = hash(animation) })
+    end
+end
+
+go.property("station_id", "")
+go.property("prompt_text", "Restore Energy")
+go.property("restore_amount", 0)
+go.property("restore_percent", 0)
+go.property("resource_type", "energy")
+go.property("uses", -1)
+go.property("cooldown", 0)
+go.property("cost", 0)
+go.property("require_interact", true)
+go.property("sound_id", "energy_restore")
+go.property("particle_id", "energy_sparkle")
+go.property("range", 96)
+
+local PLAYER_GROUP = hash("player")
+
+local function optional_text(value)
+    return PU.optional_id(value) or ""
+end
+
+local function resolve_label(self)
+    local label = Util.hash_text(self.prompt_text, "Restore Energy")
+    if self.cost and self.cost > 0 then
+        label = string.format("%s (%d)", label, self.cost)
+    end
+    return label
+end
+
+local function to_bool(value, default)
+    if value == nil then return default end
+    if type(value) == "boolean" then return value end
+    if type(value) == "number" then return value ~= 0 end
+    if type(value) == "string" then
+        local lower = value:lower()
+        if lower == "true" or lower == "1" or lower == "yes" then return true end
+        if lower == "false" or lower == "0" or lower == "no" then return false end
+    end
+    return default
+end
+
+local function sync_interaction(self)
+    local im = PU.get_interaction()
+    if not im then return end
+    if self.require_interact and not self.depleted then
+        if im.register then
+            im.register(msg.url(), {
+                label = resolve_label(self),
+                range = tonumber(self.range) or 96,
+                priority = 5,
+                position_fn = function(url)
+                    return go.get_world_position(url)
+                end,
+            })
+        end
+    elseif im.unregister then
+        im.unregister(msg.url())
+    end
+end
+
+local function spend_currency(amount)
+    amount = tonumber(amount) or 0
+    if amount <= 0 then return true end
+
+    local ok_currency, Currency = pcall(require, "mvtk.game.currency")
+    if ok_currency and Currency then
+        local can_afford = true
+        if Currency.can_afford then
+            local ok, result = pcall(Currency.can_afford, amount)
+            can_afford = ok and result and true or false
+        elseif Currency.get then
+            local ok, result = pcall(Currency.get)
+            can_afford = ok and ((tonumber(result) or 0) >= amount)
+        end
+
+        if not can_afford then
+            return false
+        end
+
+        if Currency.spend then
+            local ok = pcall(Currency.spend, amount)
+            if ok then return true end
+        elseif Currency.remove then
+            local ok = pcall(Currency.remove, amount)
+            if ok then return true end
+        end
+    end
+
+    local ok_inv, Inv = pcall(require, "mvtk.core.inventory")
+    if not ok_inv or not Inv then
+        return false
+    end
+
+    local current = tonumber((Inv.get_currency and Inv.get_currency()) or 0) or 0
+    if current < amount then
+        return false
+    end
+
+    if Inv.set_currency then
+        Inv.set_currency(current - amount)
+        return true
+    end
+    if Inv.add_currency then
+        Inv.add_currency(-amount)
+        return true
+    end
+
+    return false
+end
+
+-----------------------------------------------------------
+-- Local Helper Functions
+-----------------------------------------------------------
+
+local function try_use(self)
+    -- Check if depleted
+    if self.depleted then
+        -- Play error sound
+        PU.play_sound(hash("error"))
+        return false
+    end
+
+    -- Check cooldown
+    if self.cooldown_timer > 0 then
+        return false
+    end
+
+    -- Check currency cost
+    if self.cost > 0 then
+        if not spend_currency(self.cost) then
+            -- Play error sound
+            PU.play_sound(hash("insufficient_funds"))
+            return false
+        end
+    end
+
+    -- Restore energy/stamina
+    local amount = tonumber(self.restore_amount) or 0
+    local percent = tonumber(self.restore_percent) or 0
+
+    local res_type = self.resource_type
+    local is_stamina = false
+    if type(res_type) == "string" then
+        is_stamina = res_type:lower() == "stamina"
+    else
+        is_stamina = res_type == hash("stamina")
+    end
+    if is_stamina then
+        local ok_am, AbilityManager = pcall(require, "mvtk.abilities.ability_manager")
+        if ok_am and AbilityManager and AbilityManager.get_stamina and AbilityManager.set_stamina then
+            local current, max = AbilityManager.get_stamina()
+            if amount == 0 and percent > 0 and max and max > 0 then
+                amount = math.floor(max * percent)
+            end
+            if amount == 0 then
+                AbilityManager.set_stamina(max, max)
+            else
+                AbilityManager.set_stamina(current + amount, max)
+            end
+        end
+    else
+        local ok_es, EnergyState = pcall(require, "mvtk.player.energy_state")
+        if ok_es and EnergyState and EnergyState.get and EnergyState.set then
+            local current, max = EnergyState.get()
+            current, max = tonumber(current) or 0, tonumber(max) or 0
+            -- Nothing to restore: say so instead of silently spending a use.
+            if max > 0 and current >= max then
+                PU.toast("Energy already full", 2.0)
+                return false
+            end
+            if amount == 0 and percent > 0 and max > 0 then
+                amount = math.floor(max * percent)
+            end
+            if amount == 0 then
+                EnergyState.set(max, max)
+            else
+                EnergyState.add(amount, { reason = "energy_station" })
+            end
+            local after = tonumber((EnergyState.get())) or current
+            PU.toast(string.format("Energy restored (+%s)", tostring(math.max(0, after - current))), 2.0)
+        end
+    end
+
+    -- Play sound
+    PU.play_sound(optional_text(self.sound_id))
+
+    -- Play particle effect
+    require("mvtk.tiled.object_presentation").emit("interacted")
+
+    -- Visual feedback
+    play_sprite_animation("use")
+
+    -- Update uses
+    if self.uses_remaining > 0 then
+        self.uses_remaining = self.uses_remaining - 1
+        if self.uses_remaining <= 0 then
+            self.depleted = true
+            play_sprite_animation("depleted")
+            sync_interaction(self)
+        end
+    end
+
+    -- Start cooldown
+    self.cooldown_timer = self.cooldown
+
+    print(string.format("[ENERGY_STATION] Used. Restored %s energy. Uses remaining: %s",
+        amount == 0 and "full" or tostring(amount),
+        self.uses_remaining == -1 and "infinite" or tostring(self.uses_remaining)))
+
+    return true
+end
+
+-----------------------------------------------------------
+-- Lifecycle Functions
+-----------------------------------------------------------
+
+function init(self)
+    -- Depleted stations with only default art dim (object_art.lua).
+    require("mvtk.tiled.object_presentation").set_state_fallbacks(
+        (Util.require_module("developer.config.object_art") or {}).station_state_fallbacks)
+    self.sound_id = optional_text(self.sound_id)
+    self.particle_id = optional_text(self.particle_id)
+    self.uses_remaining = self.uses
+    self.cooldown_timer = 0
+    self.player_in_range = false
+    self.depleted = false
+    self.require_interact = to_bool(self.require_interact, true)
+    self.prompt_text = self.prompt_text or "Restore Energy"
+    self.resource_type = self.resource_type or "energy"
+    sync_interaction(self)
+end
+
+function update(self, dt)
+    -- Update cooldown timer
+    if self.cooldown_timer > 0 then
+        self.cooldown_timer = self.cooldown_timer - dt
+    end
+end
+
+function on_message(self, message_id, message, sender)
+    if message_id == hash("trigger_response") then
+        local other_group = message and (message.other_group or message.group)
+        if other_group == PLAYER_GROUP then
+            if message.enter then
+                self.player_in_range = true
+                if not self.require_interact then
+                    -- Auto-trigger on contact
+                    try_use(self)
+                end
+            else
+                self.player_in_range = false
+            end
+        end
+
+    elseif message_id == hash("mvtk_interact") then
+        if self.require_interact and not self.depleted then
+            try_use(self)
+        end
+
+    elseif message_id == hash("interact") then
+        -- Legacy fallback
+        if self.player_in_range and self.require_interact and not self.depleted then
+            try_use(self)
+        end
+
+    elseif message_id == hash("apply_tiled_props") then
+        local props = message.properties or {}
+        if props.station_id then
+            self.station_id = props.station_id
+        end
+        if props.prompt_text ~= nil then self.prompt_text = tostring(props.prompt_text) end
+        if props.label ~= nil and (props.prompt_text == nil) then
+            self.prompt_text = tostring(props.label)
+        end
+        if props.restore_amount then self.restore_amount = tonumber(props.restore_amount) or self.restore_amount end
+        if props.restore_percent then self.restore_percent = tonumber(props.restore_percent) or self.restore_percent end
+        if props.resource_type then
+            self.resource_type = props.resource_type
+        end
+        if props.uses then
+            self.uses = tonumber(props.uses) or self.uses
+            self.uses_remaining = self.uses
+        end
+        if props.cooldown then self.cooldown = tonumber(props.cooldown) or self.cooldown end
+        if props.cost then self.cost = tonumber(props.cost) or self.cost end
+        if props.range ~= nil then self.range = tonumber(props.range) or self.range end
+        local require_interact = props.require_interact
+        if require_interact == nil then require_interact = props.requires_interact end
+        if require_interact ~= nil then
+            self.require_interact = to_bool(require_interact, self.require_interact)
+        end
+        if props.sound_id ~= nil then
+            self.sound_id = optional_text(props.sound_id)
+        end
+        if props.particle_id ~= nil then
+            self.particle_id = optional_text(props.particle_id)
+        end
+        sync_interaction(self)
+
+    elseif message_id == hash("reset") then
+        -- Reset station (for room reload or game reset)
+        self.uses_remaining = self.uses
+        self.cooldown_timer = 0
+        self.depleted = false
+        play_sprite_animation("energy_station_idle")
+        sync_interaction(self)
+    end
+end
+
+function final(self)
+    local im = PU.get_interaction()
+    if im and im.unregister then
+        im.unregister(msg.url())
+    end
+end

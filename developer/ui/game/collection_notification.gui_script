@@ -1,0 +1,85 @@
+-- developer/ui/game/collection_notification.gui_script
+local M = {}
+
+local DISPLAY_DURATION = 3.0
+local notification_queue = {}
+local current_notification = nil
+local timer = 0
+
+local function show_next_notification(self)
+    if #notification_queue == 0 then return end
+
+    current_notification = table.remove(notification_queue, 1)
+    timer = DISPLAY_DURATION
+
+    gui.set_text(self.title, current_notification.title)
+    gui.set_text(self.description, current_notification.description)
+    gui.play_flipbook(self.icon, current_notification.icon)
+
+    gui.set_enabled(self.notification_box, true)
+    gui.set_position(self.notification_box, vmath.vector3(0, -100, 0))
+    gui.animate(self.notification_box, "position.y", 0, gui.EASING_OUTBACK, 0.5)
+end
+
+local function hide_notification(self)
+    gui.animate(self.notification_box, "position.y", -100, gui.EASING_INBACK, 0.3, 0, function()
+        gui.set_enabled(self.notification_box, false)
+        current_notification = nil
+    end)
+end
+
+local function get_title_for_type(type)
+    local titles = {
+        health_upgrades = "Health Upgrade Found!",
+        energy_upgrades = "Energy Upgrade Found!",
+        lore_tablets = "Lore Tablet Discovered!",
+        map_fragments = "Map Fragment Acquired!",
+        secrets_found = "Secret Found!"
+    }
+    return titles[type] or "Item Collected!"
+end
+
+local function get_icon_for_type(type)
+    local icons = {
+        health_upgrades = "icon_health",
+        energy_upgrades = "icon_energy",
+        lore_tablets = "icon_lore",
+        map_fragments = "icon_map",
+        secrets_found = "icon_secret"
+    }
+    return icons[type] or "icon_default"
+end
+
+function init(self)
+    self.root = gui.get_node("root")
+    self.notification_box = gui.get_node("notification_box")
+    self.icon = gui.get_node("icon")
+    self.title = gui.get_node("title")
+    self.description = gui.get_node("description")
+    gui.set_enabled(self.notification_box, false)
+end
+
+function update(self, dt)
+    if current_notification then
+        timer = timer - dt
+        if timer <= 0 then
+            hide_notification(self)
+            show_next_notification(self)
+        end
+    elseif #notification_queue > 0 then
+        show_next_notification(self)
+    end
+end
+
+function on_message(self, message_id, message, sender)
+    if message_id == hash("show_collection_notification") then
+        local notification = {
+            title = get_title_for_type(message.type),
+            description = message.id,
+            icon = get_icon_for_type(message.type)
+        }
+        table.insert(notification_queue, notification)
+    end
+end
+
+return M

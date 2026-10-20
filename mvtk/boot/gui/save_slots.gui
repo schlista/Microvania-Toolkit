@@ -1,0 +1,25 @@
+script: "/mvtk/boot/gui/save_slots.gui_script"
+fonts {
+  name: "system"
+  font: "/builtins/fonts/default.font"
+}
+nodes {
+  position {
+    x: 480.0
+    y: 270.0
+  }
+  size {
+    x: 960.0
+    y: 540.0
+  }
+  color {
+    x: 0.0
+    y: 0.0
+    z: 0.0
+  }
+  type: TYPE_BOX
+  id: "root"
+  alpha: 0.6
+}
+material: "/builtins/materials/gui.material"
+adjust_reference: ADJUST_REFERENCE_PARENT

@@ -1,0 +1,169 @@
+-- mvtk/pickups/pickup_ability.script
+local AbilityManager = require "mvtk.abilities.ability_manager"
+local Progress = require "mvtk.game.progression.progression_manager"
+local C = require "mvtk.core.constants"
+local Checkpoint = require "mvtk.core.checkpoint"
+local Debug = require "developer.config.debug_config"
+local Util = require "mvtk.core.util"
+local AbilityConfigOk, AbilityConfig = pcall(require, "developer.config.abilities")
+local RuntimeSettingsOk, RuntimeSettings = pcall(require, "developer.config.runtime_settings")
+local AbilityDefaults = RuntimeSettingsOk and RuntimeSettings.get_ability_defaults() or nil
+
+-- Ability id, e.g., "double_jump", "air_dash", "wall_climb"
+go.property("ability", "double_jump")
+
+local DEFAULT_ABILITY_HASH_LOOKUP = {
+  [hash("slide")] = "slide",
+  [hash("slide_iframes")] = "slide_iframes",
+  [hash("double_jump")] = "double_jump",
+  [hash("extended_jump")] = "extended_jump",
+  [hash("air_dash")] = "air_dash",
+  [hash("air_dash_iframes")] = "air_dash_iframes",
+  [hash("wall_climb")] = "wall_climb",
+  [hash("glide")] = "glide",
+  [hash("charge_attack")] = "charge_attack",
+  [hash("down_strike")] = "down_strike",
+  [hash("ranged_attack")] = "ranged_attack",
+}
+
+local ABILITY_HASH_LOOKUP = {}
+local function add_lookup(id)
+  if type(id) == "string" and id ~= "" then
+    ABILITY_HASH_LOOKUP[hash(id)] = id
+  end
+end
+
+if AbilityConfigOk and AbilityConfig and type(AbilityConfig.abilities) == "table" then
+  for ability_id, _ in pairs(AbilityConfig.abilities) do
+    add_lookup(ability_id)
+  end
+end
+
+if AbilityDefaults and type(AbilityDefaults.abilities) == "table" then
+  for ability_id, _ in pairs(AbilityDefaults.abilities) do
+    add_lookup(ability_id)
+  end
+end
+
+for key, value in pairs(DEFAULT_ABILITY_HASH_LOOKUP) do
+  ABILITY_HASH_LOOKUP[key] = value
+end
+
+local function pickup_log(...)
+  if Debug.global.enable or Debug.gameplay.ability_manager or (Debug.collectibles and Debug.collectibles.pickup) then
+    print(...)
+  end
+end
+
+-- Route bare print()s in this script through the gated logger so the
+-- ability-pickup chatter respects developer/config/debug_config.lua.
+local print = pickup_log
+
+local function resolve_ability_id(value)
+  if not value then return nil end
+  if type(value) == "string" then return value end
+  -- Preferred path: shared util that handles hash/string/userdata uniformly
+  -- and strips the legacy "ability_" prefix.
+  local normalized = Util.normalize_ability_id and Util.normalize_ability_id(value) or nil
+  if type(normalized) == "string" and normalized ~= "" then
+    return normalized
+  end
+  -- Fallback: config-derived hash lookup for properties whose source string
+  -- has been GC'd from the engine's hash table (Util can't reverse them).
+  local mapped = ABILITY_HASH_LOOKUP[value]
+  if mapped then return mapped end
+  return nil
+end
+
+local function is_unlocked(ability_id)
+  if type(ability_id) ~= "string" or ability_id == "" then
+    print(string.format("[ABILITY_PICKUP] is_unlocked(%s) -> false (invalid id)", tostring(ability_id)))
+    return false
+  end
+  local ok_prog, unlocked_prog = pcall(Progress.is_ability_unlocked, ability_id)
+  print(string.format("[ABILITY_PICKUP] Progress.is_ability_unlocked(%s) ok=%s result=%s", ability_id, tostring(ok_prog), tostring(unlocked_prog)))
+  if ok_prog and unlocked_prog then
+    return true
+  end
+  local ok_am, unlocked = pcall(AbilityManager.is_ability_unlocked, ability_id)
+  print(string.format("[ABILITY_PICKUP] AbilityManager.is_ability_unlocked(%s) ok=%s result=%s", ability_id, tostring(ok_am), tostring(unlocked)))
+  return ok_am and unlocked or false
+end
+
+function init(self)
+  print(string.format("[ABILITY_PICKUP] ========== INIT START =========="))
+  self.t = 0
+  self.ability_hash = self.ability
+  self.ability_id = resolve_ability_id(self.ability_hash) or ""
+  self.label = self.ability_id
+  print(string.format("[ABILITY_PICKUP] raw_hash=%s resolved_id=%s", tostring(self.ability_hash), tostring(self.ability_id)))
+
+  -- Check AbilityManager state directly
+  local info = AbilityManager.get_ability_info and AbilityManager.get_ability_info(self.ability_id)
+  if info then
+    print(string.format("[ABILITY_PICKUP] AbilityManager info: unlocked=%s enabled=%s", tostring(info.unlocked), tostring(info.enabled)))
+  else
+    print(string.format("[ABILITY_PICKUP] AbilityManager info: nil (ability not in registry)"))
+  end
+
+  -- Check config
+  if AbilityConfigOk and AbilityConfig and AbilityConfig.abilities then
+    local cfg = AbilityConfig.abilities[self.ability_id]
+    if cfg then
+      print(string.format("[ABILITY_PICKUP] Config: starts_unlocked=%s enabled=%s", tostring(cfg.starts_unlocked), tostring(cfg.enabled)))
+    else
+      print(string.format("[ABILITY_PICKUP] Config: ability not found in abilities.lua"))
+    end
+  end
+
+  self.active = not is_unlocked(self.ability_id)
+  print(string.format("[ABILITY_PICKUP] FINAL: active=%s (will %s)", tostring(self.active), self.active and "STAY" or "DELETE"))
+  print(string.format("[ABILITY_PICKUP] ========== INIT END =========="))
+  if not self.active then
+    go.delete('.')
+  end
+end
+
+function update(self, dt)
+  if not self.active then return end
+  -- Float and pulse effect. The earlier pcall on go.set_scale was a
+  -- per-frame defensive wrap; go.set_scale on `.` cannot fail unless the
+  -- script's own game object is being deleted -- in which case `update`
+  -- will not be invoked again. Drop the per-frame pcall.
+  self.t = (self.t or 0) + dt
+  local p = go.get_position()
+  p.y = p.y + math.sin(self.t * 2.0) * 12 * dt
+  go.set_position(p)
+  local s = 1.0 + 0.05 * math.sin(self.t * 4.0)
+  go.set_scale(vmath.vector3(s, s, 1))
+end
+
+local function toast(text)
+  pcall(msg.post, msg.url("main:/toast_gui#toast"), hash('toast'), { text = tostring(text) })
+end
+
+function on_message(self, message_id, message, sender)
+  if not self.active then return end
+  if message_id ~= hash('trigger_response') or not message.enter
+      or not message.other_id or message.group ~= hash('player') then return end
+
+  local id = self.ability_id
+  self.active = false
+  local saved, err = Checkpoint.batch("ability_unlock", function()
+    Progress.unlock_ability(id, { enabled = true, source = "pickup" })
+    assert(AbilityManager.is_ability_unlocked(id), "Ability could not be unlocked: " .. tostring(id))
+  end)
+  if not saved then
+    self.active = true -- The same pickup can retry without awarding twice.
+    toast("Ability could not be saved. Touch the pickup again to retry.")
+    print("[ABILITY_PICKUP] Save failed: " .. tostring(err))
+    return
+  end
+  local info = AbilityManager.get_ability_info(id)
+  local label = (info and info.name) or id:gsub("_", " ")
+  if C.URL.PLAYER then
+    msg.post(C.URL.PLAYER, C.MSG.GRANT_ABILITY or hash('mvtk_grant_ability'), { ability = id, enabled = true })
+  end
+  toast("Unlocked: " .. label)
+  go.delete('.')
+end

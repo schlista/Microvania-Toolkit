@@ -1,0 +1,218 @@
+-- mvtk/prefabs/lever.script
+-- Toggle switch that emits messages via TriggerBus.
+
+local Flags = require "mvtk.core.flags"
+local TriggerBus = require "mvtk.world.trigger_bus"
+local PU = require "mvtk.prefabs.prefab_utils"
+local Util = require "mvtk.core.util"
+local Presentation = require "mvtk.tiled.object_presentation"
+local Art = require "developer.config.object_art"
+local Elevators = require "mvtk.elevators.elevator_manager"
+
+local DEFAULT_ON = "activate"
+local DEFAULT_OFF = "deactivate"
+local DEFAULT_LABEL_ON = "Switch On"
+local DEFAULT_LABEL_OFF = "Switch Off"
+local MSG_FORCE_OFF = hash("mvtk_force_off")
+
+go.property("room_id", "") -- Room ownership emitted by Create Rooms.
+go.property("lever_id", "")
+go.property("target_id", "")
+go.property("starts_on", false)
+go.property("toggle", true)
+go.property("message_on", "")
+go.property("message_off", "")
+go.property("label_on", "")
+go.property("label_off", "")
+go.property("range", 96)
+go.property("cooldown", 0.2)
+go.property("set_flag_on", "")
+go.property("set_flag_off", "")
+go.property("requires_flag", "")
+go.property("sound_on", "")
+go.property("sound_off", "")
+go.property("on_animation", "")
+go.property("off_animation", "")
+
+go.property("reset_delay", 0)
+
+local function resolve_message_id(value, fallback)
+    -- Authored message properties are text; hash them at the message boundary.
+    -- Preserve engine hashes supplied by runtime callers without reverse lookup.
+    if type(value) == "userdata" then
+        return value == hash("") and hash(fallback) or value
+    end
+    local s = PU.normalize_hash_string(value)
+    return hash(s or fallback)
+end
+
+local function update_label(self)
+    local label = self.state_on and (self.label_on_str or DEFAULT_LABEL_ON)
+        or (self.label_off_str or DEFAULT_LABEL_OFF)
+    PU.update_interaction_label(label)
+end
+
+local function update_sprite(self)
+    Presentation.restore(self.state_on and "on" or "off")
+    if not Util.component_exists("#sprite") then
+        return
+    end
+    local anim = self.state_on and (self.on_anim_str or "lever_on")
+        or (self.off_anim_str or "lever_idle")
+    if anim and anim ~= "" then
+        pcall(sprite.play_flipbook, "#sprite", hash(anim))
+    end
+end
+
+local function emit_trigger(self, msg_id)
+    local payload = {
+        lever_id = self.lever_id_key,
+        state = self.state_on and "on" or "off",
+    }
+    if self.target_id_key then
+        TriggerBus.emit(self.target_id_key, msg_id, payload)
+    else
+        pcall(msg.post, msg.url("main:/main_go#script"), msg_id, payload)
+    end
+end
+
+local function set_state(self, on, opts)
+    if self.state_on == on then return end
+    opts = opts or {}
+    local emit = opts.emit ~= false
+    local play_sfx = opts.play_sound ~= false
+
+    self.state_on = on and true or false
+    if self.state_on then
+        if self.flag_on_str then Flags.set(self.flag_on_str, true) end
+        if emit then
+            emit_trigger(self, self.msg_on)
+        end
+        if play_sfx then
+            PU.play_sound(self.sound_on, { room_id = self.room_id })
+        end
+    else
+        if self.flag_off_str then Flags.set(self.flag_off_str, true) end
+        if emit then
+            emit_trigger(self, self.msg_off)
+        end
+        if play_sfx then
+            PU.play_sound(self.sound_off, { room_id = self.room_id })
+        end
+    end
+    if emit then Presentation.emit("interacted", self.state_on and "on" or "off")
+    else Presentation.restore(self.state_on and "on" or "off") end
+    update_sprite(self)
+    update_label(self)
+end
+
+local function apply_props(self, props)
+    props = props or {}
+    if props.label_on ~= nil then self.label_on_str = tostring(props.label_on) end
+    if props.label_off ~= nil then self.label_off_str = tostring(props.label_off) end
+    if props.on_animation ~= nil then self.on_anim_str = tostring(props.on_animation) end
+    if props.off_animation ~= nil then self.off_anim_str = tostring(props.off_animation) end
+    update_label(self)
+end
+
+local function sync_call_switch(self)
+    if not self.call_stop then return end
+    local present, requested, failed, generation = Elevators.get_call_status(self.target_id_key, self.call_stop)
+    if present == nil or present or requested or failed or generation ~= self.call_generation then
+        self.call_pending = false
+    end
+    set_state(self, self.call_pending or present or requested or false, { emit = false, play_sound = false })
+end
+
+function init(self)
+    Presentation.set_state_fallbacks(Art.lever_state_fallbacks)
+    self.lever_id_key = PU.resolve_id(self.lever_id) or tostring(go.get_id())
+    self.target_id_key = PU.resolve_id(self.target_id)
+    self.msg_on = resolve_message_id(self.message_on, DEFAULT_ON)
+    self.msg_off = resolve_message_id(self.message_off, DEFAULT_OFF)
+    if self.msg_on == hash("elevator_call_bottom") then self.call_stop = "bottom"
+    elseif self.msg_on == hash("elevator_call_top") then self.call_stop = "top" end
+    self.flag_on_str = PU.normalize_hash_string(self.set_flag_on)
+    self.flag_off_str = PU.normalize_hash_string(self.set_flag_off)
+    self.requires_flag_str = PU.normalize_hash_string(self.requires_flag)
+    self.label_on_str = PU.normalize_hash_string(self.label_on)
+    self.label_off_str = PU.normalize_hash_string(self.label_off)
+    self.on_anim_str = PU.normalize_hash_string(self.on_animation)
+    self.off_anim_str = PU.normalize_hash_string(self.off_animation)
+
+    local state = self.starts_on == true
+    if self.flag_on_str and Flags.has(self.flag_on_str) then
+        state = true
+    end
+    self.state_on = state
+    self.cooldown_t = 0
+
+    local label = self.state_on and (self.label_on_str or DEFAULT_LABEL_ON)
+        or (self.label_off_str or DEFAULT_LABEL_OFF)
+    PU.register_interaction(label, self.range, 5)
+
+    update_sprite(self)
+    sync_call_switch(self)
+end
+
+function final(self)
+    PU.unregister_interaction()
+end
+
+function update(self, dt)
+    if self.cooldown_t and self.cooldown_t > 0 then
+        self.cooldown_t = math.max(0, self.cooldown_t - dt)
+    end
+    sync_call_switch(self)
+end
+
+function on_message(self, message_id, message, sender)
+    if message_id == hash("apply_tiled_props") and message and message.properties then
+        apply_props(self, message.properties)
+        return
+    end
+
+    if message_id == MSG_FORCE_OFF then
+        local msg_door_id = PU.normalize_hash_string(message and message.door_id)
+        if msg_door_id and self.target_id_key and msg_door_id ~= tostring(self.target_id_key) then
+            return
+        end
+        -- Keep visual/logical lever state in sync with timed targets that auto-close.
+        set_state(self, false, { emit = false, play_sound = false })
+        return
+    end
+
+    if message_id ~= hash("mvtk_interact") then
+        return
+    end
+
+    if self.requires_flag_str and not Flags.has(self.requires_flag_str) then
+        return
+    end
+
+    if self.cooldown_t and self.cooldown_t > 0 then
+        return
+    end
+
+    if self.call_stop then
+        local _, _, _, generation = Elevators.get_call_status(self.target_id_key, self.call_stop)
+        self.call_generation = generation
+        self.call_pending = true
+        set_state(self, true, { emit = false, play_sound = false })
+        emit_trigger(self, self.msg_on)
+        PU.play_sound(self.sound_on, { room_id = self.room_id })
+    elseif self.toggle then
+        set_state(self, not self.state_on)
+    else
+        emit_trigger(self, self.msg_on)
+        PU.play_sound(self.sound_on, { room_id = self.room_id })
+        if self.reset_delay and self.reset_delay > 0 then
+            timer.delay(self.reset_delay, false, function()
+                emit_trigger(self, self.msg_off)
+                PU.play_sound(self.sound_off, { room_id = self.room_id })
+            end)
+        end
+    end
+
+    self.cooldown_t = tonumber(self.cooldown) or 0
+end

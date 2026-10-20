@@ -1,0 +1,4 @@
+-- Minimal stub script for empty game objects used as markers.
+function init(self) end
+function final(self) end
+function on_message(self, message_id, message, sender) end

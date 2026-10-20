@@ -1,0 +1,4 @@
+script: "/developer/ui/game/boss_hp.gui_script"
+material: "/builtins/materials/gui.material"
+adjust_reference: ADJUST_REFERENCE_PARENT
+adjust_reference: ADJUST_REFERENCE_PARENT

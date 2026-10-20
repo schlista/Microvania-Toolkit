@@ -1,0 +1,866 @@
+--- Collectible Pickup Script
+-- Component script for collectible game objects
+-- Handles visuals, animations, collision, and collection
+--
+-- Properties:
+--   collectible_type (text) - Type ID from collectible_types.lua
+--   collectible_id (text)  - Unique identifier for persistence (optional override)
+--
+-- @script collectible
+
+local CollectibleManager = require "mvtk.collectibles.collectible_manager"
+local C = require "mvtk.core.constants"
+local KeyIds = require "mvtk.core.key_ids"
+local KeyResolver = require "mvtk.core.key_resolver"
+local SafeSound = require "mvtk.audio.safe_sound"
+local Debug = require "developer.config.debug_config"
+local Logger = require "mvtk.core.logger"
+local Util = require "mvtk.core.util"
+local Flags = nil
+pcall(function() Flags = require "mvtk.core.flags" end)
+local AuthoredObjectProps = nil
+pcall(function() AuthoredObjectProps = require "mvtk.tiled.authored_object_props" end)
+
+local log = Logger.get_logger("COLLECTIBLE")
+
+-- Conditional debug logging
+local function clog(...)
+    if Debug.global.enable or (Debug.collectibles and Debug.collectibles.pickup) then
+        log.debug(...)
+    end
+end
+
+go.property("collectible_type", "health_container")
+go.property("collectible_id", "")
+go.property("amount", 0)
+go.property("respawns", false)
+go.property("authored_rectangle", false)
+go.property("respawns_override", false)
+go.property("item_id", "")
+go.property("key_id", "")
+go.property("lore_id", "")
+go.property("lore_text", "")
+go.property("relic_id", "")
+go.property("relic_name", "")
+go.property("relic_description", "")
+go.property("area_id", "")
+go.property("area_name", "")
+go.property("reveal_radius", 0)
+go.property("ability_id", "")
+go.property("sprite_atlas", "")
+go.property("animation", "")
+go.property("show_popup", false)
+go.property("show_popup_override", false)
+go.property("popup_title", "")
+go.property("popup_description", "")
+go.property("set_flag_on_collect", "")
+
+-- Messages
+local MSG_TRIGGER_RESPONSE = hash("trigger_response")
+local MSG_CONTACT_POINT_RESPONSE = hash("contact_point_response")
+local COLLECT_INPUTS = {
+    [hash("key_up")] = true,
+    [hash("key_w")] = true,
+    [hash("gamepad_lpad_up")] = true,
+    [hash("gamepad_lstick_up")] = true,
+    [hash("key_e")] = true,
+    [hash("key_u")] = true,
+    [hash("gamepad_rshoulder")] = true,
+}
+local AUTO_COLLECT_RADIUS = 128
+local AUTO_COLLECT_RADIUS_SQ = AUTO_COLLECT_RADIUS * AUTO_COLLECT_RADIUS
+
+-- If collectible types reference a shared/global sound component (e.g. "/sound#item_hum"),
+-- calling sound.play() from every spawned collectible will stack multiple voices.
+-- Track a simple refcount so each ambient URL starts once and stops when unused.
+local AMBIENT_REFCOUNTS = {}
+
+local function ambient_key(url)
+    if url == nil then return nil end
+    return tostring(url)
+end
+
+local function ambient_acquire(url)
+    local key = ambient_key(url)
+    if not key then return end
+    local n = (AMBIENT_REFCOUNTS[key] or 0) + 1
+    AMBIENT_REFCOUNTS[key] = n
+    if n == 1 then
+        SafeSound.play(url)
+    end
+end
+
+local function ambient_release(url)
+    local key = ambient_key(url)
+    if not key then return end
+    local n = (AMBIENT_REFCOUNTS[key] or 0) - 1
+    if n <= 0 then
+        AMBIENT_REFCOUNTS[key] = nil
+        SafeSound.stop(url)
+    else
+        AMBIENT_REFCOUNTS[key] = n
+    end
+end
+
+local function hash_to_string_or_empty(value)
+    return Util.hash_text(value, "")
+end
+
+local function trim_string(value)
+    local s = tostring(value or "")
+    s = s:gsub("^%s+", ""):gsub("%s+$", "")
+    if s == "" then
+        return nil
+    end
+    return s
+end
+
+local function current_instance_tail()
+    local go_id = Util.go_id_text(go.get_id())
+    if not go_id then return nil end
+    return go_id:match("([^/]+)$") or go_id
+end
+
+local function infer_baked_collectible_id()
+    local tail = current_instance_tail()
+    if not tail then
+        return nil
+    end
+    if tail:match("_collectible_%d+$") or tail:match("_ability_%d+$") then
+        return tail
+    end
+    return nil
+end
+
+local function infer_room_id_from_collectible_id(collectible_id)
+    local s = trim_string(collectible_id)
+    if not s then
+        return nil
+    end
+    return s:match("^(.*)_collectible_%d+$")
+        or s:match("^(.*)_ability_%d+$")
+end
+
+local function infer_object_id_from_collectible_key(value)
+    local s = trim_string(value)
+    if not s then
+        return nil
+    end
+    return tonumber(s:match("_(%d+)$"))
+end
+
+local function apply_authored_collectible_props(self, props)
+    if type(props) ~= "table" then
+        return
+    end
+
+    if props.collectible_type ~= nil then self.collectible_type = tostring(props.collectible_type) end
+    if props.collectible_id ~= nil then self.collectible_id = tostring(props.collectible_id) end
+    if props.amount ~= nil then self.amount = tonumber(props.amount) or self.amount end
+    if props.respawns ~= nil then
+        self.respawns = props.respawns and true or false
+        self.respawns_override = true
+    end
+    if props.show_popup ~= nil then
+        self.show_popup = props.show_popup and true or false
+        self.show_popup_override = true
+    end
+    if props.item_id ~= nil then self.item_id = tostring(props.item_id) end
+    if props.key_id ~= nil then self.key_id = tostring(props.key_id) end
+    if props.lore_id ~= nil then self.lore_id = tostring(props.lore_id) end
+    if props.lore_text ~= nil then self.lore_text = tostring(props.lore_text) end
+    if props.relic_id ~= nil then self.relic_id = tostring(props.relic_id) end
+    if props.relic_name ~= nil then self.relic_name = tostring(props.relic_name) end
+    if props.relic_description ~= nil then self.relic_description = tostring(props.relic_description) end
+    if props.area_id ~= nil then self.area_id = tostring(props.area_id) end
+    if props.area_name ~= nil then self.area_name = tostring(props.area_name) end
+    if props.reveal_radius ~= nil then self.reveal_radius = tonumber(props.reveal_radius) or self.reveal_radius end
+    if props.ability_id ~= nil then self.ability_id = tostring(props.ability_id) end
+    if props.sprite_atlas ~= nil then self.sprite_atlas = tostring(props.sprite_atlas) end
+    if props.animation ~= nil then self.animation = tostring(props.animation) end
+    if props.popup_title ~= nil then self.popup_title = tostring(props.popup_title) end
+    if props.popup_description ~= nil then self.popup_description = tostring(props.popup_description) end
+    if props.set_flag_on_collect ~= nil then self.set_flag_on_collect = tostring(props.set_flag_on_collect) end
+
+    if (self.collectible_type == nil or self.collectible_type == "" or tostring(self.collectible_type) == "")
+        and props.ability_id ~= nil and tostring(props.ability_id) ~= "" then
+        self.collectible_type = "ability_" .. tostring(props.ability_id)
+    end
+
+    if (self.collectible_type == nil or self.collectible_type == "" or tostring(self.collectible_type) == "")
+        and (trim_string(props.relic_id) or trim_string(props.relic_name) or trim_string(props.relic_description)) then
+        self.collectible_type = "relic"
+    end
+end
+
+local function overlay_authored_collectible_props(self)
+    if not AuthoredObjectProps then
+        return
+    end
+
+    local baked_collectible_id = infer_baked_collectible_id()
+    local explicit_id = hash_to_string_or_empty(self.collectible_id)
+    local collectible_id = explicit_id ~= "" and explicit_id or baked_collectible_id
+    self.collectible_id = collectible_id or ""
+
+    local room_id = infer_room_id_from_collectible_id(baked_collectible_id or collectible_id)
+    local object_id = infer_object_id_from_collectible_key(baked_collectible_id or collectible_id)
+    if not room_id or not object_id then
+        return
+    end
+
+    local props = AuthoredObjectProps.get_properties(room_id, object_id)
+    if props then
+        local overlay = {}
+        for key, value in pairs(props) do
+            overlay[key] = value
+        end
+        if not overlay.collectible_id or tostring(overlay.collectible_id) == "" then
+            overlay.collectible_id = collectible_id
+        end
+        apply_authored_collectible_props(self, overlay)
+    end
+end
+
+local normalize_ability_id = Util.normalize_ability_id
+
+local function post_to_main_script(message_id, payload)
+    local targets = {
+        msg.url("main:/main_go#script"),
+    }
+    local seen = {}
+    for _, target in ipairs(targets) do
+        local key = tostring(target)
+        if target and not seen[key] then
+            seen[key] = true
+            pcall(msg.post, target, message_id, payload)
+        end
+    end
+end
+
+local function resolve_ability_id(self)
+    if not self or not self.is_ability then
+        return nil
+    end
+
+    if self.config and self.config.ability_id ~= nil then
+        local normalized = normalize_ability_id(self.config.ability_id)
+        if normalized and normalized ~= "" then
+            return normalized
+        end
+    end
+
+    local type_key = self.collectible_type_str
+    if (not type_key or type_key == "") and self.config and self.config.type then
+        type_key = tostring(self.config.type)
+    end
+    if type(type_key) == "string" then
+        local inferred = type_key:match("^ability_(.+)$")
+        if inferred and inferred ~= "" then
+            return normalize_ability_id(inferred)
+        end
+    end
+
+    return nil
+end
+
+local function string_property_or_empty(value)
+    return Util.hash_text(value, "")
+end
+
+local function build_runtime_custom_config(self)
+    local custom_config = {
+        id = self.id,
+    }
+
+    if self.respawns_override then
+        custom_config.respawns = self.respawns and true or false
+    end
+    if self.show_popup_override then
+        custom_config.show_popup = self.show_popup and true or false
+    end
+
+    local amount = tonumber(self.amount)
+    if amount and amount ~= 0 then
+        custom_config.value = amount
+    end
+
+    local item_id = string_property_or_empty(self.item_id)
+    if item_id == "" then
+        item_id = string_property_or_empty(self.key_id)
+    end
+    item_id = KeyIds.canonicalize(item_id) or item_id
+    if item_id ~= "" then
+        custom_config.item_id = item_id
+    end
+
+    local lore_id = string_property_or_empty(self.lore_id)
+    if lore_id ~= "" then
+        custom_config.lore_id = lore_id
+    end
+    local lore_text = string_property_or_empty(self.lore_text)
+    if lore_text ~= "" then
+        custom_config.lore_text = lore_text
+    end
+
+    local relic_id = string_property_or_empty(self.relic_id)
+    if relic_id ~= "" then
+        custom_config.relic_id = relic_id
+    end
+    local relic_name = string_property_or_empty(self.relic_name)
+    if relic_name ~= "" then
+        custom_config.name = relic_name
+    end
+    local relic_description = string_property_or_empty(self.relic_description)
+    if relic_description ~= "" then
+        custom_config.description = relic_description
+    end
+
+    local area_id = string_property_or_empty(self.area_id)
+    if area_id ~= "" then
+        custom_config.area_id = area_id
+    end
+    local area_name = string_property_or_empty(self.area_name)
+    if area_name ~= "" then
+        custom_config.area_name = area_name
+    end
+    local reveal_radius = tonumber(self.reveal_radius)
+    if reveal_radius and reveal_radius > 0 then
+        custom_config.reveal_radius = reveal_radius
+    end
+
+    local ability_id = normalize_ability_id(self.ability_id)
+    if ability_id and ability_id ~= "" then
+        custom_config.ability_id = ability_id
+    end
+
+    local sprite_atlas = string_property_or_empty(self.sprite_atlas)
+    if sprite_atlas ~= "" then
+        custom_config.sprite = sprite_atlas
+    end
+    local animation = string_property_or_empty(self.animation)
+    if animation ~= "" then
+        custom_config.animation = animation
+    end
+
+    local popup_title = string_property_or_empty(self.popup_title)
+    if popup_title ~= "" then
+        custom_config.popup_title = popup_title
+    end
+    local popup_description = string_property_or_empty(self.popup_description)
+    if popup_description ~= "" then
+        custom_config.popup_description = popup_description
+    end
+
+    return custom_config
+end
+
+local function apply_tiled_collect_flag(self)
+    if not (Flags and Flags.set) then
+        return
+    end
+
+    local set_flag = trim_string(self.set_flag_on_collect)
+    if set_flag then
+        Flags.set(set_flag, true)
+    end
+
+end
+
+local function refresh_registered_collectible(self, room_id)
+    local runtime_custom_config = build_runtime_custom_config(self)
+    if room_id and room_id ~= "" then
+        runtime_custom_config.room_id = room_id
+    end
+
+    local collectible = self.id and CollectibleManager.get_collectible(self.id) or nil
+    if collectible then
+        self.config = collectible.config
+        return true
+    end
+
+    local spawned_id = CollectibleManager.spawn_collectible(self.collectible_type_str, go.get_position(), runtime_custom_config)
+    if not spawned_id then
+        if self.id and CollectibleManager.is_collected(self.id) then
+            require("mvtk.tiled.object_presentation").restore(nil, true)
+            go.delete()
+            return false
+        end
+        collectible = self.id and CollectibleManager.get_collectible(self.id) or nil
+        if collectible then
+            self.config = collectible.config
+            return true
+        end
+        return false
+    end
+
+    if (not self.id or self.id == "") and spawned_id then
+        self.id = spawned_id
+    end
+
+    collectible = CollectibleManager.get_collectible(self.id) or CollectibleManager.get_collectible(spawned_id)
+    if not collectible then
+        return false
+    end
+
+    self.config = collectible.config
+    return true
+end
+
+local function is_ability_unlocked(ability_id)
+    local normalized = normalize_ability_id(ability_id)
+    if not normalized or normalized == "" then
+        return false
+    end
+
+    local ok_prog, Progression = pcall(require, "mvtk.game.progression.progression_manager")
+    if ok_prog and Progression and Progression.is_ability_unlocked then
+        local ok, unlocked = pcall(Progression.is_ability_unlocked, normalized)
+        if ok and unlocked then
+            return true
+        end
+    end
+
+    local ok_am, AbilityManager = pcall(require, "mvtk.abilities.ability_manager")
+    if ok_am and AbilityManager and AbilityManager.is_ability_unlocked then
+        local ok, unlocked = pcall(AbilityManager.is_ability_unlocked, normalized)
+        if ok and unlocked then
+            return true
+        end
+    end
+
+    return false
+end
+
+local function grant_ability_direct(self, ability_id)
+    local normalized_ability = normalize_ability_id(ability_id)
+    if not normalized_ability or normalized_ability == "" then
+        return false
+    end
+
+    -- Preferred path: ask main collection to unlock and forward to active player.
+    post_to_main_script(hash("grant_ability_request"), {
+        ability = normalized_ability,
+        enabled = true,
+        source = "collectible",
+        collectible_id = tostring(self and self.id or ""),
+    })
+
+    -- Unlock directly in progression/ability modules as a fail-safe.
+    local ok_prog, Progression = pcall(require, "mvtk.game.progression.progression_manager")
+    if ok_prog and Progression and Progression.unlock_ability then
+        -- "pickup" provenance: earned unlocks are never revoked on load.
+        pcall(Progression.unlock_ability, normalized_ability, { enabled = true, source = "pickup" })
+    end
+    local ok_am, AbilityManager = pcall(require, "mvtk.abilities.ability_manager")
+    if ok_am and AbilityManager and AbilityManager.unlock_ability then
+        pcall(AbilityManager.unlock_ability, normalized_ability, { enabled = true })
+    end
+
+    -- Ask the active player controller to refresh movement state immediately.
+    local msg_id = (C and C.MSG and C.MSG.GRANT_ABILITY) or hash("mvtk_grant_ability")
+    local function post_to_live_player(target)
+        local ok_url, u = pcall(msg.url, target)
+        if not ok_url or not u then return false end
+        local go_url = msg.url(u.socket, u.path, nil)
+        local ok_exists, exists = pcall(go.exists, go_url)
+        if not ok_exists or not exists then return false end
+        local script_url = msg.url(u.socket, u.path, hash("script"))
+        pcall(msg.post, script_url, msg_id, {
+            ability = normalized_ability,
+            enabled = true,
+            toast_when_known = false,
+        })
+        return true
+    end
+
+    if C and C.URL and C.URL.PLAYER then
+        post_to_live_player(C.URL.PLAYER)
+    end
+
+    return true
+end
+
+local function get_player_world_position(self)
+    local p = rawget(_G, "PLAYER_WORLD_POS")
+    if p then
+        return p
+    end
+    if self and self.remote_player_pos then
+        return self.remote_player_pos
+    end
+
+    local function try_url(u)
+        if not u then return nil end
+        -- Prefer direct position query; some runtime URL variants can fail go.exists()
+        -- even though position fetch works.
+        local ok_pos, pos = pcall(go.get_world_position, u)
+        if ok_pos and pos then
+            return pos
+        end
+        ok_pos, pos = pcall(go.get_position, u)
+        if ok_pos and pos then
+            return pos
+        end
+        return nil
+    end
+
+    if C.URL.PLAYER then
+        local pos = try_url(C.URL.PLAYER)
+        if pos then return pos end
+        if type(C.URL.PLAYER) == "userdata" then
+            local u = msg.url(C.URL.PLAYER)
+            pos = try_url(msg.url(u.socket, u.path, hash("script")))
+            if pos then return pos end
+        end
+    end
+
+    return nil
+end
+
+--- Setup visual appearance (local - must be defined before init)
+local function setup_visuals(self)
+    if not Util.component_exists("#sprite") then
+        return
+    end
+    local art = require("developer.config.item_art_generated")[self.collectible_type_str]
+    if art then
+        sprite.play_flipbook("#sprite", hash(art.animation))
+        go.set("#sprite", "size", vmath.vector3(art.width, art.height, 0))
+    else
+        Util.post_component_enabled("#sprite", false)
+        log.warn("Missing Tiled item catalog image for %s", tostring(self.collectible_type_str))
+    end
+end
+
+--- Collect this collectible (local - must be defined before init/update/on_message)
+-- @param collector Who collected it (player game object)
+local function collect(self, collector)
+    if self.collected then
+        return
+    end
+
+    self.collected = true
+
+    print(string.format("[COLLECTIBLE] COLLECTED id=%s type=%s collector=%s is_ability=%s",
+        tostring(self.id), tostring(self.collectible_type_str), tostring(collector), tostring(self.is_ability)))
+
+    -- Notify CollectibleManager
+    local ok_mgr, success = pcall(CollectibleManager.collect, self.id, "player")
+    if not ok_mgr then
+        print(string.format("[COLLECTIBLE] ERROR in CollectibleManager.collect: %s", tostring(success)))
+        success = false
+    end
+    print(string.format("[COLLECTIBLE] MANAGER_RESULT id=%s success=%s", tostring(self.id), tostring(success)))
+    if not ok_mgr or not success then
+        self.collected = false
+        return false
+    end
+
+    -- Queue removal before optional feedback so feedback errors cannot leave
+    -- a successfully collected object in the room.
+    go.delete()
+    require("mvtk.tiled.object_presentation").emit("collected", nil, true)
+    if Util.component_exists("#collision") then msg.post("#collision", "disable") end
+    if Util.component_exists("#sprite") then
+        go.set("#sprite", "tint.w", 0)
+        msg.post("#sprite", "disable")
+        local art = require("developer.config.item_art_generated")[self.collectible_type_str]
+        if art and art.effect_component then particlefx.play("#" .. art.effect_component) end
+    end
+
+    if self.is_ability then
+        self.player_nearby = false
+        msg.post(".", "release_input_focus")
+    end
+    apply_tiled_collect_flag(self)
+
+end
+
+--============================================================================
+-- DEFOLD LIFECYCLE FUNCTIONS
+--============================================================================
+
+function init(self)
+    self.player_nearby = false  -- Track if player is in range
+    self.is_ability = false  -- Track if this is an ability collectible
+    self.collected = false  -- Safety: ensure collected is always initialized early
+    overlay_authored_collectible_props(self)
+    self.set_flag_on_collect = hash_to_string_or_empty(self.set_flag_on_collect)
+
+    -- Get collectible type (script property may be a string or a hash)
+    local collectible_type_str = KeyResolver.resolve_collectible_type(self.collectible_type)
+    if not collectible_type_str then
+        collectible_type_str = Util.normalize_hash_string(self.collectible_type)
+    end
+    if not collectible_type_str or collectible_type_str == "" then
+        log.warn("Missing collectible type, removing")
+        require("mvtk.tiled.object_presentation").restore(nil, true)
+        go.delete()
+        return
+    end
+    self.collectible_type_str = collectible_type_str
+    self.remote_player_pos = nil
+    self.player_pos_request_t = 0
+
+    -- Check if this is an ability collectible (requires input to collect)
+    self.is_ability = collectible_type_str:match("^ability_") ~= nil
+
+    -- Ability pickups should never reappear once unlocked in this save.
+    if self.is_ability then
+        local inferred_ability = resolve_ability_id({
+            is_ability = true,
+            collectible_type_str = collectible_type_str,
+        })
+        if inferred_ability and is_ability_unlocked(inferred_ability) then
+            clog("Ability already unlocked (%s), removing pickup", tostring(inferred_ability))
+            -- Tell testers why the pickup vanished (dev-build toast, once per ability).
+            require("mvtk.collectibles.hidden_pickup_notice").announce(inferred_ability)
+            require("mvtk.tiled.object_presentation").restore(nil, true)
+            go.delete()
+            return
+        end
+    end
+
+    -- Use provided ID if present, otherwise generate from position
+    local provided_id = hash_to_string_or_empty(self.collectible_id)
+
+    local pos = go.get_position()
+    self.id = (provided_id ~= "" and provided_id) or CollectibleManager.generate_id(collectible_type_str, pos)
+
+    -- Check if already collected
+    if CollectibleManager.is_collected(self.id) then
+        -- Self-heal an inconsistent save: `collected_<id>` set but the reward
+        -- never landed. This really happens -- a checkpoint restore carrying a
+        -- pre-pickup ability payload could wipe the unlock after the collected
+        -- flag was persisted, leaving the player permanently locked out of an
+        -- ability whose pickup will never respawn. The pickup is the only
+        -- object that knows both facts (its flag AND its reward), so repair
+        -- here before removing ourselves. grant_ability_direct is idempotent.
+        if self.is_ability then
+            local owed_ability = resolve_ability_id(self)
+            if owed_ability and owed_ability ~= "" and not is_ability_unlocked(owed_ability) then
+                print(string.format(
+                    "[COLLECTIBLE] HEAL id=%s marked collected but ability '%s' is locked - re-granting",
+                    tostring(self.id), tostring(owed_ability)))
+                pcall(grant_ability_direct, self, owed_ability)
+                pcall(CollectibleManager.autosave_after_collect, "collectible_heal_regrant")
+            end
+        end
+        -- Already collected, don't spawn
+        clog("%s already collected, removing", self.id)
+        require("mvtk.tiled.object_presentation").restore(nil, true)
+        go.delete()
+        return
+    end
+
+    if not refresh_registered_collectible(self) then
+        log.error("Failed to get collectible data")
+        require("mvtk.tiled.object_presentation").restore(nil, true)
+        go.delete()
+        return
+    end
+
+    self.collected = false
+
+    -- Visual setup
+    setup_visuals(self)
+
+    -- Animation
+    self.bob_timer = 0
+    self.bob_amplitude = 5  -- Pixels
+    self.bob_speed = 2  -- Cycles per second
+    self.base_y = pos.y
+
+    -- Don't play ambient sounds on spawn - only collection sounds should play
+    -- if self.config.audio and self.config.audio.ambient then
+    --     ambient_acquire(self.config.audio.ambient)
+    -- end
+
+    print(string.format("[COLLECTIBLE] init id=%s type=%s ability=%s pos=(%.1f, %.1f, %.1f)",
+        tostring(self.id), collectible_type_str, tostring(self.is_ability), pos.x or 0, pos.y or 0, pos.z or 0))
+end
+
+function final(self)
+    require("mvtk.tiled.object_presentation").release_unbound()
+    -- Stop ambient sounds (if they were somehow started elsewhere)
+    -- if self.config and self.config.audio and self.config.audio.ambient then
+    --     ambient_release(self.config.audio.ambient)
+    -- end
+    if self.is_ability then
+        pcall(msg.post, ".", "release_input_focus")
+    end
+end
+
+function update(self, dt)
+    if self.collected then
+        return
+    end
+    -- The drawn rectangle is authoritative; do not move/rotate its collision
+    -- or collect via the old circular proximity fallback.
+    if self.authored_rectangle then return end
+
+    -- Bobbing animation
+    self.bob_timer = self.bob_timer + dt
+    local bob_offset = math.sin(self.bob_timer * self.bob_speed * math.pi * 2) * self.bob_amplitude
+
+    local pos = go.get_position()
+    pos.y = self.base_y + bob_offset
+    go.set_position(pos)
+
+    -- Rotate sprite for visual interest
+    local rotation = vmath.quat_rotation_z(self.bob_timer * 0.5)
+    go.set_rotation(rotation)
+
+    -- Fallback: auto-collect pickups by overlap/proximity.
+    -- This keeps pickups working even if trigger messages are missed.
+    self.player_pos_request_t = math.max(0, (self.player_pos_request_t or 0) - (dt or 0))
+    local player_pos = get_player_world_position(self)
+    if (not player_pos) and (self.player_pos_request_t or 0) <= 0 then
+        self.player_pos_request_t = 0.20
+        post_to_main_script(hash("debug_request_player_pos"), {
+            emitter = msg.url()
+        })
+        player_pos = get_player_world_position(self)
+    end
+    if player_pos then
+        local my_pos = go.get_world_position()
+        local dx = (player_pos.x or 0) - (my_pos.x or 0)
+        local dy = (player_pos.y or 0) - (my_pos.y or 0)
+        local d2 = dx * dx + dy * dy
+        if d2 <= AUTO_COLLECT_RADIUS_SQ then
+            clog("[AUTO_COLLECT] id=%s dist=%.2f", tostring(self.id), math.sqrt(d2))
+            local ok_c, err_c = pcall(collect, self, nil)
+            if not ok_c then
+                print(string.format("[COLLECTIBLE] AUTO_COLLECT_ERROR id=%s err=%s", tostring(self.id), tostring(err_c)))
+            end
+            return
+        end
+    end
+end
+
+function on_message(self, message_id, message, sender)
+    if self.authored_rectangle and message_id == MSG_TRIGGER_RESPONSE and message.enter == false then return end
+    if message_id == MSG_TRIGGER_RESPONSE or message_id == MSG_CONTACT_POINT_RESPONSE then
+        -- Player touched collectible
+        if message.other_group == hash("player") or message.group == hash("player") then
+            local msg_type = (message_id == MSG_TRIGGER_RESPONSE) and "trigger" or "contact"
+            print(string.format("[COLLECTIBLE] TOUCH id=%s msg=%s enter=%s group=%s other_group=%s other_id=%s",
+                tostring(self.id), msg_type, tostring(message.enter), tostring(message.group),
+                tostring(message.other_group), tostring(message.other_id)))
+            clog("[CONTACT] id=%s type=%s enter=%s other_group=%s other_id=%s", tostring(self.id), msg_type, tostring(message.enter), tostring(message.other_group), tostring(message.other_id))
+            -- Wrapped collect call with pcall to catch and report any errors
+            local function safe_collect(collector)
+                if self.collected then
+                    print(string.format("[COLLECTIBLE] SKIP id=%s already_collected=true", tostring(self.id)))
+                    return
+                end
+                print(string.format("[COLLECTIBLE] PRE_COLLECT id=%s is_ability=%s collected=%s config=%s",
+                    tostring(self.id), tostring(self.is_ability), tostring(self.collected), tostring(self.config ~= nil)))
+                local ok_c, err_c = pcall(collect, self, collector)
+                if not ok_c then
+                    print(string.format("[COLLECTIBLE] ERROR in collect() id=%s err=%s", tostring(self.id), tostring(err_c)))
+                end
+            end
+
+            if self.is_ability then
+                -- Keep nearby state/input focus for compatibility, but collect on touch
+                -- as primary behavior to avoid interaction deadlocks.
+                if message.enter ~= nil then
+                    if message.enter then
+                        self.player_nearby = true
+                        pcall(msg.post, ".", "acquire_input_focus")
+                        clog("Ability id=%s player_nearby=true", tostring(self.id))
+                        safe_collect(sender)
+                    else
+                        self.player_nearby = false
+                        pcall(msg.post, ".", "release_input_focus")
+                        clog("Ability id=%s player_nearby=false", tostring(self.id))
+                    end
+                elseif not self.player_nearby then
+                    -- contact response without enter flag (fallback)
+                    self.player_nearby = true
+                    pcall(msg.post, ".", "acquire_input_focus")
+                    clog("Ability id=%s player_nearby=true (contact fallback)", tostring(self.id))
+                    safe_collect(sender)
+                else
+                    -- Continuous contact fallback
+                    safe_collect(sender)
+                end
+            else
+                -- Other collectibles auto-collect on touch
+                safe_collect(sender)
+            end
+        end
+    elseif message_id == hash("collect_now") then
+        -- Manual collection triggered by player input
+        local ok_c, err_c = pcall(collect, self, sender)
+        if not ok_c then
+            print(string.format("[COLLECTIBLE] COLLECT_NOW_ERROR id=%s err=%s", tostring(self.id), tostring(err_c)))
+        end
+    elseif message_id == hash("debug_set_pos") then
+        if message and message.pos then
+            self.remote_player_pos = message.pos
+        end
+    elseif message_id == hash("apply_tiled_overrides") then
+        local previous_id = self.id
+
+        if message.collectible_type ~= nil then
+            self.collectible_type = tostring(message.collectible_type)
+            self.collectible_type_str = tostring(message.collectible_type)
+        end
+        if message.collectible_id ~= nil and tostring(message.collectible_id) ~= "" then
+            self.collectible_id = tostring(message.collectible_id)
+            self.id = tostring(message.collectible_id)
+        end
+
+        apply_authored_collectible_props(self, message)
+
+        if (not self.collectible_type_str or self.collectible_type_str == "") and self.collectible_type ~= nil then
+            local resolved = KeyResolver.resolve_collectible_type(self.collectible_type)
+            if resolved and resolved ~= "" then
+                self.collectible_type_str = resolved
+            end
+        end
+
+        if self.collectible_type_str and self.collectible_type_str ~= "" then
+            self.is_ability = self.collectible_type_str:match("^ability_") ~= nil
+        end
+
+        if self.id and CollectibleManager.is_collected(self.id) then
+            require("mvtk.tiled.object_presentation").restore(nil, true)
+            go.delete()
+            return
+        end
+
+        if previous_id and previous_id ~= "" and previous_id ~= self.id then
+            CollectibleManager.unregister_collectible(previous_id)
+        end
+
+        local room_id = trim_string(message.room_id)
+        if not refresh_registered_collectible(self, room_id) then
+            log.warn("Failed to refresh collectible overrides id=%s type=%s",
+                tostring(self.id), tostring(self.collectible_type_str))
+            return
+        end
+
+        setup_visuals(self)
+    end
+end
+
+function on_input(self, action_id, action)
+    -- If player is nearby and presses an interact input, collect the ability.
+    -- Accept both analog/keyboard up and dpad/interact actions.
+    if self.is_ability and self.player_nearby and not self.collected then
+        local collect_pressed = action.pressed and COLLECT_INPUTS[action_id]
+        if collect_pressed then
+            clog("[INPUT] id=%s received collect input action=%s", tostring(self.id), tostring(action_id))
+            local ok_c, err_c = pcall(collect, self, nil)
+            if not ok_c then
+                print(string.format("[COLLECTIBLE] INPUT_COLLECT_ERROR id=%s err=%s", tostring(self.id), tostring(err_c)))
+            end
+            return true
+        end
+    end
+    return false
+end

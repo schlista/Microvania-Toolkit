@@ -1,0 +1,13 @@
+script: "/developer/ui/menus/world_map.gui_script"
+material: "/builtins/materials/gui.material"
+adjust_reference: ADJUST_REFERENCE_PARENT
+
+materials {
+  name: "fog"
+  material: "/mvtk/ui/minimap/fog.material"
+}
+
+textures {
+  name: "minimap_atlas"
+  texture: "/developer/assets/minimap/minimap.atlas"
+}

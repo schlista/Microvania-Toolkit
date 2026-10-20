@@ -1,0 +1,291 @@
+-- mvtk/prefabs/fast_travel_bench.script
+-- Fast travel station with unlock/discovery system
+
+local PU = require "mvtk.prefabs.prefab_utils"
+local FastTravel = require "mvtk.core.fast_travel"
+local Checkpoint = require "mvtk.core.checkpoint"
+local C = require "mvtk.core.constants"
+local Inventory = require "mvtk.core.inventory"
+local Debug = require "developer.config.debug_config"
+
+go.property("station_id", "")
+go.property("station_name", "")
+go.property("station_description", "")
+go.property("room_id", "")
+go.property("auto_unlock", false)
+go.property("unlock_cost", 0)
+go.property("show_on_map", true)
+go.property("icon", "")
+go.property("facing", 1)
+
+local MSG_TRIGGER = hash("trigger_response")
+local UP_INPUTS = {
+  [hash("key_up")] = true,
+  [hash("key_w")] = true,
+  [hash("gamepad_lpad_up")] = true,
+  [hash("gamepad_lstick_up")] = true,
+}
+
+local function ft_log(...)
+  if Debug.gameplay.fast_travel or Debug.global.enable then
+    print(...)
+  end
+end
+
+-----------------------------------------------------------
+-- Local Helper Functions
+-----------------------------------------------------------
+
+local function update_visual_state(self)
+  -- Try to update sprite tint if sprite component exists
+  local sprite_url = msg.url("#sprite")
+  local has_sprite = pcall(go.get, sprite_url, "tint")
+
+  if has_sprite then
+    local color
+    if self.is_unlocked then
+      -- Blue when unlocked, brighter if player nearby
+      if self.player_nearby then
+        color = vmath.vector4(0.4, 0.8, 1.0, 1.0)  -- Bright blue
+      else
+        color = vmath.vector4(0.2, 0.5, 1.0, 1.0)  -- Blue
+      end
+    else
+      -- Gray when locked
+      color = vmath.vector4(0.5, 0.5, 0.5, 1.0)
+    end
+
+    go.set(sprite_url, "tint", color)
+
+    -- Pulse animation when player nearby and unlocked
+    if self.is_unlocked and self.player_nearby then
+      local pulse = 1.0 + math.sin(socket.gettime() * 4) * 0.05
+      go.set_scale(vmath.vector3(pulse, pulse, 1))
+    else
+      go.set_scale(vmath.vector3(1, 1, 1))
+    end
+  end
+end
+
+local function play_unlock_effect(self)
+  -- Visual feedback - animate to unlocked color
+  local sprite_url = msg.url("#sprite")
+  if pcall(go.get, sprite_url, "tint") then
+    local unlocked_color = vmath.vector4(0.2, 0.5, 1.0, 1.0)
+    go.animate(sprite_url, "tint", go.PLAYBACK_ONCE_FORWARD, unlocked_color, go.EASING_INOUTQUAD, 0.5)
+
+    -- Scale pulse
+    local current_scale = go.get_scale()
+    go.animate(".", "scale", go.PLAYBACK_ONCE_FORWARD, current_scale * 1.5, go.EASING_OUTQUAD, 0.3, 0, function()
+      go.animate(".", "scale", go.PLAYBACK_ONCE_FORWARD, current_scale, go.EASING_INQUAD, 0.2)
+    end)
+  end
+
+  -- Play sound effect if available
+  PU.play_sound("checkpoint")
+end
+
+local function try_unlock(self)
+  if self.is_unlocked then
+    return false
+  end
+
+  if self.activation_cooldown > 0 then
+    return false
+  end
+
+  if self.unlock_cost and self.unlock_cost > 0 then
+    local current = Inventory and Inventory.get_currency and Inventory.get_currency() or 0
+    if current < self.unlock_cost then
+      pcall(msg.post, msg.url("main:/toast_gui#toast"), hash("toast"), {
+        text = string.format("Requires $%d", self.unlock_cost),
+      })
+      return false
+    end
+  end
+
+  -- Unlock the station
+  local success = FastTravel.unlock(self.station_id_str)
+  if success then
+    self.is_unlocked = true
+    self.activation_cooldown = 1.0
+    if self.unlock_cost and self.unlock_cost > 0 then
+      if Inventory and Inventory.add_currency then
+        Inventory.add_currency(-self.unlock_cost)
+      end
+    end
+
+    -- Set checkpoint on unlock
+    local pos = go.get_world_position()
+    Checkpoint.set_checkpoint(pos, self.room_id_str, self.station_id_str)
+
+    -- Restore player health. Guard against stale C.URL.PLAYER (instance
+    -- may have been destroyed on room transition / respawn).
+    if C.URL and C.URL.PLAYER then
+      local ok_exists, exists = pcall(go.exists, C.URL.PLAYER)
+      if ok_exists and exists then
+        msg.post(C.URL.PLAYER, C.MSG.RESTORE_HEALTH or hash("mvtk_restore_health"))
+      end
+    end
+
+    ft_log(string.format("[FAST_TRAVEL_STATION] Unlocked: %s", self.station_name_str))
+
+    -- Play unlock effect
+    play_unlock_effect(self)
+
+    -- Update interaction manager label
+    local Interaction = PU.get_interaction()
+    if Interaction and Interaction.update then
+      Interaction.update(msg.url(), {
+        label = "Fast Travel (Open Map)",
+        priority = 8
+      })
+    end
+
+    return true
+  end
+
+  return false
+end
+
+-----------------------------------------------------------
+-- Lifecycle Functions
+-----------------------------------------------------------
+
+function init(self)
+  -- Determine station ID
+  self.station_id_str = tostring(self.station_id)
+  if self.station_id_str == "" or self.station_id_str == "hash: [0000000000000000]" then
+    self.station_id_str = tostring(go.get_id())
+  end
+
+  -- Determine room ID
+  self.room_id_str = PU.normalize_hash_string(self.room_id) or "unknown"
+
+  -- Convert name and description from hash to string
+  self.station_name_str = PU.normalize_hash_string(self.station_name) or self.station_id_str
+
+  self.station_description_str = PU.normalize_hash_string(self.station_description) or ""
+
+  self.player_nearby = false
+  self.is_unlocked = false
+  self.activation_cooldown = 0
+  self.show_prompt = false
+  self.unlock_cost = tonumber(self.unlock_cost) or 0
+  self.show_on_map = (self.show_on_map ~= false)
+  self.icon_str = PU.normalize_hash_string(self.icon) or ""
+  self.facing_dir = tonumber(self.facing) or 1
+  if self.facing_dir == 0 then
+    self.facing_dir = 1
+  end
+
+  -- Register this station with the fast travel system
+  local pos = go.get_world_position()
+  FastTravel.register(self.station_id_str, {
+    pos = pos,
+    room_id = self.room_id_str,
+    name = self.station_name_str,
+    description = self.station_description_str,
+    auto_unlock = self.auto_unlock,
+    show_on_map = self.show_on_map,
+    icon = self.icon_str,
+    facing = self.facing_dir,
+    unlock_cost = self.unlock_cost,
+  })
+
+  -- Check if already unlocked
+  self.is_unlocked = FastTravel.is_unlocked(self.station_id_str)
+
+  -- Acquire input focus
+  msg.post(".", "acquire_input_focus")
+
+  ft_log(string.format("[FAST_TRAVEL_STATION] Initialized: %s (%s) unlocked=%s",
+    self.station_name_str, self.station_id_str, tostring(self.is_unlocked)))
+
+  -- Register with interaction manager if available
+  local Interaction = PU.get_interaction()
+  if Interaction and Interaction.register then
+    local locked_label = "Press UP to Unlock"
+    if self.unlock_cost > 0 then
+      locked_label = string.format("Press UP to Unlock ($%d)", self.unlock_cost)
+    end
+    Interaction.register(msg.url(), {
+      label = self.is_unlocked and "Fast Travel (Open Map)" or locked_label,
+      range = 64,
+      priority = self.is_unlocked and 8 or 10,
+      position_fn = function(url)
+        return go.get_world_position(url)
+      end
+    })
+  end
+end
+
+function final(self)
+  msg.post(".", "release_input_focus")
+
+  -- Unregister from interaction manager if available
+  local Interaction = PU.get_interaction()
+  if Interaction and Interaction.unregister then
+    Interaction.unregister(msg.url())
+  end
+end
+
+function update(self, dt)
+  if self.activation_cooldown > 0 then
+    self.activation_cooldown = self.activation_cooldown - dt
+  end
+
+  -- Update visual based on player proximity
+  update_visual_state(self)
+end
+
+function on_message(self, message_id, message, sender)
+  if message_id == MSG_TRIGGER then
+    -- Check if it's the player
+    if message.other_group == C.GROUPS.PLAYER then
+      if message.enter then
+        self.player_nearby = true
+        self.show_prompt = true
+        ft_log(string.format("[FAST_TRAVEL_STATION] Player entered: %s (unlocked=%s)",
+          self.station_name_str, tostring(self.is_unlocked)))
+      else
+        self.player_nearby = false
+        self.show_prompt = false
+        ft_log(string.format("[FAST_TRAVEL_STATION] Player left: %s", self.station_name_str))
+      end
+    end
+  elseif message_id == hash("mvtk_interact") then
+    -- Handle player interaction
+    if self.is_unlocked then
+      ft_log(string.format("[FAST_TRAVEL_STATION] Opening fast travel map from: %s", self.station_name_str))
+      -- Open world map in fast travel mode
+      pcall(msg.post, "main:/world_map_gui#world_map", hash("open_world_map"), {
+        source = "fast_travel_bench",
+        mode = "fast_travel",
+        show_title = true,
+        show_legend = true,
+      })
+    else
+      ft_log(string.format("[FAST_TRAVEL_STATION] Cannot interact: %s not unlocked", self.station_name_str))
+    end
+  end
+end
+
+function on_input(self, action_id, action)
+  if not self.player_nearby then
+    return false
+  end
+
+  -- Check for up input to unlock
+  if UP_INPUTS[action_id] and action.pressed then
+    if not self.is_unlocked then
+      try_unlock(self)
+      return true
+    else
+      ft_log(string.format("[FAST_TRAVEL_STATION] %s already unlocked, use map to travel", self.station_name_str))
+      return false
+    end
+  end
+
+  return false
+end

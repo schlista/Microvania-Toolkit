@@ -1,0 +1,33 @@
+type: COLLISION_OBJECT_TYPE_KINEMATIC
+mass: 0.0
+friction: 0.1
+restitution: 0.5
+group: "player"
+mask: "enemy"
+mask: "attack"
+mask: "sensor"
+mask: "surface"
+mask: "ladder"
+mask: "collectible"
+mask: "interactable"
+mask: "world"
+mask: "solid"
+mask: "platform"
+mask: "hazard"
+mask: "water"
+embedded_collision_shape {
+  shapes {
+    shape_type: TYPE_BOX
+    position {
+      y: -17.5
+    }
+    rotation {
+    }
+    index: 0
+    count: 3
+  }
+  data: 46.45158
+  data: 59.9999575
+  data: 9.6774125
+}
+locked_rotation: true

@@ -1,0 +1,10 @@
+image: "/developer/assets/fx/rock_particles.png"
+tile_width: 16
+tile_height: 16
+animations {
+  id: "square"
+  start_tile: 17
+  end_tile: 17
+  fps: 0
+}
+extrude_borders: 2

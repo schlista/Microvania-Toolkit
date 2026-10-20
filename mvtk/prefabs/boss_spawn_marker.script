@@ -1,0 +1,240 @@
+local Proxy = require "mvtk.prefabs.tiled_proxy_util"
+local FeedbackSettings = require "mvtk.bosses.feedback_settings"
+
+go.property("registration_id", "")
+go.property("object_id", 0)
+go.property("boss_type", "")
+go.property("boss_preset", "")
+go.property("boss_name", "")
+go.property("boss_id", "")
+go.property("boss_tag", "")
+go.property("boss_visual_type", "")
+go.property("visual_component", "")
+go.property("phase_config", "")
+go.property("max_health", 0)
+go.property("defense", 0)
+go.property("damage_resistance", 0)
+-- Optional per-instance movement and charge overrides. Negative values keep
+-- the selected preset / attack-pattern values.
+go.property("chase_speed", -1)
+go.property("charge_speed", -1)
+go.property("charge_distance", -1)
+go.property("charge_telegraph_time", -1)
+go.property("charge_duration", -1)
+go.property("charge_cooldown", -1)
+go.property("charge_recovery", -1)
+go.property("attack_pattern_ids", "")
+go.property("arena_id", "")
+go.property("arena_lock", true)
+go.property("intro_cutscene", "")
+go.property("defeat_flag", "")
+go.property("show_health_bar", true)
+go.property("health_bar_position", "top")
+go.property("music_track", "")
+go.property("victory_music", "")
+go.property("reward_currency_min", 0)
+go.property("reward_currency_max", 0)
+go.property("reward_drops", "")
+go.property("reward_loot_table", "")
+go.property("reward_unlock_flag", "")
+go.property("reward_unlock_fast_travel", "")
+go.property("room_id", "")
+-- Optional boss intro animation (see developer/config/boss_animations.lua)
+go.property("intro_animation", "")
+-- Contact damage (dealt when the player touches the boss body)
+go.property("contact_damage", 0)
+go.property("contact_knockback_x", -1)
+go.property("contact_knockback_y", -1)
+go.property("contact_stun_t", -1)
+-- Baked Tiled feedback fields (raw colors/names are rehydrated by object id).
+go.property("override_boss_feedback", false)
+go.property("boss_hurt_sfx", "enemy_hurt")
+go.property("boss_hitstop", 0.05)
+go.property("boss_flash_color", "#ffff4040")
+go.property("boss_flash_duration", 0.2)
+go.property("boss_shake", 6)
+go.property("boss_rumble", 0.2)
+go.property("override_player_feedback", false)
+go.property("player_hurt_sfx", "player_hurt")
+go.property("player_hitstop", 0.06)
+go.property("player_flash_color", "#ffff4040")
+go.property("player_flash_duration", 0.2)
+go.property("player_shake", 5)
+go.property("player_rumble", 0.18)
+go.property("player_stun_t", 0.2)
+go.property("player_hurt_animation", "hurt")
+go.property("player_interrupt_attack", true)
+go.property("player_hurt_decel", 5)
+
+local HASH_FIELDS = {
+    "boss_type",
+    "boss_preset",
+    "boss_name",
+    "boss_id",
+    "boss_tag",
+    "boss_visual_type",
+    "visual_component",
+    "phase_config",
+    "attack_pattern_ids",
+    "arena_id",
+    "intro_cutscene",
+    "defeat_flag",
+    "health_bar_position",
+    "music_track",
+    "victory_music",
+    "reward_drops",
+    "reward_loot_table",
+    "reward_unlock_flag",
+    "reward_unlock_fast_travel",
+    "intro_animation",
+}
+
+local NUMBER_FIELDS = {
+    "max_health",
+    "defense",
+    "damage_resistance",
+    "chase_speed",
+    "charge_speed",
+    "charge_distance",
+    "charge_telegraph_time",
+    "charge_duration",
+    "charge_cooldown",
+    "charge_recovery",
+    "reward_currency_min",
+    "reward_currency_max",
+    "contact_damage",
+    "contact_knockback_x",
+    "contact_knockback_y",
+    "contact_stun_t",
+}
+
+local NUMBER_DEFAULTS = {
+    contact_knockback_x = -1,
+    contact_knockback_y = -1,
+    contact_stun_t = -1,
+    chase_speed = -1,
+    charge_speed = -1,
+    charge_distance = -1,
+    charge_telegraph_time = -1,
+    charge_duration = -1,
+    charge_cooldown = -1,
+    charge_recovery = -1,
+}
+
+local BOOL_FIELDS = {
+    "arena_lock",
+    "show_health_bar",
+}
+
+for _, field in ipairs(FeedbackSettings.hash_fields) do HASH_FIELDS[#HASH_FIELDS + 1] = field end
+for _, field in ipairs(FeedbackSettings.number_fields) do
+    NUMBER_FIELDS[#NUMBER_FIELDS + 1] = field
+    NUMBER_DEFAULTS[field] = FeedbackSettings.defaults[field]
+end
+for _, field in ipairs(FeedbackSettings.bool_fields) do BOOL_FIELDS[#BOOL_FIELDS + 1] = field end
+
+local AUTHORED_SCHEMA = {
+    object_kind = "boss",
+    hash_fields = HASH_FIELDS,
+    optional_hash_fields = { "music_track", "victory_music" },
+    number_fields = NUMBER_FIELDS,
+    bool_fields = BOOL_FIELDS,
+}
+
+local function build_properties(self)
+    local props = {}
+    for _, field in ipairs(HASH_FIELDS) do
+        if field == "music_track" or field == "victory_music" then
+            props[field] = Proxy.optional_plain(self[field])
+        else
+            props[field] = Proxy.plain(self[field], "")
+        end
+    end
+    for _, field in ipairs(NUMBER_FIELDS) do
+        props[field] = Proxy.number(self[field], NUMBER_DEFAULTS[field] or 0)
+    end
+    for _, field in ipairs(BOOL_FIELDS) do
+        props[field] = Proxy.bool(self[field], false)
+    end
+    local object
+    props, object = Proxy.overlay_authored(self, props, AUTHORED_SCHEMA)
+    if props.boss_name == "" and object then
+        local authored_name = Proxy.plain(object.name, "")
+        local generic_name = string.lower(authored_name)
+        if generic_name ~= "boss" and generic_name ~= "boss spawn" then
+            props.boss_name = authored_name
+        end
+    end
+    props.boss_health = props.max_health
+    return props
+end
+
+local function blank_or_none(value)
+    return value == nil or value == "" or string.lower(tostring(value)) == "none"
+end
+
+function init(self)
+    local props = build_properties(self)
+    local boss_id = props.boss_id
+    local boss_tag = props.boss_tag
+    local boss_preset = props.boss_preset
+    if boss_id == "" then
+        boss_id = boss_tag ~= "" and boss_tag or Proxy.registration_id(self, "boss")
+        props.boss_id = boss_id
+    end
+    if boss_tag == "" then
+        boss_tag = boss_id
+    end
+    props.boss_tag = boss_tag
+    if blank_or_none(boss_preset) then
+        boss_preset = props.boss_type
+    end
+    if blank_or_none(boss_preset) then boss_preset = "" end
+    props.boss_preset = boss_preset or ""
+    props.boss_type = boss_preset or props.boss_type or ""
+    if props.boss_name == "" then
+        props.boss_name = boss_id
+    end
+
+    -- Keep this message deliberately small. The complete property set is
+    -- recovered by main.script from room_id + object_id; sending it here as
+    -- both top-level fields and `properties` can exceed Defold's table buffer.
+    local payload = {
+        id = boss_id,
+        boss_tag = boss_tag,
+        boss_name = props.boss_name,
+        boss_preset = props.boss_preset,
+        boss_type = props.boss_type,
+        position = Proxy.world_position(),
+        room_id = props.room_id,
+        object_id = props.object_id,
+        arena_id = props.arena_id,
+    }
+
+    -- A manually placed Defold marker has no exported Tiled object to
+    -- rehydrate. Preserve its common overrides without attaching the large,
+    -- duplicated properties table that broke baked boss registration.
+    if (tonumber(props.object_id) or 0) <= 0 then
+        for _, field in ipairs({
+            "boss_visual_type",
+            "visual_component",
+            "phase_config",
+            "max_health",
+            "chase_speed",
+            "charge_speed",
+            "charge_distance",
+            "charge_telegraph_time",
+            "charge_duration",
+            "charge_cooldown",
+            "charge_recovery",
+            "contact_damage",
+            "contact_knockback_x",
+            "contact_knockback_y",
+            "contact_stun_t",
+        }) do
+            payload[field] = props[field]
+        end
+    end
+
+    Proxy.post_to_main("register_boss_spawn", payload)
+end

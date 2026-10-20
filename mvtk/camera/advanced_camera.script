@@ -1,0 +1,448 @@
+-- mvtk/camera/advanced_camera.script
+-- ============================================================================
+-- Advanced Camera Controller
+-- ============================================================================
+-- Sophisticated 2D camera system for Metroidvania gameplay with multiple features:
+--
+-- Core Features:
+-- - Smooth deadzone-based player following (doesn't move until player leaves deadzone)
+-- - Velocity-based look-ahead (camera shifts in direction of player movement)
+-- - Camera zones per room (different deadzone/speed settings for each area)
+-- - Smooth transitions between positions (room transitions, teleports)
+-- - Boundary constraints (keep camera within room bounds)
+-- - Screen shake integration for impact feedback
+-- - Respawn handling with instant repositioning
+--
+-- Camera Behavior:
+--   1. Deadzone: Player can move within a box before camera starts following
+--   2. Look-ahead: Camera shifts forward based on player velocity for better visibility
+--   3. Smoothing: Camera follows player with configurable speed (not instant)
+--   4. Zones: Each room can have custom deadzone size and follow speed
+--   5. Bounds: Camera is clamped to room boundaries (won't show outside room)
+--
+-- Message Interface:
+--   - set_follow: Start following a game object (usually player)
+--   - set_bounds: Set camera boundary constraints
+--   - enter_room: Activate camera zone for room
+--   - transition_to: Smooth transition to position
+--   - snap_to: Instant teleport to position
+--   - cam_shake: Trigger screen shake effect
+--
+-- Usage:
+--   msg.post(C.URL.CAMERA, "set_follow", {url = player_url})
+--   msg.post(C.URL.CAMERA, "set_bounds", {min_x=0, max_x=1024, min_y=0, max_y=512})
+--   msg.post(C.URL.CAMERA, "enter_room", {room_id = "forest_01"})
+
+-- ============================================================================
+-- DEPENDENCIES
+-- ============================================================================
+
+local C = require("mvtk.core.constants")
+local Config = require("developer.config.resolved_config")
+local Debug = require("developer.config.debug_config")
+local CameraZones = require("mvtk.camera.camera_zones")   -- Per-room camera settings
+local ScreenShake = require("mvtk.fx.screen_shake")       -- Impact shake effects
+local Pause = require("mvtk.core.pause")                  -- Pause state handling
+
+-- ============================================================================
+-- DEBUG LOGGING
+-- ============================================================================
+
+-- Conditional logging (only prints if camera debug enabled)
+local function camera_log(...)
+    if Debug.global.enable or Debug.gameplay.camera then
+        print(...)
+    end
+end
+
+-- ============================================================================
+-- SCRIPT PROPERTIES (Editable in editor)
+-- ============================================================================
+
+go.property("camera_id", "camera")             -- Camera component name
+go.property("enable_zones", true)                    -- Use per-room camera zones
+go.property("enable_look_ahead", true)               -- Shift camera based on player velocity
+go.property("enable_velocity_tracking", true)        -- Track player velocity for look-ahead
+go.property("look_ahead_distance", 180.0)            -- Increased look-ahead for Shinobi feel
+go.property("look_ahead_speed", 4.5)                 -- Faster look-ahead transitions
+
+-- ============================================================================
+-- UTILITY FUNCTIONS
+-- ============================================================================
+
+-- Get sign of number (-1, 0, or 1)
+local function sgn(x) return (x < 0) and -1 or ((x > 0) and 1 or 0) end
+
+-- Linear interpolation between two values
+local function lerp(a, b, t) return a + (b - a) * t end
+
+-- Check if bounds are valid (all fields present and min < max)
+-- b: Bounds table with min_x, max_x, min_y, max_y
+-- Returns: true if valid, false otherwise
+local function bounds_valid(b)
+    if not b then return false end
+    if b.max_x == nil or b.min_x == nil or b.max_y == nil or b.min_y == nil then return false end
+    if (b.max_x <= b.min_x) or (b.max_y <= b.min_y) then return false end
+    return true
+end
+
+-- Clamp value between min and max
+-- v: Value to clamp
+-- lo: Minimum value
+-- hi: Maximum value
+-- Returns: Clamped value (or original if bounds nil)
+local function clamp(v, lo, hi)
+    if lo == nil or hi == nil then return v end
+    return math.max(lo, math.min(hi, v))
+end
+
+-- Get world position for follow target (falls back to local position if needed)
+local function get_follow_position(url)
+    if not (url and go.exists(url)) then return nil end
+    -- Always prefer direct world position - cached PLAYER_WORLD_POS can be stale
+    -- (set before collision resolution, causing camera to track wrong position)
+    local ok, p = pcall(go.get_world_position, url)
+    if ok and p then return p end
+    -- Fallback to cached position only if go.get_world_position fails
+    if C and C.URL and C.URL.PLAYER and url == C.URL.PLAYER then
+        local cached = rawget(_G, "PLAYER_WORLD_POS")
+        if cached and cached.x then return cached end
+    end
+    return go.get_position(url)
+end
+
+local function fmt_vec(p)
+    if not p then return "nil" end
+    return string.format("(%.1f, %.1f)", p.x or 0, p.y or 0)
+end
+
+local function debug_state(self, dt, reason)
+    if not (Debug.global.enable or Debug.gameplay.camera) then return end
+    self._dbg_timer = (self._dbg_timer or 0) - (dt or 0)
+    if self._dbg_timer > 0 then return end
+    self._dbg_timer = 0.5
+
+    local fu = self.follow_url
+    local exists = fu and go.exists(fu) or false
+    local cached = rawget(_G, "PLAYER_WORLD_POS")
+    local wp = nil
+    if fu and exists then
+        local ok, p = pcall(go.get_world_position, fu)
+        if ok then wp = p end
+    end
+
+    camera_log(string.format(
+        "[ADV_CAMERA DBG] reason=%s follow=%s exists=%s have=%s pos=%s tgt=%s cached=%s world=%s bounds=%s",
+        tostring(reason or "tick"),
+        tostring(fu),
+        tostring(exists),
+        tostring(self.have_target),
+        fmt_vec(self.pos),
+        fmt_vec(self.target_pos),
+        fmt_vec(cached),
+        fmt_vec(wp),
+        self.bounds and string.format("x[%.1f..%.1f] y[%.1f..%.1f]", self.bounds.min_x or 0, self.bounds.max_x or 0, self.bounds.min_y or 0, self.bounds.max_y or 0) or "nil"
+    ))
+end
+
+-- Apply camera bounds constraints to position
+-- self: Camera script instance
+-- p: Position vector to constrain
+-- Returns: Clamped position (stays within room bounds)
+--
+-- Prevents camera from showing areas outside the room boundaries.
+local function apply_bounds(self, p)
+    if not bounds_valid(self.bounds) then return p end
+    local result = vmath.vector3(p)
+    result.x = clamp(result.x, self.bounds.min_x, self.bounds.max_x)
+    result.y = clamp(result.y, self.bounds.min_y, self.bounds.max_y)
+    return result
+end
+
+-- ============================================================================
+-- LIFECYCLE FUNCTIONS
+-- ============================================================================
+
+-- Initialize camera system
+-- self: Script instance
+--
+-- Sets up:
+-- 1. Camera focus acquisition (makes this the active camera)
+-- 2. Core following state (position, target, bounds)
+-- 3. Deadzone and follow speed defaults
+-- 4. Look-ahead system initialization
+-- 5. Smooth transition state
+-- 6. Camera zones and screen shake systems
+-- 7. Auto-loads camera zone config for all rooms
+function init(self)
+    -- Acquire camera rendering focus
+    self.cam_url = msg.url(nil, go.get_id(), self.camera_id)
+    msg.post(self.cam_url, "acquire_camera_focus")
+
+    -- Core camera state
+    self.follow_url = nil                          -- Object to follow (usually player)
+    self.pos = go.get_position()                   -- Current camera position
+    self.target_pos = vmath.vector3(self.pos)      -- Target position (where camera wants to be)
+    self.bounds = nil                              -- Room boundaries {min_x, max_x, min_y, max_y}
+    self.have_target = false                       -- Has follow target been set?
+
+    -- Zone-based camera settings (Shinobi style - tight and responsive)
+    self.deadzone = vmath.vector3(50, 30, 0)       -- Smaller deadzone for tighter tracking
+    self.speed = vmath.vector3(6.5, 6.5, 0)        -- Fast, responsive camera (Shinobi feel)
+    self.offset = vmath.vector3(0, 0, 0)           -- Static offset from player
+
+    -- Look-ahead system (shifts camera in direction of movement)
+    self.look_ahead_offset = vmath.vector3(0, 0, 0)    -- Current look-ahead offset
+    self.target_look_ahead = vmath.vector3(0, 0, 0)    -- Target look-ahead offset
+    self.player_velocity = vmath.vector3(0, 0, 0)      -- Player velocity (for look-ahead calculation)
+    self.last_player_pos = vmath.vector3(0, 0, 0)      -- Previous player position (for velocity calc)
+
+    -- Smooth transition system (for room changes, teleports)
+    self.transitioning = false                     -- Is camera currently transitioning?
+    self.transition_start = vmath.vector3(0, 0, 0)  -- Transition start position
+    self.transition_target = vmath.vector3(0, 0, 0) -- Transition end position
+    self.transition_time = 0                       -- Time elapsed in transition
+    self.transition_duration = 0.5                 -- Total transition duration (seconds)
+
+    -- Initialize subsystems
+    CameraZones.init()      -- Per-room camera zone settings
+    ScreenShake.init()      -- Screen shake effects
+
+    -- Auto-load camera zones from configuration file
+    local success, camera_config = pcall(require, "developer.config.camera_zones")
+    if success and camera_config and camera_config.room_zones then
+        for room_id, zone_config in pairs(camera_config.room_zones) do
+            CameraZones.register_zone(room_id, zone_config)
+            camera_log(string.format("[ADVANCED_CAMERA] Auto-registered zone: %s", tostring(room_id)))
+        end
+    else
+        camera_log("[ADVANCED_CAMERA] No camera zones config found or failed to load")
+    end
+
+    -- Publish camera URL for other systems to message
+    C.URL.CAMERA = msg.url()
+    camera_log("[ADVANCED_CAMERA] Initialized at", self.pos)
+end
+
+-- Update camera position each frame
+-- self: Script instance
+-- dt: Delta time in seconds
+--
+-- Camera update pipeline:
+-- 1. Check pause state (skip update if paused)
+-- 2. Update screen shake system
+-- 3. Update camera zones (loads zone settings for current room)
+-- 4. Track player position and calculate velocity
+-- 5. Calculate look-ahead offset based on player movement
+-- 6. Handle smooth transitions OR normal deadzone following
+-- 7. Apply room boundary constraints
+-- 8. Apply screen shake offset
+-- 9. Set final camera position
+function update(self, dt)
+    -- Handle pause state and time scaling
+    Pause.update(dt)
+    local timescale = (Pause and (Pause.dt_scale or Pause.scale) and (Pause.dt_scale or Pause.scale)()) or 1.0
+    if Pause and Pause.get and Pause.get() then return end  -- Skip update if paused
+    dt = dt * timescale  -- Apply time scale (e.g., slow-motion effects)
+
+    -- Update screen shake effects
+    ScreenShake.update(dt)
+
+    -- Update camera zones (applies room-specific deadzone/speed settings)
+    if self.enable_zones then
+        CameraZones.update(dt)
+        local zone_settings = CameraZones.get_settings()
+        if zone_settings then
+            self.deadzone = zone_settings.deadzone  -- Override deadzone for this room
+            self.speed = zone_settings.speed        -- Override follow speed for this room
+        end
+    end
+
+    -- Get player position and calculate velocity for look-ahead
+    if self.follow_url and go.exists(self.follow_url) then
+        local player_pos = get_follow_position(self.follow_url)
+        if not player_pos then
+            debug_state(self, dt, "no_follow_pos")
+            return
+        end
+
+        -- Track player velocity (for velocity-based look-ahead)
+        if self.enable_velocity_tracking then
+            self.player_velocity = (player_pos - self.last_player_pos) / dt
+            self.last_player_pos = vmath.vector3(player_pos)
+        end
+
+        -- Set target position (where camera wants to be)
+        self.target_pos = vmath.vector3(player_pos) + self.offset
+        self.have_target = true
+    end
+
+    -- If no follow target, center camera in room bounds
+    if not self.have_target then
+        if bounds_valid(self.bounds) then
+            self.pos.x = (self.bounds.min_x + self.bounds.max_x) * 0.5
+            self.pos.y = (self.bounds.min_y + self.bounds.max_y) * 0.5
+            go.set_position(self.pos)
+        end
+        debug_state(self, dt, "no_target")
+        return
+    end
+
+    -- Calculate velocity-based look-ahead offset (Shinobi style - dynamic & responsive)
+    -- Shifts camera in direction of movement for better forward visibility
+    if self.enable_look_ahead and not CameraZones.is_locked() then
+        local vel_magnitude = vmath.length(self.player_velocity)
+        if vel_magnitude > 30 then  -- Lower threshold for earlier camera response (Shinobi feel)
+            local vel_normalized = vmath.normalize(self.player_velocity)
+            self.target_look_ahead.x = vel_normalized.x * self.look_ahead_distance
+            self.target_look_ahead.y = vel_normalized.y * self.look_ahead_distance * 0.6  -- More vertical shift for combat
+        else
+            self.target_look_ahead = vmath.vector3(0, 0, 0)  -- Reset when stationary
+        end
+
+        -- Smoothly transition to target look-ahead (faster for Shinobi responsiveness)
+        self.look_ahead_offset = vmath.lerp(dt * self.look_ahead_speed, self.look_ahead_offset, self.target_look_ahead)
+    end
+
+    -- Handle smooth room transitions (linear interpolation with smoothstep easing)
+    if self.transitioning then
+        self.transition_time = self.transition_time + dt
+        local t = math.min(1.0, self.transition_time / self.transition_duration)
+        t = t * t * (3 - 2 * t)  -- Smoothstep easing function (smooth start and end)
+
+        self.pos = vmath.lerp(t, self.transition_start, self.transition_target)
+
+        if t >= 1.0 then  -- Transition complete
+            self.transitioning = false
+            self.transition_time = 0
+        end
+    else
+        -- Normal camera follow with deadzone behavior
+        local to = self.target_pos - self.pos
+
+        -- Apply look-ahead offset to target position
+        local final_target = self.target_pos + self.look_ahead_offset
+
+        to = final_target - self.pos
+
+        -- Deadzone-based movement (camera only moves when player leaves deadzone box)
+        -- Camera stays still while player is within deadzone, then smoothly follows
+        if math.abs(to.x) > self.deadzone.x then
+            self.pos.x = self.pos.x + (to.x - sgn(to.x) * self.deadzone.x) * dt * self.speed.x
+        end
+        if math.abs(to.y) > self.deadzone.y then
+            self.pos.y = self.pos.y + (to.y - sgn(to.y) * self.deadzone.y) * dt * self.speed.y
+        end
+    end
+
+    -- Apply room boundary constraints (prevent showing outside room)
+    self.pos = apply_bounds(self, self.pos)
+
+    -- Apply screen shake offset (adds temporary shake displacement)
+    local final_pos = ScreenShake.apply_to_camera(self.pos)
+
+    -- Set final camera position
+    go.set_position(final_pos)
+    debug_state(self, dt, "follow")
+end
+
+-- ============================================================================
+-- MESSAGE HANDLERS
+-- ============================================================================
+
+-- Handle incoming messages
+-- self: Script instance
+-- message_id: Hashed message name
+-- message: Message data table
+-- sender: URL of sender
+--
+-- Supported messages:
+-- - set_follow: Start following object (message.url)
+-- - set_bounds: Set room boundaries (message.min_x, max_x, min_y, max_y)
+-- - enter_room: Activate camera zone for room (message.room_id)
+-- - transition_to: Smooth transition to position (message.position, message.duration)
+-- - snap_to: Instant teleport to position (message.position)
+-- - cam_shake: Trigger screen shake (message.intensity)
+-- - register_camera_zone: Register new camera zone (message.room_id, message.zone_type)
+-- - set_offset: Set camera offset from player (message.offset)
+-- - REQUEST_RESPAWN: Snap to respawn position (message.position)
+function on_message(self, message_id, message, sender)
+    -- Set follow target (usually player)
+    if (message_id == hash("set_follow") or message_id == hash("mvtk_set_follow")) and message and message.url then
+        self.follow_url = message.url
+        self.last_player_pos = get_follow_position(self.follow_url) or vmath.vector3(0, 0, 0)
+        camera_log("[ADVANCED_CAMERA] Following", self.follow_url)
+
+    -- Set camera boundary constraints (prevents showing outside room)
+    elseif message_id == hash("set_bounds") and message then
+        if bounds_valid(message) then
+            self.bounds = message
+            camera_log(string.format("[ADVANCED_CAMERA] Bounds set: x[%.1f..%.1f] y[%.1f..%.1f]",
+                message.min_x, message.max_x, message.min_y, message.max_y))
+        else
+            self.bounds = nil  -- Clear bounds if invalid
+            camera_log("[ADVANCED_CAMERA] Bounds cleared (invalid)")
+        end
+
+    -- Activate camera zone for a room (loads room-specific settings)
+    elseif message_id == hash("enter_room") and message and message.room_id then
+        if self.enable_zones then
+            local instant = message.instant or false
+            CameraZones.activate_zone(message.room_id, instant)
+            camera_log(string.format("[ADVANCED_CAMERA] Entered room '%s'", message.room_id))
+        end
+
+    -- Smooth camera transition (for room changes, teleports)
+    elseif message_id == hash("transition_to") and message and message.position then
+        self.transition_start = vmath.vector3(self.pos)
+        self.transition_target = vmath.vector3(message.position)
+        self.transition_duration = message.duration or 0.5  -- Default 0.5 second transition
+        self.transition_time = 0
+        self.transitioning = true
+        camera_log("[ADVANCED_CAMERA] Transitioning to", self.transition_target)
+
+    -- Instant snap to position (no smooth transition)
+    elseif message_id == hash("snap_to") and message and message.position then
+        self.pos = vmath.vector3(message.position)
+        self.transitioning = false  -- Cancel any active transition
+        go.set_position(self.pos)
+        camera_log("[ADVANCED_CAMERA] Snapped to", self.pos)
+
+    -- Trigger screen shake effect
+    elseif message_id == hash("cam_shake") then
+        local intensity = message and message.intensity or "medium"
+        ScreenShake.shake(intensity)
+
+    -- Register new camera zone (for dynamic room configuration)
+    elseif message_id == hash("register_camera_zone") and message then
+        if message.room_id and message.zone_type then
+            CameraZones.register_zone(message.room_id, message.zone_type)
+        end
+
+    -- Set static camera offset from player
+    elseif message_id == hash("set_offset") and message then
+        if message.offset then
+            self.offset = vmath.vector3(message.offset)
+            camera_log("[ADVANCED_CAMERA] Offset set to", self.offset)
+        end
+
+    -- Handle respawn (instant snap to respawn position)
+    elseif message_id == C.MSG.REQUEST_RESPAWN and message and message.position then
+        local tgt = vmath.vector3(message.position) + self.offset
+        self.pos = apply_bounds(self, tgt)
+        self.transitioning = false  -- Cancel any active transition
+        go.set_position(self.pos)
+        camera_log("[ADVANCED_CAMERA] Respawned at", self.pos)
+    end
+end
+
+-- Clean up camera system on shutdown
+-- self: Script instance
+--
+-- Releases camera focus (allows other cameras to take control)
+function final(self)
+    local cam_url = self.cam_url or msg.url(nil, go.get_id(), self.camera_id)
+    if cam_url then
+        msg.post(cam_url, "release_camera_focus")
+    end
+end

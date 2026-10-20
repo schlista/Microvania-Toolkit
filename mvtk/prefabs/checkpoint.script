@@ -1,0 +1,156 @@
+-- mvtk/prefabs/checkpoint.script
+-- ============================================================================
+-- CHECKPOINT (Auto-Save Point)
+-- ============================================================================
+-- Automatically saves player progress when they touch this zone.
+-- Unlike save_point, no interaction is required.
+--
+-- TILED PROPERTIES:
+--   checkpoint_id   - Unique identifier
+--   respawn_facing  - Direction player faces when respawning (1/-1)
+--   trigger_once        - If true, only activates once per session
+--   sound_id        - Sound to play when activated
+--   particle_id     - Particle effect when activated
+--
+-- CONFIGURATION:
+--   All values come from Tiled properties.
+--   DO NOT hardcode values here.
+-- ============================================================================
+
+local PU = require "mvtk.prefabs.prefab_utils"
+local Flags = require "mvtk.core.flags"
+local Debug = require "developer.config.debug_config"
+
+go.property("checkpoint_id", "")
+go.property("respawn_facing", 1)
+go.property("trigger_once", false)
+go.property("sound_id", "checkpoint")
+go.property("particle_id", "checkpoint_glow")
+go.property("room_id", "")
+go.property("requires_flag", "")  -- if set, checkpoint only activates when this flag is true
+go.property("set_flag", "")       -- if set, this flag is set true on first activation
+
+local PLAYER_GROUP = hash("player")
+
+local function size_diag_enabled()
+    return (Debug.global and Debug.global.enable)
+        or (Debug.tiled and Debug.tiled.spawner)
+        or (Debug.gameplay and Debug.gameplay.checkpoint)
+end
+
+local function fmt_vec3(v)
+    if type(v) ~= "userdata" or v.x == nil or v.y == nil or v.z == nil then
+        return "nil"
+    end
+    return string.format("(%.3f, %.3f, %.3f)", v.x, v.y, v.z)
+end
+
+local function log_size_diag(self)
+    if not size_diag_enabled() then
+        return
+    end
+
+    local pos = go.get_world_position()
+    local scale = go.get_scale()
+
+    print(string.format(
+        "[CHECKPOINT] SIZE_DIAG id=%s checkpoint_id=%s pos=%s root_scale=%s",
+        tostring(go.get_id()),
+        tostring(self and self.checkpoint_id or ""),
+        fmt_vec3(pos),
+        fmt_vec3(scale)
+    ))
+
+    if scale and math.abs(scale.x - scale.y) > 0.001 then
+        print(string.format(
+            "[CHECKPOINT] SIZE_WARNING non-uniform root scale x=%.3f y=%.3f; Defold trigger collision will follow the smallest axis. Use a room-local generated prototype for exact Tiled bounds.",
+            scale.x,
+            scale.y
+        ))
+    end
+end
+
+-----------------------------------------------------------
+-- Local Helper Functions
+-----------------------------------------------------------
+
+local function activate(self)
+    -- Check if already activated (for one-time checkpoints)
+    if self.trigger_once and self.activated then
+        return
+    end
+
+    -- Skip if already the current checkpoint
+    if self.is_current then
+        return
+    end
+
+    -- Gate on required flag
+    if self.requires_flag ~= "" and not Flags.get(self.requires_flag) then
+        return
+    end
+
+    self.activated = true
+
+    -- Set authored flag on first activation
+    if self.set_flag ~= "" then
+        Flags.set(self.set_flag, true)
+    end
+
+    -- Play sound
+    PU.play_sound(self.sound_id)
+
+    -- Play particle effect
+    require("mvtk.tiled.object_presentation").emit("interacted")
+
+    -- Register as respawn point
+    local pos = go.get_position()
+    msg.post("main:/main_go#script", hash("set_checkpoint"), {
+        checkpoint_id = self.checkpoint_id,
+        position = pos,
+        facing = self.respawn_facing,
+        room_id = self.room_id,
+    })
+
+    -- Trigger auto-save
+    local ok, SaveManager = pcall(require, "mvtk.game.save_system.save_manager")
+    if ok and SaveManager and SaveManager.quick_save then
+        SaveManager.quick_save()
+    end
+
+    print(string.format("[CHECKPOINT] Activated checkpoint '%s'", tostring(self.checkpoint_id)))
+end
+
+-----------------------------------------------------------
+-- Lifecycle Functions
+-----------------------------------------------------------
+
+function init(self)
+    self.activated = false
+    self.is_current = false
+    log_size_diag(self)
+end
+
+function on_message(self, message_id, message, sender)
+    if message_id == hash("trigger_response") then
+        -- Player entered checkpoint zone
+        if message.group == PLAYER_GROUP and message.enter then
+            activate(self)
+        end
+
+    elseif message_id == hash("apply_tiled_props") then
+        local props = message.properties or {}
+        if props.respawn_facing then self.respawn_facing = props.respawn_facing end
+        if props.trigger_once ~= nil then self.trigger_once = props.trigger_once end
+        if props.requires_flag and props.requires_flag ~= "" then self.requires_flag = props.requires_flag end
+        if props.set_flag and props.set_flag ~= "" then self.set_flag = props.set_flag end
+
+    elseif message_id == hash("set_current") then
+        -- This checkpoint is now the active respawn point
+        self.is_current = true
+
+    elseif message_id == hash("clear_current") then
+        -- Another checkpoint became active
+        self.is_current = false
+    end
+end

@@ -1,0 +1,14 @@
+script: "/developer/ui/game/toast.gui_script"
+material: "/builtins/materials/gui.material"
+adjust_reference: ADJUST_REFERENCE_PARENT
+fonts { name: "system" font: "/builtins/fonts/default.font" }
+nodes {
+  position { x: 480.0 y: 300.0 }
+  size { x: 800.0 y: 60.0 }
+  type: TYPE_TEXT
+  id: "label"
+  font: "system"
+  color { x: 1.0 y: 1.0 z: 1.0 }
+  alpha: 0.0
+}
+ 

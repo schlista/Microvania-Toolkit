@@ -1,0 +1,186 @@
+-- mvtk/prefabs/door_unlock_trigger.script
+local DoorState = require("mvtk.rooms.door_state")
+local Flags = require("mvtk.core.flags")
+local Checkpoint = require("mvtk.core.checkpoint")
+local SaveManager = require("mvtk.game.save_system.save_manager")
+local AbilityManagerOk, AbilityManager = pcall(require, "mvtk.abilities.ability_manager")
+local AbilityConfigOk, AbilityConfig = pcall(require, "developer.config.abilities")
+local InventoryOk, Inventory = pcall(require, "mvtk.core.inventory")
+
+local FALLBACK_ABILITIES = {
+    "slide",
+    "slide_iframes",
+    "double_jump",
+    "extended_jump",
+    "air_dash",
+    "air_dash_iframes",
+    "wall_climb",
+    "charge_attack",
+    "down_strike",
+    "ranged_attack",
+}
+
+local ability_lookup = nil
+
+local function ensure_ability_lookup()
+    if ability_lookup then return end
+    ability_lookup = {}
+    if AbilityConfigOk and AbilityConfig and type(AbilityConfig.abilities) == "table" then
+        for id, def in pairs(AbilityConfig.abilities) do
+            ability_lookup[id] = {
+                id = id,
+                name = (def and def.name) or (id:gsub("_", " ")),
+            }
+        end
+    end
+    for _, id in ipairs(FALLBACK_ABILITIES) do
+        if not ability_lookup[id] then
+            ability_lookup[id] = {
+                id = id,
+                name = id:gsub("_", " "),
+            }
+        end
+    end
+end
+
+local function ability_info_from_id(need_id)
+    if not need_id or need_id == "" then return nil end
+    ensure_ability_lookup()
+    return ability_lookup[need_id]
+end
+
+local function has_required_ability(need_id)
+    if not need_id or need_id == "" then
+        return true, nil
+    end
+    local ok_flag, has_flag = pcall(Flags.has, need_id)
+    if ok_flag and has_flag then
+        return true, ability_info_from_id(need_id)
+    end
+    local info = ability_info_from_id(need_id)
+    if info then
+        local ok_flag_str, has_flag_str = pcall(Flags.has, info.id)
+        if ok_flag_str and has_flag_str then
+            return true, info
+        end
+        if AbilityManagerOk and AbilityManager and AbilityManager.is_ability_unlocked then
+            local ok_am, unlocked = pcall(AbilityManager.is_ability_unlocked, info.id)
+            if ok_am and unlocked then
+                return true, info
+            end
+        end
+    end
+    return false, info
+end
+
+local PU = require "mvtk.prefabs.prefab_utils"
+
+-- Use a text property for the authored unlock message.
+go.property("door_id", "")
+-- Optional: require a specific ability flag to unlock this door (e.g., "air_dash", "double_jump")
+go.property("require_ability", "")
+-- Optional: require a specific inventory item (key) to unlock this door
+go.property("require_item", "")
+
+local PLAYER = hash("player")
+
+function init(self)
+	-- Treat an empty/default text id as "missing"
+    if self.door_id == "" then
+        print("[door_unlock_trigger] Missing door_id property! Deleting.")
+        go.delete()
+        return
+    end
+
+	print("[door_unlock_trigger] INIT for door_id:", self.door_id, "at position:", go.get_position(), "require_ability:", self.require_ability)
+
+	if DoorState.is_open(self.door_id) then
+		print("[door_unlock_trigger] Door already open, deleting trigger")
+		go.delete()
+		return
+	end
+    PU.get_interaction().register(msg.url(), {
+        label = "Unlock Door",
+        range = 196,
+        priority = 10,
+        position_fn = function(url)
+            return go.get_world_position(url)
+        end
+    })
+end
+
+function on_message(self, message_id, message, sender)
+    local required_item = self.require_item or ""
+
+	local function require_key_if_needed()
+        if required_item == "" then
+            return true
+        end
+        if not (InventoryOk and Inventory and Inventory.has) then
+            print("[door_unlock_trigger] Inventory unavailable; cannot check key")
+            return false
+        end
+        local has_key = Inventory.has(required_item)
+        if not has_key then
+            PU.toast("Requires matching key")
+            print("[door_unlock_trigger] Missing required key for door_id:", self.door_id)
+            return false
+        end
+        Inventory.consume(required_item, 1)
+        return true
+    end
+
+	if message_id == hash("trigger_response") then
+		print("[door_unlock_trigger] trigger_response:", "enter:", message.enter, "other_group:", message.other_group)
+		-- only react when something enters and it's the player group
+		if message.enter and message.other_group == PLAYER then
+			print("[door_unlock_trigger] Player entered trigger for door_id:", self.door_id)
+            -- Enforce optional ability requirement
+            local needed_id = self.require_ability or ""
+            local has_it, ability_info = has_required_ability(needed_id)
+            if needed_id ~= "" then
+                local label = ability_info and ability_info.name or "required ability"
+                local ability_id = ability_info and ability_info.id or tostring(needed_id)
+                print(string.format("[door_unlock_trigger] Requires ability value=%s id=%s has_it=%s", tostring(needed_id), tostring(ability_id), tostring(has_it)))
+                if not has_it then
+                    print("[door_unlock_trigger] Player missing required ability:", ability_id)
+                    PU.toast(("Requires %s"):format(label))
+                    return
+                end
+            end
+            if not require_key_if_needed() then
+                return
+            end
+			print("[door_unlock_trigger] Opening door:", self.door_id)
+			DoorState.open_edge(self.door_id)
+            -- Autosave this significant event
+            pcall(Checkpoint.autosave, "door_unlock")
+            if SaveManager and SaveManager.save_game then pcall(SaveManager.save_game) end
+			go.delete()
+		end
+    elseif message_id == hash("mvtk_interact") then
+        local needed_id = self.require_ability or ""
+        local has_it, ability_info = has_required_ability(needed_id)
+        if needed_id ~= "" and not has_it then
+            local label = ability_info and ability_info.name or "required ability"
+            PU.toast(("Requires %s"):format(label))
+            return
+        end
+        if not require_key_if_needed() then
+            return
+        end
+        DoorState.open_edge(self.door_id)
+        pcall(Checkpoint.autosave, "door_unlock")
+        if SaveManager and SaveManager.save_game then pcall(SaveManager.save_game) end
+        PU.toast("Door unlocked")
+        go.delete()
+	end
+end
+
+function final(self)
+    local im = PU.get_interaction()
+    if im and im.unregister then
+        im.unregister(msg.url())
+    end
+end
+

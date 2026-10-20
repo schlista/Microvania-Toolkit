@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<template>
+ <object name="Solid Box" type="collision_box" width="128" height="128">
+  <properties>
+   <property name="mvtk_template_version" type="string" value="2.3.0"/>
+  </properties>
+ </object>
+</template>

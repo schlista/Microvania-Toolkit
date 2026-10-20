@@ -1,0 +1,349 @@
+-- mvtk/player_spawner.script
+-- Spawns the persistent player and arms the camera to follow it.
+-- All tunables live in your config files, not here.
+
+local C = require "mvtk.core.constants"
+local Debug = require('developer.config.debug_config')
+local LayoutIO = require "mvtk.rooms.layout_io"
+local FileLogger = require "mvtk.core.file_logger"
+local Checkpoint = require "mvtk.core.checkpoint"
+local TiledRoomRegistry = require "mvtk.tiled.tiled_room_registry"
+local TiledParser = require "mvtk.tiled.tiled_parser"
+local Config = require "developer.config.resolved_config"
+local RenderOrder = require "mvtk.core.render_order"
+
+local PLAYER_RENDER_Z = RenderOrder.player_z()
+
+local function spawner_log(...)
+	if Debug.global.enable or Debug.gameplay.spawner then
+		print(...)
+		-- Also log to file for easier reading
+		FileLogger.log(...)
+	end
+end
+
+-- The component id of the collection factory on THIS same game object.
+-- Make sure your spawner GO has collectionfactory components for the supported player types.
+go.property("factory_id", "player_factory")
+go.property("spawn_x", 300)
+go.property("spawn_y", 400)
+
+-- Resolve the authored collection root. collectionfactory.create() keys its
+-- result by slash-prefixed local ids (for example hash("/player")); selecting
+-- an arbitrary value can publish the Spine visual or a bone collider instead.
+local function pick_player_root(created)
+	if type(created) == "table" then
+		return created[hash("/player")] or created[hash("player")]
+	end
+	return created
+end
+
+local function normalize_room_id(value)
+	local s = tostring(value or "")
+	s = s:gsub("^developer/rooms/", "")
+	s = s:gsub("%.collection$", "")
+	s = s:gsub("^/+", "")
+	return s
+end
+
+local function collectionfactory_candidates_for_type(player_type)
+	local candidates = {}
+	local seen = {}
+
+	local function add(comp_id)
+		local key = tostring(comp_id or "")
+		if comp_id and comp_id ~= hash("") and not seen[key] then
+			seen[key] = true
+			candidates[#candidates + 1] = comp_id
+		end
+	end
+
+	if player_type == "sprite" then
+		add(hash("player_sprite_factory"))
+	else
+		add(hash("player_spine_factory"))
+	end
+	add(hash("player_factory")) -- legacy fallback
+	return candidates
+end
+
+local function create_player_from_factories(self, pos)
+	local candidates = self.factory_candidates or { self.factory_id }
+	for _, comp_id in ipairs(candidates) do
+		local factory_url = msg.url(nil, go.get_id(), comp_id)
+		local ok, created = pcall(collectionfactory.create, factory_url, pos, nil, {}, 1)
+		if ok and created then
+			return created, comp_id
+		end
+	end
+	return nil, nil
+end
+
+local function room_contains(room, x, y)
+	local rx = tonumber(room and room.x)
+	local ry = tonumber(room and room.y)
+	local rw = tonumber(room and room.w)
+	local rh = tonumber(room and room.h)
+	if not (rx and ry and rw and rh) then
+		return false
+	end
+	-- Include per-room offsets (ox, oy) — the actual world bounds are (x+ox, y+oy)
+	local rox = tonumber(room.ox) or 0
+	local roy = tonumber(room.oy) or 0
+	local min_x = rx + rox
+	local min_y = ry + roy
+	return x >= min_x and x <= (min_x + rw) and y >= min_y and y <= (min_y + rh)
+end
+
+local function checkpoint_is_valid_for_layout(checkpoint, layout)
+	if type(checkpoint) ~= "table" then return false end
+	local x = tonumber(checkpoint.x)
+	local y = tonumber(checkpoint.y)
+	if not (x and y) then return false end
+	if not (layout and type(layout.rooms) == "table" and #layout.rooms > 0) then
+		-- If we cannot validate against layout bounds, keep legacy behavior.
+		return true
+	end
+
+	local cp_room = normalize_room_id(checkpoint.room_id)
+	local in_any_room = false
+
+	for _, room in ipairs(layout.rooms) do
+		local rid = normalize_room_id(room.id or room.path)
+		local inside = room_contains(room, x, y)
+		if inside then
+			in_any_room = true
+			if cp_room == "" or cp_room == rid then
+				return true
+			end
+		end
+		if cp_room ~= "" and rid == cp_room then
+			-- Claimed room exists: checkpoint must be inside it.
+			return inside
+		end
+	end
+
+	return in_any_room and cp_room == ""
+end
+
+-- Try to arm the camera. Returns true if successful.
+local function try_arm_camera(player_go_url)
+	if not player_go_url then return false end
+
+	-- Prefer the camera URL published by the camera itself; otherwise fallback to a known path.
+	local cam_url = (C.URL and C.URL.CAMERA) or msg.url("main:/camera#script")
+	if not cam_url or not go.exists(cam_url) then return false end
+
+	spawner_log("[SPAWNER] arming camera -> follow target:", player_go_url)
+
+	-- Tell camera to follow this GO (send both message names for compatibility)
+	msg.post(cam_url, hash("set_follow"),        { url = player_go_url })
+	msg.post(cam_url, hash("mvtk_set_follow"),   { url = player_go_url })
+
+	-- Center camera immediately at spawn to avoid the "slide from origin"
+	local p = go.get_position(player_go_url)
+	if p then
+		local cam_pos = go.get_position(cam_url)
+		local camera_target = vmath.vector3(p.x, p.y, (cam_pos and cam_pos.z) or 0)
+		go.set_position(camera_target, cam_url)  -- move the camera GO now
+		-- Ask camera logic (if implemented) to snap/respawn
+		msg.post(cam_url, hash("request_respawn"),      { position = camera_target })
+		msg.post(cam_url, hash("mvtk_request_respawn"), { position = camera_target })
+	end
+	return true
+end
+
+local function spawn_player(self)
+	-- Try to get starting position from layout, fallback to hardcoded spawn
+	local layout = LayoutIO.load({ runtime_preferred = true })
+	print(string.format("[SPAWN_DIAG] layout loaded: %s, rooms=%s",
+		tostring(layout ~= nil),
+		layout and layout.rooms and tostring(#layout.rooms) or "nil"))
+
+	-- 1) If a checkpoint already exists (load or seeded), spawn there.
+	local checkpoint = Checkpoint.data and Checkpoint.data.checkpoint
+	print(string.format("[SPAWN_DIAG] Checkpoint.data=%s checkpoint=%s x=%s y=%s room=%s",
+		tostring(Checkpoint.data ~= nil),
+		tostring(checkpoint ~= nil),
+		tostring(checkpoint and checkpoint.x),
+		tostring(checkpoint and checkpoint.y),
+		tostring(checkpoint and checkpoint.room_id)))
+	local start_pos = nil
+	if checkpoint and checkpoint_is_valid_for_layout(checkpoint, layout) then
+		start_pos = vmath.vector3(tonumber(checkpoint.x) or 0, tonumber(checkpoint.y) or 0, PLAYER_RENDER_Z)
+		print(string.format("[SPAWN_DIAG] STEP1: using checkpoint (%.1f, %.1f)", start_pos.x, start_pos.y))
+		spawner_log(string.format("[SPAWNER] Using checkpoint spawn: (%.1f, %.1f) room=%s",
+			start_pos.x, start_pos.y, tostring(checkpoint.room_id)))
+	elseif checkpoint then
+		print(string.format("[SPAWN_DIAG] STEP1: checkpoint rejected (outside layout) x=%s y=%s room=%s",
+			tostring(checkpoint.x), tostring(checkpoint.y), tostring(checkpoint.room_id)))
+		spawner_log(string.format("[SPAWNER] Ignoring stale checkpoint outside layout: x=%s y=%s room=%s",
+			tostring(checkpoint.x), tostring(checkpoint.y), tostring(checkpoint.room_id)))
+	else
+		print("[SPAWN_DIAG] STEP1: no checkpoint found")
+	end
+
+	-- 2) If no checkpoint, try Tiled player_start from starting room metadata.
+	if not start_pos then
+		local ok_rooms, rooms = pcall(TiledRoomRegistry.get_all_rooms)
+		local start_room = ok_rooms and TiledRoomRegistry.get_starting_room and TiledRoomRegistry.get_starting_room(layout)
+		local meta = start_room and TiledRoomRegistry.get_room_metadata(start_room) or nil
+		print(string.format("[SPAWN_DIAG] STEP2: ok_rooms=%s start_room=%s meta=%s psx=%s psy=%s",
+			tostring(ok_rooms),
+			tostring(start_room),
+			tostring(meta ~= nil),
+			tostring(meta and meta.player_start_x),
+			tostring(meta and meta.player_start_y)))
+			if meta and meta.player_start_x and meta.player_start_y then
+				-- Load map to flip Y from Tiled (top-left origin) to Defold (bottom-left origin)
+				local map = nil
+				if rooms and rooms[start_room] then
+					local ok_map, loaded_map = pcall(TiledParser.load, rooms[start_room])
+					if ok_map then map = loaded_map end
+				end
+				-- Compute map height for Y-flip. If map didn't load, fall back to room.h from layout.
+				local map_height = map and map.height and map.tileheight and (map.height * map.tileheight) or 0
+				local offset_x, offset_y = 0, 0
+				local start_room_id = normalize_room_id(start_room)
+				if layout and layout.rooms then
+					for _, room in ipairs(layout.rooms) do
+						local id = normalize_room_id(room.id or room.path)
+						if id == start_room_id then
+							offset_x, offset_y = require("mvtk.map.streaming.room_geometry").compute_spawn_xy(room)
+							-- Fallback: if map failed to load, use layout room height
+							if map_height == 0 and room.h and room.h > 0 then
+								map_height = room.h
+								spawner_log("[SPAWNER] Using layout room height as map_height fallback: " .. tostring(map_height))
+							end
+							break
+						end
+					end
+				end
+				if map_height == 0 then
+					spawner_log("[SPAWNER] WARNING: map_height is 0, Y-flip will be wrong!")
+				end
+				local def_x, def_y = TiledParser.tiled_to_defold(meta.player_start_x, meta.player_start_y, map_height)
+				-- Point objects have exact pixel positions — no tile centering needed
+				print(string.format("[SPAWN_DIAG] STEP2 coords: map_h=%s tiled(%.1f,%.1f) def(%.1f,%.1f) offset(%.1f,%.1f)",
+					tostring(map_height), meta.player_start_x, meta.player_start_y, def_x, def_y,
+					offset_x, offset_y))
+				start_pos = vmath.vector3(def_x + offset_x, def_y + offset_y, PLAYER_RENDER_Z)
+				print(string.format("[SPAWN_DIAG] STEP2: final pos (%.1f, %.1f)", start_pos.x, start_pos.y))
+				spawner_log(string.format("[SPAWNER] Using Tiled player_start from room '%s': (%.1f, %.1f) (offset %.1f, %.1f)", tostring(start_room), start_pos.x, start_pos.y, offset_x, offset_y))
+			elseif start_room then
+				-- Starting room found but it has no player_start object in Tiled.
+				-- Tip: add a player_start object (or is_starting_room map property) in Tiled for an exact spawn point.
+				-- Falls back to the centre of the starting room bounding box from the layout.
+				local sr_id = normalize_room_id(start_room)
+				if layout and layout.rooms then
+					for _, room in ipairs(layout.rooms) do
+						local id = normalize_room_id(room.id or room.path)
+						if id == sr_id and room.x and room.y and room.w and room.h then
+							start_pos = vmath.vector3(room.x + room.w * 0.5, room.y + room.h * 0.5, PLAYER_RENDER_Z)
+							spawner_log(string.format("[SPAWNER] Starting room '%s' has no player_start; using room centre: (%.1f, %.1f)", tostring(start_room), start_pos.x, start_pos.y))
+							break
+						end
+					end
+				end
+			end
+		end
+
+	-- 3) If still nothing, fall back to layout first-room center.
+	if not start_pos then
+		if layout and layout.rooms and #layout.rooms > 0 then
+			local first_room = layout.rooms[1]
+			if first_room and first_room.x and first_room.y and first_room.w and first_room.h then
+				-- Spawn at center of first room from layout
+				local center_x = first_room.x + (first_room.w * 0.5)
+				local center_y = first_room.y + (first_room.h * 0.5)
+				local far = math.abs(center_x) > 10000 or math.abs(center_y) > 10000
+				if far then
+					spawner_log(string.format("[SPAWNER] Layout spawn looks invalid (%.1f, %.1f); using fallback", center_x, center_y))
+				else
+					start_pos = vmath.vector3(center_x, center_y, PLAYER_RENDER_Z)
+					spawner_log(string.format("[SPAWNER] Using layout room center: (%.1f, %.1f)", center_x, center_y))
+				end
+			end
+		end
+	end
+
+	-- 4) Final fallback to hardcoded values.
+	if not start_pos then
+		start_pos = vmath.vector3(self.spawn_x, self.spawn_y, PLAYER_RENDER_Z)
+		spawner_log(string.format("[SPAWNER] No start data found, using hardcoded spawn: (%.1f, %.1f)", self.spawn_x, self.spawn_y))
+	end
+
+    local pos = start_pos
+	print(string.format("[SPAWN_DIAG] FINAL spawn pos: (%.1f, %.1f) factory=%s",
+		pos.x, pos.y, tostring(self.factory_id)))
+
+	local mini = rawget(_G, "MINIMAP_MODULE")
+	if mini then
+		local sx, sy = pos.x or 0, pos.y or 0
+		if mini.set_view_center_world then mini.set_view_center_world(sx, sy) end
+		if mini.request_view_center_world then mini.request_view_center_world(sx, sy) end
+	end
+
+	local created, used_factory_id = create_player_from_factories(self, pos)
+	assert(created, "Player spawn failed: Check your player collectionfactory components")
+
+	-- Use the root GO URL directly
+	local player_go_url = pick_player_root(created)
+	assert(player_go_url, "Player spawn failed: spawned collection has no /player root")
+
+	-- Publish for other systems (streaming, minimap, etc.)
+	C.URL = C.URL or {}
+	C.URL.PLAYER = player_go_url
+
+	-- Notify room streaming system that player is ready
+	if C.URL and C.URL.ROOM_MANAGER then
+		msg.post(C.URL.ROOM_MANAGER, "player_ready", { url = player_go_url })
+	end
+	
+	-- Also notify main script so it can apply checkpoint position
+	pcall(msg.post, "main:/main_go#script", "player_ready", { url = player_go_url })
+
+	-- Arm camera now or retry next frame until camera exists
+	if not try_arm_camera(player_go_url) then
+		timer.delay(0.0, false, function()
+			if not try_arm_camera(player_go_url) then
+				timer.delay(0.05, false, function()
+					try_arm_camera(player_go_url)
+				end)
+			end
+		end)
+	end
+
+	self.player_spawned = true
+	spawner_log(string.format("[SPAWNER] Player spawned via %s", tostring(used_factory_id)))
+	spawner_log("[SPAWNER] Player spawn complete")
+end
+
+function init(self)
+	self.player_spawned = false
+	self.spawn_delayed = false
+
+	-- Select the appropriate player factory based on Config.player.player_type
+	-- Options: "sprite" (Microvania beta default) or "spine" (advanced).
+	local player_type = Config.player and Config.player.player_type or "sprite"
+	player_type = tostring(player_type):lower()
+	self.factory_candidates = collectionfactory_candidates_for_type(player_type)
+	if player_type == "sprite" then
+		self.factory_id = "player_sprite_factory"
+		spawner_log("[SPAWNER] Using sprite-based player (player_sprite_factory)")
+	else
+		self.factory_id = "player_spine_factory"
+		spawner_log("[SPAWNER] Using spine-based player (player_spine_factory)")
+	end
+
+	-- Delay player spawn to ensure room collision objects are fully initialized in physics world
+	-- This prevents the player from falling through the floor on startup
+	-- 0.2s gives the physics engine time to process the tilemap collision shapes
+	timer.delay(0.2, false, function()
+		if not self.player_spawned then
+			spawn_player(self)
+		end
+	end)
+
+	spawner_log("[SPAWNER] Init complete, player spawn scheduled after 0.2s delay")
+end

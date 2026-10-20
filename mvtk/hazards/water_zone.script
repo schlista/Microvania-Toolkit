@@ -1,0 +1,142 @@
+-- mvtk/hazards/water_zone.script
+-- Water zone that applies swimming physics to player
+-- Place this in rooms with water to enable swimming
+
+go.property("zone_type", "normal_water")  -- Type from water_zones.lua
+go.property("surface_y_offset", 0)  -- Offset from game object Y to water surface
+go.property("oxygen_enabled", true)  -- Enable oxygen/drowning mechanic
+go.property("current_x", 0)  -- Water current force X
+go.property("current_y", 0)  -- Water current force Y
+go.property("tint_color", vmath.vector4(0.3, 0.5, 0.8, 0.3))  -- Water tint color
+go.property("enable_particles", true)  -- Spawn splash/bubble particles
+go.property("damage_per_second", 0)  -- For toxic water (0 = normal water)
+
+local SwimState = require("mvtk.player.swim_state")
+local HazardRegistry = require "mvtk.hazards.hazard_registry"
+
+function init(self)
+    -- Load zone config if zone_type is specified
+    local zone_type_str = tostring(self.zone_type)
+
+    -- Store swim params for this zone instance (don't modify global SwimState yet)
+    self.swim_params = nil
+
+    if zone_type_str ~= "" and zone_type_str ~= "normal_water" then
+        local success, water_config = pcall(require, "developer.config.water_zones")
+        if success and water_config and water_config.zone_types then
+            local zone_preset = water_config.zone_types[zone_type_str]
+            if zone_preset then
+                -- Apply preset to properties
+                self.oxygen_enabled = zone_preset.oxygen_enabled ~= nil and zone_preset.oxygen_enabled or self.oxygen_enabled
+                self.current_x = zone_preset.current_x or self.current_x
+                self.current_y = zone_preset.current_y or self.current_y
+                self.tint_color = zone_preset.tint_color or self.tint_color
+                self.enable_particles = zone_preset.enable_particles ~= nil and zone_preset.enable_particles or self.enable_particles
+                self.damage_per_second = zone_preset.damage_per_second or self.damage_per_second
+
+                -- Store swim parameters for this zone (will be applied on entry)
+                self.swim_params = {
+                    swim_speed = zone_preset.swim_speed,
+                    swim_dash_speed = zone_preset.swim_dash_speed,
+                    oxygen_max = zone_preset.oxygen_max,
+                    oxygen_drain_rate = zone_preset.oxygen_drain_rate,
+                    oxygen_refill_rate = zone_preset.oxygen_refill_rate
+                }
+
+                print(string.format("[WATER_ZONE] Loaded preset '%s'", zone_type_str))
+            end
+        end
+    end
+
+    self.players_in_water = {}
+    self.surface_y = go.get_world_position().y + self.surface_y_offset
+    self.current = vmath.vector3(self.current_x, self.current_y, 0)
+    self.bubble_timers = {}
+
+    print(string.format("[WATER_ZONE] Initialized at y=%.1f, surface=%.1f", go.get_position().y, self.surface_y))
+end
+
+function update(self, dt)
+    -- Apply water current to players
+    for player_url, _ in pairs(self.players_in_water) do
+        if go.exists(player_url) then
+            -- Apply current force
+            if vmath.length(self.current) > 0 then
+                msg.post(player_url, "apply_force", {
+                    force = self.current * dt
+                })
+            end
+
+            -- Apply damage if toxic water
+            if self.damage_per_second > 0 then
+                HazardRegistry.post_damage(player_url, {
+                    amount = (tonumber(self.damage_per_second) or 0) * dt,
+                    source_actor = go.get_id(),
+                    source_attack = "water_zone",
+                    parryable = false,
+                })
+            end
+        end
+    end
+end
+
+function on_message(self, message_id, message, sender)
+    if message_id == hash("collision_response") then
+        -- Ignore collision response, we only care about triggers
+
+    elseif message_id == hash("trigger_response") then
+        -- For trigger_response, sender is this zone's collision object; the
+        -- other participant is supplied by the message payload.
+        local player_url = message.other_id or sender
+
+        if message.enter then
+            -- Player entered water
+            self.players_in_water[player_url] = true
+
+            -- Notify player they entered water, including zone-specific swim params
+            msg.post(player_url, "enter_water", {
+                surface_y = self.surface_y,
+                oxygen_enabled = self.oxygen_enabled,
+                tint_color = self.tint_color,
+                swim_params = self.swim_params  -- Per-zone parameters
+            })
+
+            -- Spawn splash particle
+            if self.enable_particles then
+                local pos = go.get_position(player_url)
+                pcall(msg.post, "#particlefx", "spawn_splash", {
+                    position = vmath.vector3(pos.x, self.surface_y, pos.z)
+                })
+            end
+
+            print(string.format("[WATER_ZONE] Player %s entered water", tostring(player_url)))
+
+        else
+            -- Player exited water
+            self.players_in_water[player_url] = nil
+
+            -- Notify player they exited water
+            msg.post(player_url, "exit_water", {})
+
+            -- Spawn exit splash
+            if self.enable_particles then
+                local pos = go.get_position(player_url)
+                pcall(msg.post, "#particlefx", "spawn_splash", {
+                    position = vmath.vector3(pos.x, self.surface_y, pos.z),
+                    intensity = "large"
+                })
+            end
+
+            print(string.format("[WATER_ZONE] Player %s exited water", tostring(player_url)))
+        end
+    end
+end
+
+function final(self)
+    -- Ensure players exit water state when zone is destroyed
+    for player_url, _ in pairs(self.players_in_water) do
+        if go.exists(player_url) then
+            msg.post(player_url, "exit_water", {})
+        end
+    end
+end

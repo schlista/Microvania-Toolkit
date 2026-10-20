@@ -1,0 +1,217 @@
+-- developer/ui/menus/lore_popup.gui_script
+-- Lore popup panel with text scrolling.
+
+local InputCtl = require "mvtk.rooms.input_controller"
+
+local v3 = vmath.vector3
+local v4 = vmath.vector4
+
+local MSG_OPEN = hash("open_lore_popup")
+local MSG_CLOSE = hash("close_lore_popup")
+
+local function n(id)
+    local ok, node = pcall(gui.get_node, id)
+    return ok and node or nil
+end
+
+local function set_active(self, on)
+    self.active = on and true or false
+    msg.post(".", self.active and "enable" or "disable")
+    if self.active then
+        msg.post(".", "acquire_input_focus")
+        if InputCtl and InputCtl.set_blocked then
+            InputCtl.set_blocked(true)
+        end
+    else
+        msg.post(".", "release_input_focus")
+        if InputCtl and InputCtl.set_blocked then
+            InputCtl.set_blocked(false)
+        end
+    end
+end
+
+local function wrap_line(out, raw_line, max_chars)
+    local words = {}
+    for token in raw_line:gmatch("%S+") do
+        words[#words + 1] = token
+    end
+    if #words == 0 then
+        out[#out + 1] = ""
+        return
+    end
+
+    local line = words[1]
+    for i = 2, #words do
+        local candidate = line .. " " .. words[i]
+        if #candidate <= max_chars then
+            line = candidate
+        else
+            out[#out + 1] = line
+            line = words[i]
+        end
+    end
+    out[#out + 1] = line
+end
+
+local function wrap_lines(text, max_chars)
+    local out = {}
+    local source = tostring(text or ""):gsub("\r\n", "\n")
+    if source == "" then
+        return { "" }
+    end
+
+    for line in (source .. "\n"):gmatch("(.-)\n") do
+        if line == "" then
+            out[#out + 1] = ""
+        else
+            wrap_line(out, line, max_chars)
+        end
+    end
+
+    if #out == 0 then
+        out[1] = ""
+    end
+    return out
+end
+
+local function rebuild(self)
+    local title_text = self.title_text or "Lore"
+    if title_text == "" then title_text = "Lore" end
+    gui.set_text(self.title, title_text)
+
+    local meta_parts = {}
+    if self.category_text and self.category_text ~= "" then
+        meta_parts[#meta_parts + 1] = self.category_text
+    end
+    if self.lore_id_text and self.lore_id_text ~= "" then
+        meta_parts[#meta_parts + 1] = self.lore_id_text
+    end
+    gui.set_text(self.meta, table.concat(meta_parts, "  |  "))
+
+    local root_size = gui.get_size(self.root)
+    local body_max_chars = math.max(40, math.floor((root_size.x - 72) / 10))
+    local body_max_lines = math.max(4, math.floor((root_size.y - 220) / 24))
+
+    local wrapped = wrap_lines(self.body_text or "", body_max_chars)
+    local max_scroll = math.max(0, #wrapped - body_max_lines)
+    if self.scroll > max_scroll then
+        self.scroll = max_scroll
+    end
+
+    local first = self.scroll + 1
+    local last = math.min(#wrapped, first + body_max_lines - 1)
+    local visible = {}
+    for i = first, last do
+        visible[#visible + 1] = wrapped[i]
+    end
+    gui.set_text(self.body, table.concat(visible, "\n"))
+
+    if max_scroll > 0 then
+        gui.set_text(self.scroll_hint, string.format("Up/Down: Scroll (%d/%d)", self.scroll + 1, max_scroll + 1))
+    else
+        gui.set_text(self.scroll_hint, "")
+    end
+
+    self.max_scroll = max_scroll
+end
+
+local function open_popup(self, message)
+    self.title_text = tostring((message and message.title) or "Lore")
+    self.body_text = tostring((message and message.text) or "")
+    self.category_text = tostring((message and message.category) or "")
+    self.lore_id_text = tostring((message and message.lore_id) or "")
+    self.scroll = 0
+
+    set_active(self, true)
+    rebuild(self)
+end
+
+local function close_popup(self)
+    if not self.active then return end
+    self.title_text = ""
+    self.body_text = ""
+    self.category_text = ""
+    self.lore_id_text = ""
+    self.scroll = 0
+    self.max_scroll = 0
+    set_active(self, false)
+end
+
+function init(self)
+    self.root = n("root")
+    self.title = n("title")
+    self.meta = n("meta")
+    self.body = n("body")
+    self.scroll_hint = n("scroll_hint")
+    self.hint_node = n("hint")
+
+    self.active = false
+    self.title_text = ""
+    self.body_text = ""
+    self.category_text = ""
+    self.lore_id_text = ""
+    self.scroll = 0
+    self.max_scroll = 0
+
+    set_active(self, false)
+end
+
+function final(self)
+    close_popup(self)
+end
+
+function on_message(self, message_id, message, sender)
+    if message_id == MSG_OPEN then
+        open_popup(self, message)
+        return
+    end
+    if message_id == MSG_CLOSE then
+        close_popup(self)
+        return
+    end
+end
+
+function on_input(self, action_id, action)
+    if not self.active or not action or not action.pressed then
+        return
+    end
+
+    if action_id == hash("gamepad_rpad_right")
+        or action_id == hash("gamepad_back")
+        or action_id == hash("gamepad_start")
+        or action_id == hash("gamepad_rpad_down")
+        or action_id == hash("key_escape")
+        or action_id == hash("key_m")
+        or action_id == hash("key_p")
+        or action_id == hash("key_e")
+        or action_id == hash("key_u")
+        or action_id == hash("gamepad_rshoulder")
+        or action_id == hash("key_enter") then
+        close_popup(self)
+        return true
+    end
+
+    if action_id == hash("key_down")
+        or action_id == hash("key_s")
+        or action_id == hash("gamepad_lpad_down")
+        or action_id == hash("gamepad_lstick_down")
+        or action_id == hash("gamepad_rstick_down") then
+        if self.max_scroll > 0 then
+            self.scroll = math.min(self.max_scroll, self.scroll + 1)
+            rebuild(self)
+        end
+        return true
+    end
+
+    if action_id == hash("key_up")
+        or action_id == hash("key_w")
+        or action_id == hash("gamepad_lpad_up")
+        or action_id == hash("gamepad_lstick_up")
+        or action_id == hash("gamepad_rstick_up") then
+        if self.max_scroll > 0 then
+            self.scroll = math.max(0, self.scroll - 1)
+            rebuild(self)
+        end
+        return true
+    end
+end

@@ -1,0 +1,18 @@
+type: COLLISION_OBJECT_TYPE_TRIGGER
+mass: 0.0
+friction: 0.0
+restitution: 0.0
+group: "attack"
+mask: "enemy"
+mask: "breakable"
+embedded_collision_shape {
+  shapes {
+    shape_type: TYPE_SPHERE
+    position { }
+    rotation { }
+    index: 0
+    count: 1
+  }
+  data: 50.0
+}
+locked_rotation: true

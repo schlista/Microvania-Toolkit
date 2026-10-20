@@ -1,0 +1,464 @@
+-- mvtk/prefabs/npc.script
+-- Generic NPC instance with inline or configured dialogue.
+
+local C = require "mvtk.core.constants"
+local AnimIndex = require "mvtk.core.anim_index"
+local Logger = require "mvtk.core.logger"
+local PU = require "mvtk.prefabs.prefab_utils"
+local Util = require "mvtk.core.util"
+
+local log = Logger.get_logger("NPC")
+local NPC_ATLAS = "/developer/assets/atlas/gameplay_visuals.atlas"
+
+local Interaction = nil
+pcall(function() Interaction = require "mvtk.game.interaction_manager" end)
+
+local NPCManager = nil
+pcall(function() NPCManager = require "mvtk.npcs.npc_manager" end)
+
+local Flags = nil
+pcall(function() Flags = require "mvtk.core.flags" end)
+
+local AuthoredObjectProps = nil
+pcall(function() AuthoredObjectProps = require "mvtk.tiled.authored_object_props" end)
+
+local DialogueRegistry = nil
+pcall(function() DialogueRegistry = require "mvtk.dialogue.dialogue_registry" end)
+
+local STATIC_DIALOGUES = nil
+
+go.property("npc_id", "")
+go.property("npc_type", "")
+go.property("npc_name", "")
+go.property("npc_sprite", "")
+go.property("dialogue_id", "")
+go.property("facing", 1)
+go.property("interaction_range", 48)
+go.property("room_id", "")
+-- despawn_flag: the NPC is deleted on spawn if this flag is true.
+go.property("despawn_flag", "")
+-- dialogue_text: inline dialogue lines written directly in Tiled (no dialogues.lua entry needed).
+-- Each newline becomes a separate dialogue box. Use speaker = npc_name.
+-- If dialogue_id is also set and exists in dialogues.lua, that takes priority.
+go.property("dialogue_text", "")
+
+local function trim(value)
+    local s = tostring(value or "")
+    s = s:gsub("^%s+", ""):gsub("%s+$", "")
+    if s == "" then
+        return nil
+    end
+    return s
+end
+
+local function current_instance_tail()
+    local go_id = Util.go_id_text(go.get_id())
+    if not go_id then return nil end
+    return go_id:match("([^/]+)$") or go_id
+end
+
+local function infer_baked_npc_id()
+    local tail = current_instance_tail()
+    if tail and tail:match("_npc_%d+$") then
+        return tail
+    end
+    return nil
+end
+
+local function infer_room_id_from_npc_id(npc_id)
+    local s = trim(npc_id)
+    if not s then
+        return nil
+    end
+    return s:match("^(.*)_npc_%d+$")
+end
+
+local function infer_object_id_from_key(value)
+    local s = trim(value)
+    if not s then
+        return nil
+    end
+    return tonumber(s:match("_(%d+)$"))
+end
+
+local function static_dialogue_exists(dialogue_id)
+    local key = trim(dialogue_id)
+    if not key then
+        return false
+    end
+    if STATIC_DIALOGUES == nil then
+        local ok, cfg = pcall(require, "developer.config.narrative.dialogues")
+        STATIC_DIALOGUES = (ok and type(cfg) == "table") and cfg or false
+    end
+    return type(STATIC_DIALOGUES) == "table" and STATIC_DIALOGUES[key] ~= nil
+end
+
+local function refresh_cached_props(self)
+    self.npc_id_str = PU.normalize_hash_string(self.npc_id) or infer_baked_npc_id()
+    self.npc_type_str = PU.normalize_hash_string(self.npc_type) or ""
+    self.npc_name_str = PU.normalize_hash_string(self.npc_name)
+    self.npc_sprite_str = PU.normalize_hash_string(self.npc_sprite)
+    self.dialogue_id_str = PU.normalize_hash_string(self.dialogue_id)
+    self.room_id_str = PU.normalize_hash_string(self.room_id) or infer_room_id_from_npc_id(self.npc_id_str)
+    self.despawn_flag_str = PU.normalize_hash_string(self.despawn_flag)
+    -- dialogue_text_raw stores inline text so it can be registered at runtime.
+    -- Only update from go.property if not already set from authored props overlay.
+    self.dialogue_text_raw = PU.normalize_hash_string(self.dialogue_text)
+end
+
+local function choose_dialogue_id(npc_id, explicit_dialogue_id, dialogue_text)
+    local explicit = trim(explicit_dialogue_id)
+    local text = trim(dialogue_text)
+    -- An explicit dialogue_id always wins — pass it through regardless of whether
+    -- we can verify it exists right now. The registry lookup at interaction time
+    -- determines if it actually resolves.
+    if explicit and explicit ~= "" then
+        return explicit
+    end
+    -- No explicit id — derive one from the inline text, keyed by npc_id.
+    if text and npc_id and npc_id ~= "" then
+        return npc_id .. "_dialogue"
+    end
+    return nil
+end
+
+local function update_registered_npc(self)
+    if not (NPCManager and NPCManager.get_npc and self.npc_id_str and self.npc_id_str ~= "") then
+        return
+    end
+
+    local npc_data = NPCManager.get_npc(self.npc_id_str)
+    if not npc_data then
+        return
+    end
+
+    npc_data.room_id = self.room_id_str
+    npc_data.type = (self.npc_type_str and self.npc_type_str ~= "") and self.npc_type_str or "inline_npc"
+    npc_data.name = self.npc_name_str or npc_data.name
+    npc_data.sprite = self.npc_sprite_str or npc_data.sprite
+    npc_data.dialogue_id = self.dialogue_id_str
+    npc_data.facing = tonumber(self.facing) or npc_data.facing or 1
+    npc_data.interaction_range = tonumber(self.interaction_range) or npc_data.interaction_range or 48
+
+    if NPCManager.register_instance then
+        pcall(NPCManager.register_instance, self.npc_id_str, msg.url())
+    end
+end
+
+local function update_interaction_label(self)
+    if Interaction and Interaction.update then
+        Interaction.update(msg.url(), {
+            label = self.npc_name_str or "Talk",
+            range = tonumber(self.interaction_range) or 48,
+            priority = 6,
+        })
+    end
+end
+
+local apply_sprite
+local apply_facing
+
+local function apply_props(self, props, options)
+    props = props or {}
+    options = options or {}
+
+    local explicit_npc_id = trim(props.npc_id) or self.npc_id_str or infer_baked_npc_id()
+    local chosen_dialogue_id = choose_dialogue_id(explicit_npc_id, props.dialogue_id, props.dialogue_text)
+
+    if trim(props.npc_id) then self.npc_id = tostring(props.npc_id) end
+    if props.npc_type ~= nil then self.npc_type = tostring(props.npc_type) end
+    if props.npc_name ~= nil then self.npc_name = tostring(props.npc_name) end
+    if props.npc_sprite ~= nil then self.npc_sprite = tostring(props.npc_sprite) end
+    if chosen_dialogue_id ~= nil then self.dialogue_id = chosen_dialogue_id end
+    if props.room_id ~= nil then self.room_id = tostring(props.room_id) end
+    if props.despawn_flag ~= nil then self.despawn_flag = tostring(props.despawn_flag) end
+    -- Preserve raw dialogue_text so it can be registered with DialogueRegistry.
+    if props.dialogue_text ~= nil then
+        self.dialogue_text = tostring(props.dialogue_text)
+        self.dialogue_text_raw = trim(props.dialogue_text)
+    end
+    if props.facing ~= nil then self.facing = tonumber(props.facing) or self.facing end
+    if props.interaction_range ~= nil then
+        self.interaction_range = tonumber(props.interaction_range) or self.interaction_range
+    end
+
+    refresh_cached_props(self)
+
+    if options.sync_manager then
+        update_registered_npc(self)
+    end
+    if options.refresh_visuals then
+        apply_sprite(self)
+        apply_facing(self)
+        update_interaction_label(self)
+    end
+end
+
+local function overlay_authored_props(self)
+    if not AuthoredObjectProps then
+        return
+    end
+
+    local npc_id = self.npc_id_str or infer_baked_npc_id()
+    local room_id = self.room_id_str or infer_room_id_from_npc_id(npc_id)
+    local object_id = infer_object_id_from_key(npc_id)
+    if not room_id or not object_id then
+        return
+    end
+
+    local props = AuthoredObjectProps.get_properties(room_id, object_id)
+    if props then
+        local overlay = {}
+        for key, value in pairs(props) do
+            overlay[key] = value
+        end
+        overlay.room_id = room_id
+        if not overlay.npc_id or tostring(overlay.npc_id) == "" then
+            overlay.npc_id = npc_id
+        end
+        apply_props(self, overlay, {
+            sync_manager = true,
+        })
+    end
+end
+
+local function recover_authored_dialogue(self)
+    if not AuthoredObjectProps then
+        return false
+    end
+
+    local npc_id = self.npc_id_str or infer_baked_npc_id()
+    local room_id = self.room_id_str or infer_room_id_from_npc_id(npc_id)
+    local object_id = infer_object_id_from_key(npc_id)
+    if not room_id or not object_id then
+        return false
+    end
+
+    local props = AuthoredObjectProps.get_properties(room_id, object_id)
+    if not props then
+        return false
+    end
+
+    local recovered_dialogue_id = choose_dialogue_id(
+        trim(props.npc_id) or npc_id,
+        props.dialogue_id,
+        props.dialogue_text
+    )
+    if not recovered_dialogue_id or recovered_dialogue_id == "" then
+        return false
+    end
+
+    apply_props(self, {
+        npc_id = trim(props.npc_id) or npc_id,
+        room_id = room_id,
+        npc_name = props.npc_name,
+        npc_sprite = props.npc_sprite,
+        dialogue_id = props.dialogue_id,
+        dialogue_text = props.dialogue_text,
+        facing = props.facing,
+        interaction_range = props.interaction_range,
+        despawn_flag = props.despawn_flag,
+    }, {
+        sync_manager = true,
+        refresh_visuals = true,
+    })
+    refresh_cached_props(self)
+    return self.dialogue_id_str ~= nil and self.dialogue_id_str ~= ""
+end
+
+
+-- Register inline dialogue_text with DialogueRegistry so the dialogue system
+-- can find it by ID. Called before any interaction that might start dialogue.
+local function ensure_inline_dialogue_registered(self)
+    local text = trim(self.dialogue_text_raw)
+    if not text or text == "" then return end
+    if not DialogueRegistry then return end
+
+    local npc_id = self.npc_id_str
+    if not npc_id or npc_id == "" then return end
+
+    local dialogue_id = npc_id .. "_dialogue"
+    -- Only register if no static entry exists for this ID already.
+    if static_dialogue_exists(dialogue_id) then return end
+
+    DialogueRegistry.register_text(dialogue_id, text, self.npc_name_str or "NPC", {
+        room_id = self.room_id_str,
+        inline = true,
+    })
+    -- Set dialogue_id_str so the interact path uses it.
+    self.dialogue_id_str = dialogue_id
+end
+
+apply_sprite = function(self)
+    if not Util.component_exists("#sprite") then
+        return
+    end
+    if not self.npc_sprite_str or self.npc_sprite_str == "" then
+        return
+    end
+
+    local selected = AnimIndex.first_present(NPC_ATLAS, { self.npc_sprite_str, "npc_idle" })
+    if not selected then
+        if not self._warned_missing_npc_sprite then
+            self._warned_missing_npc_sprite = true
+            log.warn("NPC %s requested missing animation %s in %s; no fallback is available",
+                tostring(self.npc_id_str or go.get_id()), tostring(self.npc_sprite_str), NPC_ATLAS)
+        end
+        return
+    end
+
+    if AnimIndex.has(NPC_ATLAS, self.npc_sprite_str) == false and not self._warned_missing_npc_sprite then
+        self._warned_missing_npc_sprite = true
+        log.warn("NPC %s requested missing animation %s in %s; using %s",
+            tostring(self.npc_id_str or go.get_id()), tostring(self.npc_sprite_str), NPC_ATLAS, tostring(selected))
+    end
+
+    sprite.play_flipbook("#sprite", hash(selected))
+end
+
+apply_facing = function(self)
+    local f = tonumber(self.facing) or 1
+    if f == 0 then f = 1 end
+    self.facing = f
+    if Util.component_exists("#sprite") then
+        sprite.set_hflip("#sprite", self.facing < 0)
+    end
+end
+
+function init(self)
+    refresh_cached_props(self)
+
+    overlay_authored_props(self)
+    refresh_cached_props(self)
+
+    -- If despawn_flag is set and the flag is true, delete this NPC immediately.
+    if self.despawn_flag_str and self.despawn_flag_str ~= "" then
+        if Flags and Flags.has(self.despawn_flag_str) then
+            if NPCManager and NPCManager.despawn_npc then
+                pcall(NPCManager.despawn_npc, self.npc_id_str)
+            end
+            go.delete()
+            return
+        end
+    end
+
+    local npc_data = nil
+    if NPCManager and NPCManager.get_npc then
+        npc_data = NPCManager.get_npc(self.npc_id_str)
+    end
+    if (not npc_data) and NPCManager and NPCManager.spawn_npc and self.npc_id_str and self.npc_id_str ~= "" then
+        local ok_spawn, spawned = pcall(NPCManager.spawn_npc, self.npc_id_str, self.npc_type_str, go.get_world_position(), {
+            room_id = self.room_id_str,
+            name = self.npc_name_str,
+            sprite = self.npc_sprite_str,
+            dialogue_id = self.dialogue_id_str,
+            facing = self.facing,
+            interaction_range = self.interaction_range,
+        })
+        if ok_spawn then
+            npc_data = spawned
+        end
+    end
+
+    if npc_data then
+        self.npc_name_str = self.npc_name_str or npc_data.name
+        self.npc_sprite_str = self.npc_sprite_str or npc_data.sprite
+        self.dialogue_id_str = self.dialogue_id_str or npc_data.dialogue_id
+    end
+
+    update_registered_npc(self)
+    ensure_inline_dialogue_registered(self)
+
+    apply_sprite(self)
+    apply_facing(self)
+
+    if NPCManager and NPCManager.register_instance then
+        pcall(NPCManager.register_instance, self.npc_id_str, msg.url())
+    end
+
+    if Interaction and Interaction.register then
+        local label = self.npc_name_str or "Talk"
+        Interaction.register(msg.url(), {
+            label = label,
+            range = tonumber(self.interaction_range) or 48,
+            priority = 6,
+            position_fn = function(url)
+                return go.get_world_position(url)
+            end
+        })
+    end
+end
+
+function on_message(self, message_id, message, _sender)
+    if message_id == hash("apply_tiled_props") and message and message.properties then
+        local p = message.properties
+        apply_props(self, p, {
+            sync_manager = true,
+            refresh_visuals = true,
+        })
+        return
+    end
+
+    if message_id == hash("mvtk_interact") then
+        local player_url = message and message.actor
+        if not player_url then
+            player_url = (C and C.URL and C.URL.PLAYER) or nil
+        end
+
+        refresh_cached_props(self)
+        if (not self.dialogue_id_str or self.dialogue_id_str == "") then
+            overlay_authored_props(self)
+            refresh_cached_props(self)
+        end
+        if not self.dialogue_id_str or self.dialogue_id_str == "" then
+            recover_authored_dialogue(self)
+        end
+        ensure_inline_dialogue_registered(self)
+        update_registered_npc(self)
+
+        if self.dialogue_id_str and self.dialogue_id_str ~= "" then
+            if NPCManager and NPCManager.start_dialogue then
+                local ok_start, started = pcall(NPCManager.start_dialogue, self.npc_id_str, player_url)
+                if ok_start and started then
+                    require("mvtk.tiled.object_presentation").emit("interacted")
+                    return
+                end
+            end
+
+            local dialogue_url = (C and C.URL and C.URL.DIALOGUE_MANAGER) or msg.url("main:/dialogue_manager#dialogue")
+            pcall(msg.post, dialogue_url, hash("start_dialogue"), {
+                dialogue_id = self.dialogue_id_str,
+                npc_id = self.npc_id_str,
+                npc_name = self.npc_name_str,
+                player_url = player_url,
+            })
+            return
+        end
+
+        if NPCManager and NPCManager.interact then
+            local ok_interact, handled = pcall(NPCManager.interact, self.npc_id_str, player_url)
+            if ok_interact and handled then
+                require("mvtk.tiled.object_presentation").emit("interacted")
+                return
+            end
+        end
+
+        if self.dialogue_id_str and self.dialogue_id_str ~= "" then
+            local dialogue_url = (C and C.URL and C.URL.DIALOGUE_MANAGER) or msg.url("main:/dialogue_manager#dialogue")
+            pcall(msg.post, dialogue_url, hash("start_dialogue"), {
+                dialogue_id = self.dialogue_id_str,
+                npc_id = self.npc_id_str,
+                npc_name = self.npc_name_str,
+                player_url = player_url,
+            })
+            return
+        end
+
+    end
+end
+
+function final(_self)
+    if Interaction and Interaction.unregister then
+        Interaction.unregister(msg.url())
+    end
+end

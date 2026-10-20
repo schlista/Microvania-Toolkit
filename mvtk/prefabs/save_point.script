@@ -1,0 +1,260 @@
+
+local C = require "mvtk.core.constants"
+local SaveManager = require "mvtk.game.save_system.save_manager"
+local Checkpoint = require "mvtk.core.checkpoint"
+local FastTravel = require "mvtk.core.fast_travel"
+local RoomManager = require "mvtk.map.streaming.room_manager"
+local Debug = require('developer.config.debug_config')
+local Interaction = require "mvtk.game.interaction_manager"
+local PU = require "mvtk.prefabs.prefab_utils"
+local Util = require "mvtk.core.util"
+
+local raw_print = print
+local function savepoint_log(...)
+    if Debug.global.enable or Debug.gameplay.save_manager then
+        raw_print(...)
+    end
+end
+
+local UP_INPUTS = {
+    [hash("key_up")] = true,
+    [hash("key_w")] = true,
+    [hash("gamepad_lpad_up")] = true,
+    [hash("gamepad_lstick_up")] = true,
+}
+
+go.property("display_name", "")
+go.property("heal_on_save", true)
+go.property("restore_energy", true)
+go.property("is_fast_travel", false)
+go.property("show_on_map", true)
+go.property("requires_interact", true)
+go.property("save_id", "")
+go.property("room_id", "")
+go.property("sound_id", "")
+go.property("particle_id", "")
+
+local function extract_object_name(go_id_str)
+    if not go_id_str then
+        return nil
+    end
+    local name = go_id_str:match("([^/]+)$") or go_id_str
+    if name == "" then
+        return nil
+    end
+    return name
+end
+
+local function infer_room_id_from_object(name)
+    if not name then
+        return nil
+    end
+    local base = name:match("^(.+)_save_point") or name:match("^(.+)_savepoint")
+    if base and base ~= "" then
+        return base
+    end
+    return nil
+end
+
+local function perform_save(self)
+    -- Use WORLD position, not local position, so checkpoint works across rooms
+    local pos = go.get_world_position()
+    local checkpoint_ok, save_error = Checkpoint.batch("save_point", function()
+        Checkpoint.set_checkpoint(pos, self._room_id_str)
+        -- Play authored SFX/VFX if set
+        if self.sound_id ~= "" then
+            pcall(msg.post, "#sound", hash("play_sound"), { sound = self.sound_id })
+        end
+        if SaveManager and SaveManager.save_game then
+            -- Update a few commonly useful fields before saving
+            local room_id = RoomManager and RoomManager.get_current_room and RoomManager.get_current_room() or nil
+            if room_id then
+                pcall(SaveManager.update_save_data, 'world.current_room', room_id)
+            end
+            pcall(SaveManager.update_save_data, 'world.checkpoint_position', { x = pos.x or 0, y = pos.y or 0, z = pos.z or 0 })
+        end
+
+        if self.is_fast_travel then
+            local ft_id = self._fast_travel_id_str or self._save_id_str
+            local unlock_ok, unlock_result = pcall(FastTravel.unlock, ft_id)
+            savepoint_log(string.format('[SAVE_POINT] Fast travel unlock: id=%s ok=%s result=%s',
+                tostring(ft_id), tostring(unlock_ok), tostring(unlock_result)))
+            if unlock_ok and unlock_result then
+                -- Update interaction label now that it's unlocked
+                Interaction.update(msg.url(), { label = "Fast Travel (Open Map)" })
+            end
+        end
+        if self.heal_on_save and self._player_id then
+            msg.post(self._player_id, C.MSG.RESTORE_HEALTH or hash("mvtk_restore_health"))
+        end
+        if self.restore_energy then
+            local ok_energy, EnergyState = pcall(require, "mvtk.player.energy_state")
+            if ok_energy and EnergyState and EnergyState.get and EnergyState.set then
+                local _, max_energy = EnergyState.get()
+                if max_energy and max_energy > 0 then
+                    EnergyState.set(max_energy, max_energy)
+                end
+            end
+        end
+    end)
+    savepoint_log(string.format('[SAVE_POINT] saved=%s error=%s at WORLD (%.1f, %.1f)', tostring(checkpoint_ok), tostring(save_error), pos.x or 0, pos.y or 0))
+    -- Optional toast
+    pcall(msg.post, msg.url("main:/toast_gui#toast"), hash('toast'), {
+        text = checkpoint_ok and 'Game Saved' or 'Save failed. Please try again.'
+    })
+    if checkpoint_ok then require("mvtk.tiled.object_presentation").emit("interacted") end
+    return checkpoint_ok
+end
+
+function init(self)
+    self._in_range = false
+    self._player_id = nil
+    self._requires_interact = self.requires_interact ~= false
+    self._show_on_map = self.show_on_map ~= false
+
+    -- Get save_id - fall back to game object ID if invalid/unknown
+    self._save_id_str = PU.normalize_hash_string(self.save_id)
+    print(string.format("[SAVE_POINT_DEBUG] After normalize, save_id_str = %s", tostring(self._save_id_str)))
+    if not self._save_id_str then
+        -- Generate ID from game object path (e.g., "/room_instance/save_point" -> "save_point")
+        local go_id = Util.go_id_text(go.get_id())
+        print(string.format("[SAVE_POINT_DEBUG] Fallback: go_id = '%s'", tostring(go_id)))
+        -- Extract the object name when the engine exposes its path
+        local obj_name = extract_object_name(go_id) or "save_point"
+        print(string.format("[SAVE_POINT_DEBUG] Fallback: extracted obj_name = '%s'", obj_name))
+        self._save_id_str = obj_name
+    end
+
+    -- Get display name - fall back to save_id
+    self._display_name_str = PU.normalize_hash_string(self.display_name)
+    if not self._display_name_str then
+        self._display_name_str = self._save_id_str
+    end
+
+    -- Get room_id - fall back to current room from RoomManager
+    self._room_id_str = PU.normalize_hash_string(self.room_id)
+    if not self._room_id_str then
+        local obj_name = extract_object_name(Util.go_id_text(go.get_id()))
+        self._room_id_str = infer_room_id_from_object(obj_name)
+    end
+    if not self._room_id_str then
+        local room_id = RoomManager and RoomManager.get_current_room and RoomManager.get_current_room() or "unknown"
+        self._room_id_str = PU.normalize_hash_string(room_id) or tostring(room_id) or "unknown"
+    end
+
+    if self.is_fast_travel then
+        -- Namespace fast travel IDs by room to avoid collisions across rooms.
+        self._fast_travel_id_str = self._save_id_str
+        if self._room_id_str and self._fast_travel_id_str then
+            local prefix = self._room_id_str .. "_"
+            if string.find(self._fast_travel_id_str, prefix, 1, true) == 1 then
+                self._fast_travel_id_str = self._fast_travel_id_str:sub(#prefix + 1)
+            end
+        end
+        if self._room_id_str ~= "" and self._room_id_str ~= "unknown" and not string.find(self._fast_travel_id_str, ":", 1, true) then
+            self._fast_travel_id_str = self._room_id_str .. ":" .. self._fast_travel_id_str
+        end
+        local pos = go.get_world_position()
+        local ok = FastTravel.register(self._fast_travel_id_str, {
+            pos = pos,
+            room_id = self._room_id_str,
+            name = self._display_name_str,
+            show_on_map = self._show_on_map,
+        })
+        savepoint_log(string.format("[SAVE_POINT] Fast travel registration: id='%s' room='%s' pos=(%.1f,%.1f) ok=%s",
+            tostring(self._fast_travel_id_str), tostring(self._room_id_str), pos.x, pos.y, tostring(ok)))
+    else
+        savepoint_log(string.format("[SAVE_POINT] Not a fast travel point: save_id='%s'", tostring(self._save_id_str)))
+    end
+
+    if self._show_on_map then
+        local marker_id = string.format("save_point:%s:%s", tostring(self._room_id_str), tostring(self._save_id_str))
+        local pos = go.get_world_position()
+        msg.post("main:/main_go#script", hash("register_map_marker"), {
+            id = marker_id,
+            marker_type = "save",
+            marker_icon = "save_point",
+            marker_label = self._display_name_str,
+            position = pos,
+            room_id = self._room_id_str,
+            show_on_minimap = true,
+            show_on_world_map = true,
+            visible_from_start = false,
+            discovery_radius = 0,
+            source = "save_point",
+        })
+    end
+
+    local interaction_label = self._requires_interact and "Rest" or "Save"
+    if self.is_fast_travel and self._fast_travel_id_str then
+        local is_unlocked = FastTravel.is_unlocked(self._fast_travel_id_str)
+        interaction_label = is_unlocked and "Fast Travel (Open Map)" or "Press UP to Unlock"
+    end
+
+    Interaction.register(msg.url(), {
+        label = interaction_label,
+        range = 160,
+        priority = 5,
+        position_fn = function(url)
+            return go.get_world_position(url)
+        end
+    })
+end
+
+function on_message(self, message_id, message, sender)
+    if message_id == hash("trigger_response") and message.other_group == C.GROUPS.PLAYER then
+        if message.enter then
+            self._in_range = true
+            self._player_id = message.other_id
+            msg.post(".", "acquire_input_focus")
+            Interaction.update(msg.url(), { priority = 10 })
+            if not self._requires_interact and not self._auto_saved then
+                self._auto_saved = true
+                perform_save(self)
+            end
+        else
+            if self._player_id == message.other_id then
+                self._player_id = nil
+            end
+            self._in_range = false
+            self._auto_saved = false
+            msg.post(".", "release_input_focus")
+            Interaction.update(msg.url(), { priority = 5 })
+        end
+    elseif message_id == hash("mvtk_interact") then
+        -- Check if this is an unlocked fast travel point - open map instead of saving
+        if self.is_fast_travel and self._fast_travel_id_str then
+            local is_unlocked = FastTravel.is_unlocked(self._fast_travel_id_str)
+            if is_unlocked then
+                savepoint_log(string.format('[SAVE_POINT] Fast travel point unlocked, opening map: %s', self._fast_travel_id_str))
+                -- Open world map in fast travel mode
+                pcall(msg.post, "main:/world_map_gui#world_map", hash("open_world_map"), {
+                    source = "save_point",
+                    mode = "fast_travel",
+                    show_title = true,
+                    show_legend = true,
+                })
+                return
+            end
+        end
+        -- Normal save behavior
+        perform_save(self)
+    end
+end
+
+function on_input(self, action_id, action)
+    if not self._in_range or not action or not action.pressed then
+        return
+    end
+    if not self._requires_interact and not self.is_fast_travel then
+        return
+    end
+    if UP_INPUTS[action_id] then
+        perform_save(self)
+    end
+end
+
+function final(self)
+    msg.post(".", "release_input_focus")
+    Interaction.unregister(msg.url())
+end

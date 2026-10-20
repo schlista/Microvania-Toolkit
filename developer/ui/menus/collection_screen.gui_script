@@ -1,0 +1,532 @@
+local Viewport = require "mvtk.ui.viewport"
+-- developer/ui/game/collection_screen.gui_script
+-- Relic and Lore Collection Screen
+-- Shows all collected relics, lore entries, and completion stats
+
+local M = {}
+
+-- Constants
+local MARGIN = 40
+local GRID_COLS = 4
+local GRID_SPACING = 20
+local RELIC_SLOT_SIZE = 120
+local PAGE_SIZE = 12  -- Show 12 relics per page (3 rows x 4 cols)
+
+-- Tab modes
+local TAB = {
+    RELICS = 1,
+    LORE = 2,
+    STATS = 3,
+}
+
+local function get_flags()
+    local ok, Flags = pcall(require, "mvtk.core.flags")
+    return ok and Flags or nil
+end
+
+function init(self)
+    self._w, self._h = Viewport.design_size()
+    self.visible = false
+    self.current_tab = TAB.RELICS
+    self.current_page = 1
+    self.selected_index = 1
+
+    -- Background overlay
+    self.overlay = gui.new_box_node(vmath.vector3(0, 0, 0), vmath.vector3(self._w, self._h, 0))
+    gui.set_pivot(self.overlay, gui.PIVOT_SW)
+    gui.set_color(self.overlay, vmath.vector4(0, 0, 0, 0.85))
+
+    -- Title
+    self.title = gui.new_text_node(vmath.vector3(self._w/2, self._h - MARGIN, 0), "COLLECTION")
+    gui.set_pivot(self.title, gui.PIVOT_N)
+    gui.set_color(self.title, vmath.vector4(1, 1, 0.7, 1))
+
+    -- Tab buttons
+    self.tab_relics = gui.new_text_node(vmath.vector3(self._w/2 - 200, self._h - MARGIN - 40, 0), "RELICS")
+    gui.set_pivot(self.tab_relics, gui.PIVOT_CENTER)
+    gui.set_color(self.tab_relics, vmath.vector4(1, 1, 1, 1))
+
+    self.tab_lore = gui.new_text_node(vmath.vector3(self._w/2, self._h - MARGIN - 40, 0), "LORE")
+    gui.set_pivot(self.tab_lore, gui.PIVOT_CENTER)
+    gui.set_color(self.tab_lore, vmath.vector4(0.6, 0.6, 0.6, 1))
+
+    self.tab_stats = gui.new_text_node(vmath.vector3(self._w/2 + 200, self._h - MARGIN - 40, 0), "STATS")
+    gui.set_pivot(self.tab_stats, gui.PIVOT_CENTER)
+    gui.set_color(self.tab_stats, vmath.vector4(0.6, 0.6, 0.6, 1))
+
+    -- Content area
+    self.content_y = self._h - MARGIN - 100
+
+    -- Relic grid (slots for relics)
+    self.relic_slots = {}
+    for i = 1, PAGE_SIZE do
+        local row = math.floor((i - 1) / GRID_COLS)
+        local col = (i - 1) % GRID_COLS
+        local x = MARGIN + col * (RELIC_SLOT_SIZE + GRID_SPACING) + RELIC_SLOT_SIZE/2
+        local y = self.content_y - row * (RELIC_SLOT_SIZE + GRID_SPACING) - RELIC_SLOT_SIZE/2
+
+        -- Slot background
+        local slot_bg = gui.new_box_node(vmath.vector3(x, y, 0), vmath.vector3(RELIC_SLOT_SIZE, RELIC_SLOT_SIZE, 0))
+        gui.set_pivot(slot_bg, gui.PIVOT_CENTER)
+        gui.set_color(slot_bg, vmath.vector4(0.2, 0.2, 0.2, 0.8))
+
+        -- Slot icon (shows ? if not collected)
+        local slot_icon = gui.new_text_node(vmath.vector3(x, y + 20, 0.01), "?")
+        gui.set_pivot(slot_icon, gui.PIVOT_CENTER)
+        gui.set_color(slot_icon, vmath.vector4(0.5, 0.5, 0.5, 0.5))
+
+        -- Slot label (shows name if collected)
+        local slot_label = gui.new_text_node(vmath.vector3(x, y - 40, 0.01), "")
+        gui.set_pivot(slot_label, gui.PIVOT_CENTER)
+        gui.set_color(slot_label, vmath.vector4(1, 1, 1, 1))
+
+        self.relic_slots[i] = {
+            bg = slot_bg,
+            icon = slot_icon,
+            label = slot_label,
+            collected = false,
+        }
+    end
+
+    -- Lore entries list (scrollable text area)
+    self.lore_entries = {}
+    self.lore_scroll_offset = 0
+
+    -- Stats display
+    self.stats_text = gui.new_text_node(vmath.vector3(MARGIN, self.content_y, 0), "")
+    gui.set_pivot(self.stats_text, gui.PIVOT_NW)
+    gui.set_color(self.stats_text, vmath.vector4(1, 1, 1, 1))
+
+    -- Detail panel (shows selected relic/lore details)
+    local detail_x = MARGIN + GRID_COLS * (RELIC_SLOT_SIZE + GRID_SPACING) + 40
+    local detail_w = self._w - detail_x - MARGIN
+
+    self.detail_bg = gui.new_box_node(vmath.vector3(detail_x, self.content_y, 0), vmath.vector3(detail_w, 400, 0))
+    gui.set_pivot(self.detail_bg, gui.PIVOT_NW)
+    gui.set_color(self.detail_bg, vmath.vector4(0.15, 0.15, 0.2, 0.9))
+
+    self.detail_title = gui.new_text_node(vmath.vector3(detail_x + 20, self.content_y - 20, 0.01), "")
+    gui.set_pivot(self.detail_title, gui.PIVOT_NW)
+    gui.set_color(self.detail_title, vmath.vector4(1, 1, 0.7, 1))
+
+    self.detail_text = gui.new_text_node(vmath.vector3(detail_x + 20, self.content_y - 60, 0.01), "")
+    gui.set_pivot(self.detail_text, gui.PIVOT_NW)
+    gui.set_color(self.detail_text, vmath.vector4(0.9, 0.9, 0.9, 1))
+
+    -- Footer (controls)
+    self.footer = gui.new_text_node(vmath.vector3(self._w/2, MARGIN, 0), "B: Close  |  LB/RB: Switch Tabs  |  D-Pad: Navigate")
+    gui.set_pivot(self.footer, gui.PIVOT_S)
+    gui.set_color(self.footer, vmath.vector4(0.8, 0.8, 0.8, 0.9))
+
+    -- Load collection data
+    self:load_collection_data()
+
+    -- Hide by default
+    self:hide()
+end
+
+function M.load_collection_data(self)
+    -- Load collected relics and lore from CollectibleManager
+    local success, CollectibleManager = pcall(require, "mvtk.collectibles.collectible_manager")
+    if not success or not CollectibleManager then
+        print("[COLLECTION_SCREEN] CollectibleManager not available")
+        self.collected_relics = {}
+        self.collected_lore = {}
+        return
+    end
+
+    -- Query actual collected items from the manager
+    self.collected_relics = CollectibleManager.get_collected_relics() or {}
+    self.collected_lore = CollectibleManager.get_collected_lore() or {}
+
+    print(string.format("[COLLECTION_SCREEN] Loaded %d relics, %d lore entries",
+        #self.collected_relics, #self.collected_lore))
+end
+
+function M.update_tab_colors(self)
+    -- Update tab colors based on current tab
+    if self.current_tab == TAB.RELICS then
+        gui.set_color(self.tab_relics, vmath.vector4(1, 1, 1, 1))
+        gui.set_color(self.tab_lore, vmath.vector4(0.6, 0.6, 0.6, 1))
+        gui.set_color(self.tab_stats, vmath.vector4(0.6, 0.6, 0.6, 1))
+    elseif self.current_tab == TAB.LORE then
+        gui.set_color(self.tab_relics, vmath.vector4(0.6, 0.6, 0.6, 1))
+        gui.set_color(self.tab_lore, vmath.vector4(1, 1, 1, 1))
+        gui.set_color(self.tab_stats, vmath.vector4(0.6, 0.6, 0.6, 1))
+    elseif self.current_tab == TAB.STATS then
+        gui.set_color(self.tab_relics, vmath.vector4(0.6, 0.6, 0.6, 1))
+        gui.set_color(self.tab_lore, vmath.vector4(0.6, 0.6, 0.6, 1))
+        gui.set_color(self.tab_stats, vmath.vector4(1, 1, 1, 1))
+    end
+end
+
+function M.update_content(self)
+    if self.current_tab == TAB.RELICS then
+        self:show_relics_tab()
+    elseif self.current_tab == TAB.LORE then
+        self:show_lore_tab()
+    elseif self.current_tab == TAB.STATS then
+        self:show_stats_tab()
+    end
+end
+
+function M.show_relics_tab(self)
+    -- Show relic grid, hide lore and stats
+    for _, slot in ipairs(self.relic_slots) do
+        gui.set_enabled(slot.bg, true)
+        gui.set_enabled(slot.icon, true)
+        gui.set_enabled(slot.label, true)
+    end
+    gui.set_enabled(self.detail_bg, true)
+    gui.set_enabled(self.detail_title, true)
+    gui.set_enabled(self.detail_text, true)
+    gui.set_enabled(self.stats_text, false)
+
+    -- Update relic slots with actual data
+    for i, slot in ipairs(self.relic_slots) do
+        local relic_index = (self.current_page - 1) * PAGE_SIZE + i
+        local relic = self.collected_relics[relic_index]
+
+        if relic and relic.name then
+            -- Relic is collected and has valid data
+            gui.set_text(slot.icon, relic.icon or "★")
+            gui.set_text(slot.label, relic.name or "Unknown")
+            gui.set_color(slot.icon, vmath.vector4(1, 0.8, 0.2, 1))
+            slot.collected = true
+            slot.relic_data = relic  -- Store for detail view
+        else
+            -- Empty slot or invalid data
+            gui.set_text(slot.icon, "?")
+            gui.set_text(slot.label, "???")
+            gui.set_color(slot.icon, vmath.vector4(0.5, 0.5, 0.5, 0.5))
+            slot.collected = false
+            slot.relic_data = nil
+        end
+    end
+end
+
+function M.show_lore_tab(self)
+    -- Hide relic grid, show lore list
+    for _, slot in ipairs(self.relic_slots) do
+        gui.set_enabled(slot.bg, false)
+        gui.set_enabled(slot.icon, false)
+        gui.set_enabled(slot.label, false)
+    end
+    gui.set_enabled(self.detail_bg, true)
+    gui.set_enabled(self.detail_title, true)
+    gui.set_enabled(self.detail_text, true)
+    gui.set_enabled(self.stats_text, false)
+
+    -- Display lore entries summary
+    local lore_count = #self.collected_lore
+    if lore_count > 0 then
+        gui.set_text(self.detail_title, string.format("Lore Entries (%d)", lore_count))
+        local lore_text = ""
+        for i, lore_entry in ipairs(self.collected_lore) do
+            if lore_entry and lore_entry.name then
+                lore_text = lore_text .. string.format("%d. %s\n", i, lore_entry.name)
+            end
+        end
+        gui.set_text(self.detail_text, lore_text)
+    else
+        gui.set_text(self.detail_title, "Lore Entries (0)")
+        gui.set_text(self.detail_text, "No lore entries collected yet.\nExplore the world to discover its secrets!")
+    end
+end
+
+function M.show_stats_tab(self)
+    -- Hide relic grid and detail panel, show stats
+    for _, slot in ipairs(self.relic_slots) do
+        gui.set_enabled(slot.bg, false)
+        gui.set_enabled(slot.icon, false)
+        gui.set_enabled(slot.label, false)
+    end
+    gui.set_enabled(self.detail_bg, false)
+    gui.set_enabled(self.detail_title, false)
+    gui.set_enabled(self.detail_text, false)
+    gui.set_enabled(self.stats_text, true)
+
+    -- Count actual collectibles from config
+    local total_relics, total_lore = self:count_total_collectibles()
+
+    -- Build stats text
+    local stats_lines = {}
+    table.insert(stats_lines, "=== COLLECTION STATISTICS ===")
+    table.insert(stats_lines, "")
+    table.insert(stats_lines, string.format("Relics Collected: %d / %d", #self.collected_relics, total_relics))
+    table.insert(stats_lines, string.format("Lore Entries: %d / %d", #self.collected_lore, total_lore))
+    table.insert(stats_lines, "")
+
+    -- Get completion stats from collectible manager
+    local ok, CollectibleManager = pcall(require, "mvtk.collectibles.collectible_manager")
+    if ok and CollectibleManager and CollectibleManager.get_global_completion then
+        local completion = CollectibleManager.get_global_completion()
+        table.insert(stats_lines, "=== GAME COMPLETION ===")
+        table.insert(stats_lines, "")
+        table.insert(stats_lines, string.format("Total Collectibles: %d / %d", completion.collected, completion.total_collectibles))
+        table.insert(stats_lines, string.format("Completion: %.1f%%", completion.percentage))
+        table.insert(stats_lines, string.format("Secrets Found: %d / %d", completion.secrets_found, completion.total_secrets))
+    end
+
+    gui.set_text(self.stats_text, table.concat(stats_lines, "\n"))
+end
+
+function M.show(self)
+    self.visible = true
+    gui.set_enabled(self.overlay, true)
+    gui.set_enabled(self.title, true)
+    gui.set_enabled(self.tab_relics, true)
+    gui.set_enabled(self.tab_lore, true)
+    gui.set_enabled(self.tab_stats, true)
+    gui.set_enabled(self.footer, true)
+
+    self:update_tab_colors()
+    self:update_content()
+
+    -- Pause game
+    local ok_pause, Pause = pcall(require, "mvtk.core.pause")
+    if ok_pause and Pause then
+        Pause.set(true)
+    end
+
+    -- Block input
+    local ok_input, InputCtl = pcall(require, "mvtk.rooms.input_controller")
+    if ok_input and InputCtl and InputCtl.set_blocked then
+        InputCtl.set_blocked(true)
+    end
+end
+
+function M.hide(self)
+    self.visible = false
+    gui.set_enabled(self.overlay, false)
+    gui.set_enabled(self.title, false)
+    gui.set_enabled(self.tab_relics, false)
+    gui.set_enabled(self.tab_lore, false)
+    gui.set_enabled(self.tab_stats, false)
+    gui.set_enabled(self.footer, false)
+
+    -- Hide all content
+    for _, slot in ipairs(self.relic_slots) do
+        gui.set_enabled(slot.bg, false)
+        gui.set_enabled(slot.icon, false)
+        gui.set_enabled(slot.label, false)
+    end
+    gui.set_enabled(self.detail_bg, false)
+    gui.set_enabled(self.detail_title, false)
+    gui.set_enabled(self.detail_text, false)
+    gui.set_enabled(self.stats_text, false)
+
+    -- Unpause game
+    local ok_pause, Pause = pcall(require, "mvtk.core.pause")
+    if ok_pause and Pause then
+        Pause.set(false)
+    end
+
+    -- Unblock input
+    local ok_input, InputCtl = pcall(require, "mvtk.rooms.input_controller")
+    if ok_input and InputCtl and InputCtl.set_blocked then
+        InputCtl.set_blocked(false)
+    end
+end
+
+function update(self, dt)
+    if not self.visible then
+        return
+    end
+
+    -- Handle window resize
+    local w, h = Viewport.design_size()
+    if w ~= self._w or h ~= self._h then
+        self._w, self._h = w, h
+
+        -- Reposition all elements for new window size
+        gui.set_size(self.overlay, vmath.vector3(w, h, 0))
+        gui.set_position(self.title, vmath.vector3(w/2, h - MARGIN, 0))
+        gui.set_position(self.tab_relics, vmath.vector3(w/2 - 200, h - MARGIN - 40, 0))
+        gui.set_position(self.tab_lore, vmath.vector3(w/2, h - MARGIN - 40, 0))
+        gui.set_position(self.tab_stats, vmath.vector3(w/2 + 200, h - MARGIN - 40, 0))
+        gui.set_position(self.footer, vmath.vector3(w/2, MARGIN, 0))
+
+        self.content_y = h - MARGIN - 100
+
+        -- Reposition relic grid
+        for i, slot in ipairs(self.relic_slots) do
+            local row = math.floor((i - 1) / GRID_COLS)
+            local col = (i - 1) % GRID_COLS
+            local x = MARGIN + col * (RELIC_SLOT_SIZE + GRID_SPACING) + RELIC_SLOT_SIZE/2
+            local y = self.content_y - row * (RELIC_SLOT_SIZE + GRID_SPACING) - RELIC_SLOT_SIZE/2
+
+            gui.set_position(slot.bg, vmath.vector3(x, y, 0))
+            gui.set_position(slot.icon, vmath.vector3(x, y + 20, 0.01))
+            gui.set_position(slot.label, vmath.vector3(x, y - 40, 0.01))
+        end
+
+        -- Reposition detail panel
+        local detail_x = MARGIN + GRID_COLS * (RELIC_SLOT_SIZE + GRID_SPACING) + 40
+        gui.set_position(self.detail_bg, vmath.vector3(detail_x, self.content_y, 0))
+        gui.set_position(self.detail_title, vmath.vector3(detail_x + 20, self.content_y - 20, 0.01))
+        gui.set_position(self.detail_text, vmath.vector3(detail_x + 20, self.content_y - 60, 0.01))
+
+        -- Reposition stats text
+        gui.set_position(self.stats_text, vmath.vector3(MARGIN, self.content_y, 0))
+    end
+end
+
+function on_message(self, message_id, message, sender)
+    if message_id == hash("open_collection") then
+        self:load_collection_data()
+        self:show()
+    elseif message_id == hash("close_collection") then
+        self:hide()
+    elseif message_id == hash("toggle_collection") then
+        if self.visible then
+            self:hide()
+        else
+            self:load_collection_data()
+            self:show()
+        end
+    end
+end
+
+function on_input(self, action_id, action)
+    if not self.visible then
+        return
+    end
+
+    if not action.pressed then
+        return
+    end
+
+    if action_id == hash("gamepad_rpad_right") or action_id == hash("gamepad_back")
+        or action_id == hash("key_escape") or action_id == hash("key_m") then
+        self:hide()
+        return true
+
+    elseif action_id == hash("gamepad_lshoulder") or action_id == hash("key_tab") then
+        -- Previous tab
+        self.current_tab = self.current_tab - 1
+        if self.current_tab < TAB.RELICS then
+            self.current_tab = TAB.STATS
+        end
+        self:update_tab_colors()
+        self:update_content()
+        return true
+
+    elseif action_id == hash("gamepad_rshoulder") then
+        -- Next tab
+        self.current_tab = self.current_tab + 1
+        if self.current_tab > TAB.STATS then
+            self.current_tab = TAB.RELICS
+        end
+        self:update_tab_colors()
+        self:update_content()
+        return true
+
+    elseif self.current_tab == TAB.RELICS then
+        -- Navigation in relics grid
+        if action_id == hash("gamepad_lpad_left") or action_id == hash("key_left")
+            or action_id == hash("key_a") then
+            self.selected_index = math.max(1, self.selected_index - 1)
+            self:update_selection_highlight()
+            self:update_detail_panel()
+            return true
+
+        elseif action_id == hash("gamepad_lpad_right") or action_id == hash("key_right")
+            or action_id == hash("key_d") then
+            self.selected_index = math.min(PAGE_SIZE, self.selected_index + 1)
+            self:update_selection_highlight()
+            self:update_detail_panel()
+            return true
+
+        elseif action_id == hash("gamepad_lpad_up") or action_id == hash("key_up")
+            or action_id == hash("key_w") then
+            self.selected_index = math.max(1, self.selected_index - GRID_COLS)
+            self:update_selection_highlight()
+            self:update_detail_panel()
+            return true
+
+        elseif action_id == hash("gamepad_lpad_down") or action_id == hash("key_down")
+            or action_id == hash("key_s") then
+            self.selected_index = math.min(PAGE_SIZE, self.selected_index + GRID_COLS)
+            self:update_selection_highlight()
+            self:update_detail_panel()
+            return true
+
+        elseif action_id == hash("gamepad_rpad_down") or action_id == hash("key_enter") then
+            -- Select/view relic details
+            self:update_detail_panel()
+            return true
+        end
+
+    elseif self.current_tab == TAB.LORE then
+        -- Navigation in lore list
+        if action_id == hash("gamepad_lpad_up") or action_id == hash("key_up")
+            or action_id == hash("key_w") then
+            self.selected_index = math.max(1, self.selected_index - 1)
+            self:update_lore_selection()
+            return true
+
+        elseif action_id == hash("gamepad_lpad_down") or action_id == hash("key_down")
+            or action_id == hash("key_s") then
+            self.selected_index = math.min(#self.collected_lore, self.selected_index + 1)
+            self:update_lore_selection()
+            return true
+        end
+    end
+end
+
+function M.update_selection_highlight(self)
+    -- Update visual highlight for selected relic
+    for i, slot in ipairs(self.relic_slots) do
+        if i == self.selected_index then
+            gui.set_color(slot.bg, vmath.vector4(0.4, 0.4, 0.6, 1.0))  -- Highlighted
+        else
+            gui.set_color(slot.bg, vmath.vector4(0.2, 0.2, 0.2, 0.8))  -- Normal
+        end
+    end
+end
+
+function M.update_detail_panel(self)
+    -- Show details of selected relic
+    local relic_index = (self.current_page - 1) * PAGE_SIZE + self.selected_index
+    local relic = self.collected_relics[relic_index]
+
+    if relic and relic.name then
+        gui.set_text(self.detail_title, relic.name or "Unknown Relic")
+        gui.set_text(self.detail_text, relic.description or "No description available.")
+    else
+        gui.set_text(self.detail_title, "???")
+        gui.set_text(self.detail_text, "This relic has not been discovered yet.")
+    end
+end
+
+function M.update_lore_selection(self)
+    -- Update lore display to show selected entry
+    local lore_entry = self.collected_lore[self.selected_index]
+    if lore_entry and lore_entry.name then
+        gui.set_text(self.detail_title, lore_entry.name)
+        gui.set_text(self.detail_text, lore_entry.text or lore_entry.description or "")
+    end
+end
+
+function M.count_total_collectibles(self)
+    -- Count total possible collectibles from config
+    local total_relics = 0
+    local total_lore = 0
+
+    local success, collectible_types = pcall(require, "developer.config.collectible_types")
+    if success and collectible_types then
+        for type_id, type_data in pairs(collectible_types) do
+            if type_data.category == "relic" and type_data.show_in_collection ~= false then
+                total_relics = total_relics + 1
+            elseif type_data.category == "lore" then
+                total_lore = total_lore + 1
+            end
+        end
+    end
+
+    return total_relics, total_lore
+end
+
+-- Make functions available
+return M

@@ -1,0 +1,201 @@
+-- mvtk/prefabs/pressure_plate.script
+-- Weight-activated trigger that broadcasts to TriggerBus targets.
+
+local Flags = require "mvtk.core.flags"
+local TriggerBus = require "mvtk.world.trigger_bus"
+local PU = require "mvtk.prefabs.prefab_utils"
+local Util = require "mvtk.core.util"
+
+go.property("plate_id", "")
+go.property("target_id", "")
+go.property("required_count", 1)
+go.property("allow_player", true)
+go.property("allow_world", true)
+go.property("allow_enemy", false)
+go.property("stays_pressed", false)
+go.property("message_on", "")
+go.property("message_off", "")
+go.property("set_flag", "")
+go.property("sound_on", "")
+go.property("sound_off", "")
+go.property("show_sprite", true) -- false when the Tiled layer owns the visible art
+
+-- Optional tile animation swap on press/release. Leave anim_tilemap empty to disable.
+-- anim_tilemap: URL to the tilemap component (e.g. "/start_room#tilemap")
+-- anim_layer: layer name on that tilemap (e.g. "environment")
+-- anim_tile_x / anim_tile_y: tile cell coordinates (1-based, matches tilemap.set_tile)
+-- tile_on / tile_off: tile ids to set when pressed / released (0 = leave unchanged)
+go.property("anim_tilemap", "")
+go.property("anim_layer", "")
+go.property("anim_tile_x", 0)
+go.property("anim_tile_y", 0)
+go.property("tile_on", 0)
+go.property("tile_off", 0)
+
+local PLAYER = hash("player")
+local WORLD = hash("world")
+local ENEMY = hash("enemy")
+
+local DEFAULT_ON = "activate"
+local DEFAULT_OFF = "deactivate"
+local EMPTY_HASH = hash("")
+
+local function optional_text(value)
+    return PU.optional_id(value) or ""
+end
+
+local function resolve_message_id(value, fallback)
+    local s = PU.normalize_hash_string(value)
+    if s then
+        return hash(s)
+    end
+    if value ~= nil and value ~= EMPTY_HASH then
+        local t = tostring(value or "")
+        if t ~= "" and t ~= "hash: [0000000000000000]" then
+            -- Preserve unknown hash userdata from script properties instead of
+            -- incorrectly falling back to defaults.
+            return value
+        end
+    end
+    return hash(fallback)
+end
+
+local function set_anim_tile(self, tile_id)
+    if not self.anim_tilemap_url or not self.anim_layer_hash then
+        return
+    end
+    if not tile_id or tile_id <= 0 then
+        return
+    end
+    local ok, err = pcall(tilemap.set_tile, self.anim_tilemap_url, self.anim_layer_hash,
+        self.anim_tile_x, self.anim_tile_y, tile_id)
+    if not ok then
+        print(string.format("[PRESSURE_PLATE] tilemap.set_tile failed: %s", tostring(err)))
+    end
+end
+
+local function update_pressed(self, pressed)
+    if pressed == self.pressed then
+        return
+    end
+
+    self.pressed = pressed
+    require("mvtk.tiled.object_presentation").emit("interacted", pressed and "on" or "off")
+
+    if pressed then
+        if self.flag_id_str then
+            Flags.set(self.flag_id_str, true)
+        end
+        local sent = TriggerBus.emit(self.target_id_key, self.msg_on, {
+            plate_id = self.plate_id_key,
+            pressed = true,
+        })
+        print(string.format("[PRESSURE_PLATE] pressed=true target=%s msg=%s listeners=%d",
+            tostring(self.target_id_key), tostring(self.msg_on), sent))
+        if sent == 0 then
+            print(string.format("[PRESSURE_PLATE] target '%s' has no listeners for '%s' on press",
+                tostring(self.target_id_key), tostring(self.msg_on)))
+        end
+        PU.play_sound(self.sound_on)
+        set_anim_tile(self, self.tile_on)
+    else
+        local sent = TriggerBus.emit(self.target_id_key, self.msg_off, {
+            plate_id = self.plate_id_key,
+            pressed = false,
+        })
+        print(string.format("[PRESSURE_PLATE] pressed=false target=%s msg=%s listeners=%d",
+            tostring(self.target_id_key), tostring(self.msg_off), sent))
+        if sent == 0 then
+            print(string.format("[PRESSURE_PLATE] target '%s' has no listeners for '%s' on release",
+                tostring(self.target_id_key), tostring(self.msg_off)))
+        end
+        PU.play_sound(self.sound_off)
+        set_anim_tile(self, self.tile_off)
+    end
+end
+
+local function count_touching(self)
+    local count = 0
+    for _ in pairs(self.touching) do
+        count = count + 1
+    end
+    return count
+end
+
+function init(self)
+    if not self.show_sprite then
+        Util.set_component_enabled("#sprite", false)
+    end
+    self.sound_on = optional_text(self.sound_on)
+    self.sound_off = optional_text(self.sound_off)
+    self.plate_id_key = PU.resolve_id(self.plate_id) or tostring(go.get_id())
+    self.target_id_key = PU.resolve_id(self.target_id) or self.plate_id_key
+    self.flag_id_str = PU.normalize_hash_string(self.set_flag)
+
+    self.required_count = math.max(1, tonumber(self.required_count) or 1)
+    self.allow_player = self.allow_player ~= false
+    self.allow_world = self.allow_world ~= false
+    self.allow_enemy = self.allow_enemy == true
+    self.stays_pressed = self.stays_pressed == true
+
+    self.msg_on = resolve_message_id(self.message_on, DEFAULT_ON)
+    self.msg_off = resolve_message_id(self.message_off, DEFAULT_OFF)
+
+    local anim_tm_str = PU.normalize_hash_string(self.anim_tilemap)
+    local anim_layer_str = PU.normalize_hash_string(self.anim_layer)
+    if anim_tm_str and anim_tm_str ~= "" and anim_layer_str and anim_layer_str ~= "" then
+        local ok_url, url_or_err = pcall(msg.url, anim_tm_str)
+        if ok_url then
+            self.anim_tilemap_url = url_or_err
+            self.anim_layer_hash = hash(anim_layer_str)
+            self.anim_tile_x = math.floor(tonumber(self.anim_tile_x) or 0)
+            self.anim_tile_y = math.floor(tonumber(self.anim_tile_y) or 0)
+            self.tile_on = math.floor(tonumber(self.tile_on) or 0)
+            self.tile_off = math.floor(tonumber(self.tile_off) or 0)
+        else
+            print(string.format("[PRESSURE_PLATE] invalid anim_tilemap url '%s': %s",
+                anim_tm_str, tostring(url_or_err)))
+        end
+    end
+
+    self.touching = {}
+    self.pressed = false
+    require("mvtk.tiled.object_presentation").restore("off")
+end
+
+function on_message(self, message_id, message, sender)
+    if message_id ~= hash("trigger_response") then
+        return
+    end
+
+    local other_group = message.other_group or message.group
+    local allowed = (self.allow_player and other_group == PLAYER)
+        or (self.allow_world and other_group == WORLD)
+        or (self.allow_enemy and other_group == ENEMY)
+
+    if not allowed then
+        return
+    end
+
+    local entity_id = message.other_id
+    if not entity_id then
+        return
+    end
+
+    if message.enter then
+        self.touching[entity_id] = true
+    else
+        self.touching[entity_id] = nil
+    end
+
+    if self.stays_pressed and self.pressed then
+        return
+    end
+
+    local active = count_touching(self) >= self.required_count
+    if active then
+        update_pressed(self, true)
+    else
+        update_pressed(self, false)
+    end
+end

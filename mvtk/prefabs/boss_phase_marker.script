@@ -1,0 +1,195 @@
+local Proxy = require "mvtk.prefabs.tiled_proxy_util"
+
+go.property("registration_id", "")
+go.property("object_id", 0)
+go.property("phase_id", "")
+go.property("boss_id", "")
+go.property("boss_type", "")
+go.property("boss_preset", "")
+go.property("arena_id", "")
+go.property("phase", 1)
+go.property("health_min", -1)
+go.property("health_max", -1)
+go.property("attacks", "")
+go.property("attack_interval_min", 2)
+go.property("attack_interval_max", 4)
+-- Optional phase-local movement and charge overrides. Negative values inherit
+-- from the boss object, preset, or selected attack pattern.
+go.property("chase_speed", -1)
+go.property("charge_speed", -1)
+go.property("charge_distance", -1)
+go.property("charge_telegraph_time", -1)
+go.property("charge_duration", -1)
+go.property("charge_cooldown", -1)
+go.property("charge_recovery", -1)
+go.property("behavior", "")
+go.property("speed_multiplier", 1)
+go.property("damage_multiplier", 1)
+go.property("transition_type", "")
+go.property("transition_duration", 0)
+go.property("transition_iframes", 0)
+go.property("transition_animation", "")
+go.property("transition_camera_intensity", 0)
+go.property("transition_camera_duration", 0)
+go.property("transition_flash", false)
+go.property("transition_arena_darkness", false)
+go.property("transition_spawn_hazards", "")
+go.property("transition_teleport_to", "")
+go.property("transition_new_music", "")
+go.property("room_id", "")
+-- Movement profile (see mvtk.bosses.movement_strategies)
+go.property("movement_profile", "")
+go.property("facing_lock", false)
+go.property("hover_height", 0)
+go.property("jump_height", 0)
+go.property("jump_speed", 0)
+go.property("leash_radius", 0)
+go.property("attack_range", 0)
+
+local HASH_FIELDS = {
+    "phase_id",
+    "boss_id",
+    "boss_type",
+    "boss_preset",
+    "arena_id",
+    "attacks",
+    "behavior",
+    "transition_type",
+    "transition_animation",
+    "transition_spawn_hazards",
+    "transition_teleport_to",
+    "transition_new_music",
+    "movement_profile",
+}
+
+local NUMBER_FIELDS = {
+    "phase",
+    "health_min",
+    "health_max",
+    "attack_interval_min",
+    "attack_interval_max",
+    "chase_speed",
+    "charge_speed",
+    "charge_distance",
+    "charge_telegraph_time",
+    "charge_duration",
+    "charge_cooldown",
+    "charge_recovery",
+    "speed_multiplier",
+    "damage_multiplier",
+    "transition_duration",
+    "transition_iframes",
+    "transition_camera_intensity",
+    "transition_camera_duration",
+    "hover_height",
+    "jump_height",
+    "jump_speed",
+    "leash_radius",
+    "attack_range",
+}
+
+local NUMBER_DEFAULTS = {
+    chase_speed = -1,
+    charge_speed = -1,
+    charge_distance = -1,
+    charge_telegraph_time = -1,
+    charge_duration = -1,
+    charge_cooldown = -1,
+    charge_recovery = -1,
+}
+
+local BOOL_FIELDS = {
+    "transition_flash",
+    "transition_arena_darkness",
+    "facing_lock",
+}
+
+local AUTHORED_SCHEMA = {
+    object_kind = "boss_phase",
+    hash_fields = HASH_FIELDS,
+    optional_hash_fields = { "transition_new_music" },
+    number_fields = NUMBER_FIELDS,
+    bool_fields = BOOL_FIELDS,
+}
+
+local function build_properties(self)
+    local props = {}
+    for _, field in ipairs(HASH_FIELDS) do
+        if field == "transition_new_music" then
+            props[field] = Proxy.optional_plain(self[field])
+        else
+            props[field] = Proxy.plain(self[field], "")
+        end
+    end
+    for _, field in ipairs(NUMBER_FIELDS) do
+        props[field] = Proxy.number(self[field], NUMBER_DEFAULTS[field] or 0)
+    end
+    for _, field in ipairs(BOOL_FIELDS) do
+        props[field] = Proxy.bool(self[field], false)
+    end
+    props = Proxy.overlay_authored(self, props, AUTHORED_SCHEMA)
+    return props
+end
+
+local function blank_or_none(value)
+    return value == nil or value == "" or string.lower(tostring(value)) == "none"
+end
+
+function init(self)
+    local props = build_properties(self)
+    local phase_id = props.phase_id
+    local boss_preset = props.boss_preset
+    if phase_id == "" then
+        phase_id = Proxy.registration_id(self, "boss_phase")
+        props.phase_id = phase_id
+    end
+    if blank_or_none(boss_preset) then
+        boss_preset = props.boss_type
+    end
+    if blank_or_none(boss_preset) then boss_preset = "" end
+    props.boss_preset = boss_preset or ""
+    props.boss_type = boss_preset or props.boss_type or ""
+
+    Proxy.post_to_main("register_boss_phase", {
+        id = phase_id,
+        boss_id = props.boss_id,
+        boss_preset = props.boss_preset,
+        boss_type = props.boss_type,
+        arena_id = props.arena_id,
+        room_id = props.room_id,
+        phase = props.phase,
+        health_min = props.health_min,
+        health_max = props.health_max,
+        attacks = props.attacks,
+        attack_interval_min = props.attack_interval_min,
+        attack_interval_max = props.attack_interval_max,
+        chase_speed = props.chase_speed,
+        charge_speed = props.charge_speed,
+        charge_distance = props.charge_distance,
+        charge_telegraph_time = props.charge_telegraph_time,
+        charge_duration = props.charge_duration,
+        charge_cooldown = props.charge_cooldown,
+        charge_recovery = props.charge_recovery,
+        behavior = props.behavior,
+        speed_multiplier = props.speed_multiplier,
+        damage_multiplier = props.damage_multiplier,
+        transition_type = props.transition_type,
+        transition_duration = props.transition_duration,
+        transition_iframes = props.transition_iframes,
+        transition_animation = props.transition_animation,
+        transition_camera_intensity = props.transition_camera_intensity,
+        transition_camera_duration = props.transition_camera_duration,
+        transition_flash = props.transition_flash,
+        transition_arena_darkness = props.transition_arena_darkness,
+        transition_spawn_hazards = props.transition_spawn_hazards,
+        transition_teleport_to = props.transition_teleport_to,
+        transition_new_music = props.transition_new_music,
+        movement_profile = props.movement_profile,
+        facing_lock = props.facing_lock,
+        hover_height = props.hover_height,
+        jump_height = props.jump_height,
+        jump_speed = props.jump_speed,
+        leash_radius = props.leash_radius,
+        attack_range = props.attack_range,
+    })
+end

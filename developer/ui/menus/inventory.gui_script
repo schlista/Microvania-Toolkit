@@ -1,0 +1,121 @@
+-- developer/ui/menus/inventory.gui_script
+local Inv = require "mvtk.core.inventory"
+local InputCtl = require "mvtk.rooms.input_controller"
+
+local v3 = vmath.vector3
+
+local function n(id) local ok, node = pcall(gui.get_node, id); return ok and node or nil end
+
+local function set_enabled(self, on)
+  self.enabled = on and true or false
+  msg.post(".", on and "enable" or "disable")
+  if on then InputCtl.set_blocked(true) else InputCtl.set_blocked(false) end
+end
+
+function init(self)
+  msg.post(".", "acquire_input_focus")
+  self.enabled = false
+  msg.post(".", "disable")
+
+  self.root = n("root")
+  self.title = n("title")
+  self.cash = n("cash")
+  self.hint = n("hint")
+  self.content_area = n("content_area")
+  self.row_label_template = n("row_label")
+  self.row_val_template = n("row_val")
+
+  self.rows = {}
+  self.selected_idx = 1
+  self.item_count = 0
+end
+
+local function update_selection(self)
+  for i, row in ipairs(self.rows) do
+    local selected = (i == self.selected_idx)
+    local text_col = selected and vmath.vector4(1, 1, 1, 1) or vmath.vector4(0.88, 0.88, 0.90, 1)
+    gui.set_color(row.label, text_col)
+    gui.set_color(row.val, text_col)
+    local s = selected and v3(1.05, 1.05, 1) or v3(1, 1, 1)
+    gui.set_scale(row.label, s)
+    gui.set_scale(row.val, s)
+  end
+end
+
+local function rebuild(self)
+  for _, r in ipairs(self.rows) do
+    pcall(gui.delete_node, r.label)
+    pcall(gui.delete_node, r.val)
+  end
+  self.rows = {}
+
+  gui.set_text(self.cash, string.format("$ %d", Inv.get_currency()))
+
+  local y0 = 180
+  local idx = 0
+  for id, count in pairs(Inv.all() or {}) do
+    idx = idx + 1
+    local y = y0 - (idx - 1) * 32
+
+    local lbl = gui.clone(self.row_label_template)
+    gui.set_enabled(lbl, true)
+    gui.set_text(lbl, tostring(id))
+    gui.set_position(lbl, v3(-200, y, 0))
+
+    local val = gui.clone(self.row_val_template)
+    gui.set_enabled(val, true)
+    gui.set_text(val, "x" .. tostring(count))
+    gui.set_position(val, v3(200, y, 0))
+
+    self.rows[idx] = { label = lbl, val = val }
+  end
+  self.item_count = idx
+  if self.selected_idx > self.item_count then self.selected_idx = math.max(1, self.item_count) end
+  update_selection(self)
+end
+
+local function open(self)
+  set_enabled(self, true)
+  self.selected_idx = 1
+  rebuild(self)
+end
+
+local function close(self)
+  set_enabled(self, false)
+end
+
+function on_message(self, message_id, message, sender)
+  if message_id == hash("open_inventory") then open(self)
+  elseif message_id == hash("close_inventory") then close(self)
+  end
+end
+
+function on_input(self, action_id, action)
+  if not self.enabled or not action then return end
+  if not action.pressed then return end
+
+  if action_id == hash("gamepad_rpad_right") or action_id == hash("gamepad_back")
+      or action_id == hash("key_escape") or action_id == hash("key_m") then
+    close(self)
+    return true
+  end
+
+  if self.item_count > 0 then
+    if action_id == hash("key_up") or action_id == hash("key_w")
+        or action_id == hash("gamepad_lpad_up")
+        or action_id == hash("gamepad_lstick_up") or action_id == hash("gamepad_rstick_up") then
+      self.selected_idx = self.selected_idx - 1
+      if self.selected_idx < 1 then self.selected_idx = self.item_count end
+      update_selection(self)
+      return true
+    elseif action_id == hash("key_down") or action_id == hash("key_s")
+        or action_id == hash("gamepad_lpad_down")
+        or action_id == hash("gamepad_lstick_down") or action_id == hash("gamepad_rstick_down") then
+      self.selected_idx = self.selected_idx + 1
+      if self.selected_idx > self.item_count then self.selected_idx = 1 end
+      update_selection(self)
+      return true
+    end
+  end
+end
+

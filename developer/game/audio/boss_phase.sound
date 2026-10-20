@@ -1,0 +1,3 @@
+sound: "/developer/assets/sfx/air_dash.wav"
+looping: 0
+group: "sfx"

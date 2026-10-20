@@ -1,0 +1,1888 @@
+-- mvtk/enemies/enemy.script  
+-- Generic enemy script that can use the new modular AI and spawning systems.
+-- Supports configurable attack patterns, health, speed, and AI behavior types.
+-- Integrates with EnemyAI controller and EnemySpawner for advanced behavior.
+
+local v3 = vmath.vector3
+local Pause = require "mvtk.core.pause"
+local FrameClock = require "mvtk.core.frame_clock"
+local Patterns = require "mvtk.enemies.patterns.attack_patterns"
+local LedgeGuard = require "mvtk.enemies.ledge_guard"
+local DamagePayload = require "mvtk.combat.damage_payload"
+local Invulnerability = require "mvtk.combat.invulnerability"
+local EnemyDefaults = require "developer.config.enemy_defaults"
+local TileSettings = require "developer.config.tile_settings"
+local HitReactions = require "mvtk.combat.hit_reactions"
+local Inv = require "mvtk.core.inventory"
+local CollectibleManager = require "mvtk.collectibles.collectible_manager"
+local C = require "mvtk.core.constants"
+local SurfaceClassifier = require "mvtk.core.surface_classifier"
+local Config = require "developer.config.resolved_config"
+local RuntimeSettings = require "developer.config.runtime_settings"
+local RuntimeLayoutLoader = require "mvtk.rooms.runtime_layout_loader"
+local TiledPaths = require "mvtk.tiled.tiled_paths"
+-- Util.require_config, not pcall(require, ...): the manifest is only reachable
+-- through this call, so a bare require never gets bundled into the build —
+-- require_config falls back to sys.load_resource via custom_resources
+-- (/developer/config), same as the music manifest in room_manager.
+local Util = require "mvtk.core.util"
+local Audio = require "mvtk.audio.audio"
+local EnemyAudio = require "mvtk.enemies.enemy_audio"
+local EnemyTypeOverlay = require "mvtk.enemies.enemy_type_overlay"
+local EnemyOverrides = require "mvtk.enemies.enemy_overrides"
+local EnemyBehaviorResolver = require "mvtk.enemies.enemy_behavior_resolver"
+local EnemyLocomotion = require "mvtk.enemies.enemy_locomotion"
+local EnemySkinSync = require "mvtk.enemies.enemy_skin_sync"
+local Debug = require "developer.config.debug_config"
+local raw_print = print
+local ENEMY_LOG_ENABLED = (Debug.global and Debug.global.enable) or
+  (Debug.enemies and (
+    Debug.enemies.ai or Debug.enemies.spawner or Debug.enemies.behavior))
+local function print(...)
+  if ENEMY_LOG_ENABLED then
+    raw_print(...)
+  end
+end
+local EnemySkins = Util.require_config("developer.config.enemy_skins_generated", { skins = {} })
+if type(EnemySkins.skins) ~= "table" then
+  EnemySkins = { skins = {} }
+end
+local DEFAULT_SKIN = EnemySkinSync.DEFAULT_SKIN or "default"
+local ENEMY_CRASH_DEBUG = Debug.global and Debug.global.enable and Debug.enemy_crash or nil
+
+local function enemy_crash_enabled(flag)
+  return ENEMY_CRASH_DEBUG and ENEMY_CRASH_DEBUG[flag] == true
+end
+
+local function set_enemy_hflip(self)
+  if not enemy_crash_enabled("disable_hflip") then
+    pcall(sprite.set_hflip, "#sprite", self.facing < 0)
+  end
+end
+
+-- Room bounds cache: { [room_id] = {min_x, max_x, min_y, max_y} }
+local room_bounds_cache = {}
+local room_bounds_loaded = false
+
+local function get_room_bounds(room_id)
+  if not room_id or room_id == "" then return nil end
+  if room_bounds_cache[room_id] then return room_bounds_cache[room_id] end
+  if not room_bounds_loaded then
+    room_bounds_loaded = true
+    local layout = RuntimeLayoutLoader.load()
+    if layout and layout.rooms then
+      for _, room in ipairs(layout.rooms) do
+        local id = room.id
+        if id then
+          local x  = tonumber(room.x) or 0
+          local y  = tonumber(room.y) or 0
+          local w  = tonumber(room.w) or 0
+          local h  = tonumber(room.h) or 0
+          local ox = tonumber(room.ox) or 0
+          local oy = tonumber(room.oy) or 0
+          room_bounds_cache[id] = {
+            min_x = x + ox,
+            max_x = x + ox + w,
+            min_y = y + oy,
+            max_y = y + oy + h,
+          }
+        end
+      end
+    end
+  end
+  return room_bounds_cache[room_id]
+end
+
+-- ============================================================================
+-- CONFIGURATION
+-- ============================================================================
+-- All configurable values are loaded from (in order):
+--   1) Tiled properties (per-object overrides)
+--   2) Project > Game Settings... runtime settings
+--   3) developer/config/game_config.lua (project defaults)
+-- Do not hardcode values here - add them to config instead.
+-- ============================================================================
+
+-- Extract elite configuration for cleaner access
+local ELITE_CONFIG = (RuntimeSettings.get_elite_config and RuntimeSettings.get_elite_config()) or (Config.elite or {})
+local COORD_CONFIG = Config.enemy_coordination or {}
+
+local EnemyTypes = nil
+local EnemyTypeOverlayCache = {}
+local EnemyManager = nil
+local function get_enemy_manager()
+  if not EnemyManager then
+    local ok, mod = pcall(require, "mvtk.enemies.enemy_manager")
+    EnemyManager = ok and mod or false
+  end
+  return EnemyManager
+end
+
+local ATTACK_GROUP = hash("attack")
+local DAMAGE_MSG = hash("mvtk_apply_damage")
+local HIT_MSG    = hash("mvtk_hit")
+local MSG_ANIM_DONE = hash("anim.done")
+local MSG_ANIM_SET_STATE = hash("anim.set_state")
+local MSG_ANIM_PLAY_ONCE = hash("anim.play_once")
+local MSG_ANIM_SET_FACING = hash("anim.set_facing")
+local MSG_ANIM_CONFIGURE_VISUAL = hash("anim.configure_visual")
+
+go.property("max_health", 3.0)
+go.property("speed", 100)
+go.property("pattern1", "idle")
+go.property("pattern2", "none")
+go.property("enemy_type", "")
+-- Linked art override: unitless synced skin-id text; empty uses the preset skin.
+go.property("skin", "")
+go.property("facing", 1)
+go.property("elite", false)
+go.property("difficulty", "")
+go.property("drops", "")
+go.property("loot_table", "")
+go.property("faction", "")
+go.property("group_id", "")
+go.property("ally_detection_range", 200)
+go.property("health_mult", 1.0)
+go.property("damage_mult", 1.0)
+go.property("speed_mult", 1.0)
+go.property("detection_range", 0)
+go.property("chase_speed", 0)
+go.property("chase_speed_mult", 0)
+go.property("movement", "")
+go.property("attack_pattern", "")
+go.property("attack_pattern2", "")
+go.property("knockback_force", 0)
+go.property("patrol_route", "")
+go.property("patrol_width", 64)
+go.property("patrol_height", 48)
+go.property("patrol_height_override", -1)
+go.property("patrol_distance", 0)
+go.property("hover_height", 0)
+go.property("shoot_cooldown", 0)
+go.property("projectile_speed", 0)
+go.property("projectile_damage", 0)
+go.property("charge_speed", 0)
+go.property("charge_distance", 0)
+go.property("charge_duration", 0)
+go.property("charge_cooldown", 0)
+go.property("attack_detection_range", 0)
+go.property("swoop_detection_range", 0)
+go.property("swoop_speed", 0)
+go.property("swoop_duration", 0)
+go.property("dart_speed", 0)
+go.property("dart_interval", 0)
+go.property("dart_vertical_speed", 0)
+go.property("rise_range", 0)
+go.property("rise_height", 0)
+go.property("rise_speed", 0)
+go.property("attack_range", 0)
+go.property("attack_height", 0)
+go.property("attack_windup", -1)
+go.property("attack_cooldown", -1)
+go.property("room_id", "")
+-- Combat tuning
+go.property("contact_damage", 1.0)
+go.property("contact_knockback_px", 220.0)
+go.property("contact_damage_cooldown", 0.80)
+go.property("contact_stun_t", 0.10)
+go.property("poise_threshold", 2.0)   -- damage to stagger
+go.property("poise_recover_per_s", 1.0)
+go.property("knockback_mult", 1.0)    -- scales incoming knockback
+go.property("iframes_on_hit", -1.0)
+
+local function trim(s)
+  if not s then return "" end
+  return (tostring(s):match("^%s*(.-)%s*$"))
+end
+
+local function resolve_enemy_type(enemy_type)
+  if not enemy_type or enemy_type == "" then
+    return nil
+  end
+  local resolved_key = EnemyOverrides.resolve_enemy_type(enemy_type)
+  local key = Util.normalize_hash_string(resolved_key or enemy_type)
+  if not key then return nil end
+  local ok_mgr, EnemyMgr = pcall(require, "mvtk.enemies.enemy_manager")
+  if ok_mgr and EnemyMgr and EnemyMgr.get_enemy_type then
+    local cfg = EnemyMgr.get_enemy_type(key)
+    if cfg then
+      return cfg
+    end
+  end
+  if EnemyTypes == nil then
+    local ok, cfg = pcall(require, "developer.config.enemy_types")
+    EnemyTypes = ok and cfg or false
+  end
+  if EnemyTypes and type(EnemyTypes) == "table" then
+    return EnemyTypeOverlay.resolve(key, EnemyTypes, EnemySkins, {
+      cache = EnemyTypeOverlayCache,
+      logger = function(message)
+        print("[ENEMY] " .. tostring(message))
+      end,
+    })
+  end
+  return nil
+end
+
+local value_to_string = Util.normalize_hash_string
+
+local function optional_key(value)
+  local s = value_to_string(value)
+  if not s then return nil end
+  if s:lower() == "none" then return nil end
+  return s
+end
+
+local ANIM_STATES = {
+  "idle", "walk", "run", "jump", "fall", "attack", "ranged_attack", "hurt", "death", "aim", "charge"
+}
+
+local ANIM_CONFIG_KEYS = {
+  idle = "animation_idle",
+  walk = "animation_walk",
+  run = "animation_run",
+  jump = "animation_jump",
+  fall = "animation_fall",
+  attack = "animation_attack",
+  ranged_attack = "animation_ranged_attack",
+  hurt = "animation_hurt",
+  death = "animation_death",
+  aim = "animation_aim",
+  charge = "animation_charge",
+}
+
+local function get_skin_config(skin_id)
+  local skins = EnemySkins and EnemySkins.skins or nil
+  if type(skins) ~= "table" then return nil end
+  return skins[skin_id]
+end
+
+local function skin_has_state(skin_id, state)
+  local skin = get_skin_config(skin_id)
+  local states = skin and skin.states or nil
+  return type(states) == "table" and states[state] == true
+end
+
+local function resolve_active_skin(self, cfg)
+  cfg = cfg or {}
+  local requested = optional_key(cfg.skin)
+  self._requested_skin = requested
+  local resolved, _, missing_requested = EnemySkinSync.resolve_active_skin_id(requested, EnemySkins, DEFAULT_SKIN)
+  if missing_requested and self._missing_skin_warning ~= requested then
+    if resolved then
+      print(string.format("[ENEMY] Warning: requested skin '%s' is not synced; using '%s' enemy skin.", tostring(requested), tostring(resolved)))
+    else
+      print(string.format("[ENEMY] Warning: requested skin '%s' is not synced and no default enemy skin is available.", tostring(requested)))
+    end
+    self._missing_skin_warning = requested
+  end
+  return resolved
+end
+
+local function apply_enemy_tint(self, cfg)
+  cfg = cfg or self.enemy_type_config or {}
+  if enemy_crash_enabled("disable_tint_set") then
+    return
+  end
+  if self.skin then
+    if cfg.tint_skinned and cfg.color then
+      pcall(go.set, "#sprite", "tint", cfg.color)
+    end
+  elseif cfg.color then
+    pcall(go.set, "#sprite", "tint", cfg.color)
+  end
+end
+
+local function rebuild_anim_map(self, cfg)
+  cfg = cfg or self.enemy_type_config or {}
+  self.skin = resolve_active_skin(self, cfg)
+  self.anim_map = {}
+  local skin_config = self.skin and get_skin_config(self.skin) or nil
+  local skin_states = skin_config and skin_config.states or nil
+  if self.skin and type(skin_states) == "table" then
+    for state, enabled in pairs(skin_states) do
+      if enabled then
+        self.anim_map[state] = self.skin .. "__" .. state
+      end
+    end
+  end
+  for _, state in ipairs(ANIM_STATES) do
+    local cfg_key = ANIM_CONFIG_KEYS[state]
+    local preset = cfg_key and optional_key(cfg[cfg_key]) or nil
+    if state == "hurt" and not preset then
+      preset = optional_key(cfg.animation_hit)
+    end
+    local base = preset or state
+    if self.skin and type(skin_states) == "table" then
+      local resolved_state = EnemyLocomotion.resolve_state(skin_states, base)
+      if resolved_state then
+        self.anim_map[state] = self.skin .. "__" .. resolved_state
+      else
+        self.anim_map[state] = base
+      end
+    else
+      self.anim_map[state] = base
+    end
+  end
+end
+
+local function compute_locomotion_profile(self)
+  local skin_config = self.skin and get_skin_config(self.skin) or nil
+  local profile = EnemyLocomotion.compute_profile(skin_config and skin_config.states or nil, self._uses_run_animation)
+  self._loco_move_state = profile.move
+  self._loco_idle_state = profile.idle
+  return profile
+end
+
+local function configure_anim_default(self)
+  local idle_state = self._loco_idle_state or "idle"
+  local idle = (self.anim_map and (self.anim_map[idle_state] or self.anim_map.idle)) or idle_state
+  pcall(msg.post, "#anim", MSG_ANIM_CONFIGURE_VISUAL, { default_state = idle })
+end
+
+local function set_anim_state(self, state, once)
+  state = state or "idle"
+  local resolved = optional_key(self.anim_map and self.anim_map[state]) or state
+  if once then
+    if self._anim_locked and self._anim_lock_state == state then
+      return
+    end
+    self._anim_locked = true
+    self._anim_lock_state = state
+    self._current_loop_anim = nil
+    pcall(msg.post, "#anim", MSG_ANIM_PLAY_ONCE, { state = resolved })
+    return
+  end
+  if self._dying or self._anim_locked then
+    return
+  end
+  if self._current_loop_anim == resolved then
+    return
+  end
+  self._current_loop_anim = resolved
+  pcall(msg.post, "#anim", MSG_ANIM_SET_STATE, { state = resolved })
+end
+
+local function apply_enemy_animation_config(self, cfg)
+  rebuild_anim_map(self, cfg)
+  compute_locomotion_profile(self)
+  apply_enemy_tint(self, cfg)
+  configure_anim_default(self)
+  set_anim_state(self, self._loco_idle_state or "idle", false)
+end
+
+local ATTACK_ANIM_PREFS = {
+  shoot_straight = { "ranged_attack", "attack" },
+  shoot_spread = { "ranged_attack", "attack" },
+  shoot_burst = { "ranged_attack", "attack" },
+  shoot_circle = { "ranged_attack", "attack" },
+  shoot_random = { "ranged_attack", "attack" },
+  spiral_shot = { "ranged_attack", "attack" },
+  homing_shot = { "ranged_attack", "attack" },
+  rain_attack = { "ranged_attack", "attack" },
+  shoot = { "ranged_attack", "attack" },
+  ranged = { "ranged_attack", "attack" },
+  spread = { "ranged_attack", "attack" },
+  burst = { "ranged_attack", "attack" },
+  circle = { "ranged_attack", "attack" },
+  random = { "ranged_attack", "attack" },
+  spiral = { "ranged_attack", "attack" },
+  homing = { "ranged_attack", "attack" },
+  swoop_attack = { "attack", "charge" },
+  swoop = { "attack", "charge" },
+  dart = { "attack", "charge" },
+  melee_swipe = { "attack", "attack_alt" },
+  swipe = { "attack", "attack_alt" },
+  melee = { "attack", "attack_alt" },
+  dash_attack = { "charge", "attack" },
+  charge_shoot = { "charge", "ranged_attack", "attack" },
+  dash = { "charge", "attack" },
+  charge = { "charge", "attack" },
+  lunge = { "charge", "attack" },
+}
+
+local function attack_anim_state_available(self, state)
+  if not self.skin then
+    return true
+  end
+  return skin_has_state(self.skin, state)
+end
+
+local function choose_attack_anim_state(self, attack_pattern)
+  local attack = optional_key(attack_pattern)
+    or optional_key(self.attack_pattern_override)
+    or optional_key(self.attack_pattern2_override)
+  attack = attack and attack:lower() or nil
+  local prefs = ATTACK_ANIM_PREFS[attack] or { "attack" }
+  for _, state in ipairs(prefs) do
+    if attack_anim_state_available(self, state) then
+      return state
+    end
+  end
+  return "attack"
+end
+
+local function play_enemy_attack_animation(self, state)
+  set_anim_state(self, state or choose_attack_anim_state(self), true)
+end
+
+local function update_locomotion_animation(self, vx, vy)
+  if self._dying or self._anim_locked then
+    return
+  end
+  if not self._loco_move_state or not self._loco_idle_state then
+    compute_locomotion_profile(self)
+  end
+  vx = vx or 0
+  vy = vy or 0
+  if (vx * vx + vy * vy) > 1 then
+    if vx ~= 0 then
+      self.facing = (vx >= 0) and 1 or -1
+      set_enemy_hflip(self)
+      pcall(msg.post, "#anim", MSG_ANIM_SET_FACING, { dir = self.facing })
+    end
+    set_anim_state(self, self._loco_move_state or "walk", false)
+  else
+    set_anim_state(self, self._loco_idle_state or "idle", false)
+  end
+end
+
+local function apply_enemy_type_config(self, enemy_type)
+  local cfg = resolve_enemy_type(enemy_type)
+  if not cfg then
+    return false
+  end
+  self.enemy_type_config = cfg
+  self._audio = EnemyAudio.resolve(cfg.audio)
+  if cfg.health then
+    self.max_health = tonumber(cfg.health) or self.max_health
+    self.health = self.max_health
+  end
+  if cfg.speed then
+    self.speed = tonumber(cfg.speed) or self.speed
+  end
+  if cfg.contact_damage or cfg.damage then
+    self.contact_damage = tonumber(cfg.contact_damage or cfg.damage) or self.contact_damage
+  end
+  if cfg.knockback_force then
+    self.contact_knockback_px = tonumber(cfg.knockback_force) or self.contact_knockback_px
+  end
+  if cfg.contact_damage_cooldown then
+    self.contact_damage_cooldown = tonumber(cfg.contact_damage_cooldown) or self.contact_damage_cooldown
+  end
+  if cfg.contact_stun_t then
+    self.contact_stun_t = tonumber(cfg.contact_stun_t) or self.contact_stun_t
+  end
+  if cfg.poise_threshold then
+    self.poise_threshold = tonumber(cfg.poise_threshold) or self.poise_threshold
+  end
+  if cfg.knockback_resistance then
+    local res = tonumber(cfg.knockback_resistance) or 0
+    if res > 0 then
+      self.knockback_mult = math.max(0, 1 - res)
+    end
+  end
+  if cfg.loot_table ~= nil then
+    self.loot_table = optional_key(cfg.loot_table)
+  end
+  if cfg.drops ~= nil then
+    if type(cfg.drops) == "table" then
+      self.drops = cfg.drops
+      if next(self.drops) == nil then
+        self.loot_table = nil
+      end
+    else
+      local drops_key = value_to_string(cfg.drops)
+      if drops_key and drops_key:lower() == "none" then
+        self.drops = {}
+        self.loot_table = nil
+      elseif drops_key then
+        self.drops = EnemyOverrides.parse_drops_string(drops_key)
+      end
+    end
+  end
+  if cfg.scale then
+    local s = tonumber(cfg.scale) or 1
+    if s > 0 then
+      pcall(go.set_scale, vmath.vector3(s, s, 1))
+    end
+  end
+  apply_enemy_animation_config(self, cfg)
+  if cfg.ignores_terrain ~= nil then
+    self._ignores_terrain = (cfg.ignores_terrain == true)
+  end
+  if cfg.grounded_movement ~= nil then
+    self._grounded_movement = (cfg.grounded_movement == true)
+  end
+  self._ledge = LedgeGuard.settings(cfg, EnemyDefaults, TileSettings)
+  if cfg.detection_range then
+    self._detection_range = tonumber(cfg.detection_range) or 200
+  end
+  if cfg.chase_speed then
+    self.chase_speed = tonumber(cfg.chase_speed) or self.chase_speed
+  end
+  if cfg.chase_speed_mult then
+    self._chase_speed_mult = tonumber(cfg.chase_speed_mult) or 1.0
+  end
+  if cfg.patrol_distance then
+    local patrol_distance = tonumber(cfg.patrol_distance)
+    if patrol_distance then
+      self.patrol_distance = patrol_distance
+      self.patrol_width = patrol_distance * 0.5
+    end
+  end
+  if cfg.hover_height then
+    local hover_height = tonumber(cfg.hover_height)
+    if hover_height then
+      self.hover_height = hover_height
+      self.patrol_height = hover_height
+    end
+  end
+  if cfg.shoot_cooldown then
+    self.shoot_cooldown = tonumber(cfg.shoot_cooldown) or self.shoot_cooldown
+  end
+  if cfg.projectile_speed then
+    self.projectile_speed = tonumber(cfg.projectile_speed) or self.projectile_speed
+  end
+  if cfg.projectile_visual then
+    self.projectile_visual = optional_key(cfg.projectile_visual) or self.projectile_visual
+  end
+  if cfg.charge_speed then
+    self.charge_speed = tonumber(cfg.charge_speed) or self.charge_speed
+  end
+  local numeric_tuning_keys = {
+    "projectile_damage",
+    "charge_distance", "charge_duration", "charge_cooldown",
+    "attack_detection_range",
+    "swoop_detection_range", "swoop_speed", "swoop_duration",
+    "dart_speed", "dart_interval", "dart_vertical_speed",
+    "rise_range", "rise_height", "rise_speed",
+    "attack_range", "attack_height", "attack_windup", "attack_cooldown",
+  }
+  for _, tuning_key in ipairs(numeric_tuning_keys) do
+    if cfg[tuning_key] ~= nil then
+      local value = tonumber(cfg[tuning_key])
+      if value ~= nil then
+        self[tuning_key] = value
+      end
+    end
+  end
+  return true
+end
+
+-- Behavior alias map for designer-friendly names in Tiled
+-- Maps simple aliases to actual pattern names in attack_patterns.lua
+local BEHAVIOR_ALIASES = {
+  -- Movement aliases
+  patrol = "patrol_horizontal",
+  patrol_h = "patrol_horizontal",
+  patrol_v = "patrol_vertical",
+  wander = "patrol_horizontal",
+  hover = "patrol_vertical",
+  chase = "chase_player",
+  follow = "chase_player",
+  flee = "flee_player",
+  run_away = "flee_player",
+  zigzag = "zigzag_move",
+  ground_patrol = "patrol_horizontal",
+  flying_chase = "chase_player",
+  flying_patrol = "patrol_vertical",
+  charger = "dash_attack",
+  static = "idle",
+
+  -- Attack aliases
+  shoot = "shoot_straight",
+  ranged = "shoot_straight",
+  spread = "shoot_spread",
+  shotgun = "shoot_spread",
+  burst = "shoot_burst",
+  circle = "shoot_circle",
+  radial = "shoot_circle",
+  random = "shoot_random",
+  spiral = "spiral_shot",
+  homing = "homing_shot",
+  swoop = "swoop_attack",
+  dart = "swoop_attack",
+  swipe = "melee_swipe",
+  melee = "melee_swipe",
+
+  -- Melee/movement attack aliases
+  dash = "dash_attack",
+  charge = "charge_shoot",
+  lunge = "dash_attack",
+  jump = "jump_attack",
+  leap = "jump_attack",
+  teleport = "teleport_attack",
+  blink = "teleport_attack",
+
+  -- Special aliases
+  defend = "shield",
+  block = "shield",
+  summon = "summon_minion",
+  spawn = "summon_minion",
+  rain = "rain_attack",
+
+  -- Ghost/floating aliases
+  ghost_float = "ghost_float",
+  ghost = "ghost_float",
+
+  -- Compound aliases (common enemy archetypes)
+  ranged_patrol = "patrol_horizontal,shoot_straight",
+  ranged_chase = "chase_player,shoot_straight",
+  sniper = "shoot_straight",
+  bomber = "patrol_horizontal,shoot_spread",
+  swarmer = "chase_player",
+  guardian = "patrol_horizontal,shield",
+  summoner = "patrol_horizontal,summon_minion",
+  boss_basic = "chase_player,dash_attack,shoot_spread",
+}
+
+local MOVEMENT_PATTERN_BY_KEY = {
+  patrol = "patrol_horizontal",
+  patrol_vertical = "patrol_vertical",
+  chase = "chase_player",
+  flee = "flee_player",
+  hover = "patrol_vertical",
+  stationary = "idle",
+  zigzag = "zigzag_move",
+  ghost_float = "ghost_float",
+}
+
+local behavior_value_to_string = Util.normalize_hash_string
+
+local function build_behavior_patterns(behavior_value)
+  -- Normalise to a plain Lua string regardless of how Defold delivered it
+  local behavior_str = behavior_value
+  if type(behavior_value) ~= "string" and type(behavior_value) ~= "table" then
+    behavior_str = behavior_value_to_string(behavior_value)
+  end
+
+  local names = {}
+  if type(behavior_str) == "string" then
+    for token in behavior_str:gmatch("[^,;]+") do
+      local name = trim(token)
+      if name ~= "" then
+        -- Check for alias first
+        local alias = BEHAVIOR_ALIASES[name:lower()]
+        if alias then
+          -- Alias might be compound (comma-separated), expand it
+          for sub_name in alias:gmatch("[^,]+") do
+            names[#names + 1] = trim(sub_name)
+          end
+        else
+          names[#names + 1] = name
+        end
+      end
+    end
+  elseif type(behavior_str) == "table" then
+    for _, name in ipairs(behavior_str) do
+      if name and name ~= "" then
+        local alias = BEHAVIOR_ALIASES[tostring(name):lower()]
+        if alias then
+          for sub_name in alias:gmatch("[^,]+") do
+            names[#names + 1] = trim(sub_name)
+          end
+        else
+          names[#names + 1] = tostring(name)
+        end
+      end
+    end
+  end
+  if #names == 0 then
+    print(string.format("[ENEMY] build_behavior_patterns: no names resolved from value '%s' (type=%s)",
+      tostring(behavior_value), type(behavior_value)))
+    return nil
+  end
+
+  local patterns = {}
+  for _, name in ipairs(names) do
+    local fn = Patterns[hash(name)]
+    if fn then
+      patterns[#patterns + 1] = fn()
+    else
+      print(string.format("[ENEMY] Warning: Unknown behavior pattern '%s'", name))
+    end
+  end
+  if #patterns == 0 then
+    return nil
+  end
+  print(string.format("[ENEMY] Built %d behavior patterns from '%s'", #patterns, tostring(behavior_value)))
+  return patterns
+end
+
+local function add_pattern(patterns, name, source)
+  if not name or name == "" then
+    return false
+  end
+  local fn = Patterns[hash(name)]
+  if not fn then
+    print(string.format("[ENEMY] Warning: Unknown %s pattern '%s'", source or "enemy", tostring(name)))
+    return false
+  end
+  patterns[#patterns + 1] = fn()
+  return true
+end
+
+local function build_split_patterns(self, movement_value, attack_value, attack2_value)
+  local patterns = {}
+  local movement = optional_key(movement_value)
+  if movement then
+    movement = movement:lower()
+    local movement_pattern = MOVEMENT_PATTERN_BY_KEY[movement]
+    if movement_pattern then
+      add_pattern(patterns, movement_pattern, "movement")
+      self._uses_run_animation = movement == "chase"
+      self._movement_override = movement
+    else
+      print(string.format("[ENEMY] Warning: Unknown movement '%s'", tostring(movement)))
+    end
+  end
+
+  local function add_attack(value, field_name)
+    local attack = optional_key(value)
+    if not attack then return end
+    add_pattern(patterns, attack:lower(), field_name)
+  end
+
+  add_attack(attack_value, "attack_pattern")
+  add_attack(attack2_value, "attack_pattern2")
+
+  if #patterns == 0 then
+    return nil
+  end
+  print(string.format("[ENEMY] Built %d split patterns (movement=%s attack=%s attack2=%s)",
+    #patterns, tostring(movement), tostring(optional_key(attack_value)), tostring(optional_key(attack2_value))))
+  return patterns
+end
+
+local function behavior_prefers_run(behavior_value)
+  local s = value_to_string(behavior_value)
+  if not s then return false end
+  s = s:lower()
+  return s:find("chase", 1, true) ~= nil or s == "flying_chase"
+end
+
+local function resolve_patrol_waypoints(self)
+  if self._patrol_waypoints or not self._patrol_route or self._patrol_route == "" then
+    return self._patrol_waypoints
+  end
+  local room_id = self._room_id
+  if not room_id or room_id == "" then
+    return nil
+  end
+  local poly = TiledPaths.get_polyline(room_id, self._patrol_route)
+  if not poly then
+    return nil
+  end
+  local points = poly.polyline or poly.polygon
+  if not points or #points < 2 then
+    return nil
+  end
+
+  local base_x = poly.x or 0
+  local base_y = poly.y or 0
+  local ok_rm, RoomManager = pcall(require, "mvtk.map.streaming.room_manager")
+  if ok_rm and RoomManager and RoomManager.get_tilemap_url then
+    local _, tm_pos = RoomManager.get_tilemap_url(room_id)
+    if tm_pos then
+      base_x = base_x + tm_pos.x
+      base_y = base_y + tm_pos.y
+    end
+  end
+
+  local z = (self.pos and self.pos.z) or 0
+  local waypoints = {}
+  for i, pt in ipairs(points) do
+    waypoints[i] = vmath.vector3(base_x + (pt.x or 0), base_y - (pt.y or 0), z)
+  end
+  self._patrol_waypoints = waypoints
+  self._patrol_index = 1
+  self._patrol_dir = 1
+  return waypoints
+end
+
+local function build_patrol_route_pattern()
+  return {
+    update = function(self, dt)
+      local waypoints = resolve_patrol_waypoints(self)
+      if not waypoints or #waypoints < 2 then
+        return
+      end
+      self._patrol_index = self._patrol_index or 1
+      self._patrol_dir = self._patrol_dir or 1
+
+      local target = waypoints[self._patrol_index]
+      local dx = (target.x or 0) - (self.pos.x or 0)
+      local dy = (target.y or 0) - (self.pos.y or 0)
+      local dist_sq = dx * dx + dy * dy
+
+      if dist_sq <= 4 then
+        local next_index = self._patrol_index + self._patrol_dir
+        if next_index < 1 or next_index > #waypoints then
+          self._patrol_dir = -self._patrol_dir
+          next_index = self._patrol_index + self._patrol_dir
+        end
+        self._patrol_index = math.max(1, math.min(#waypoints, next_index))
+        target = waypoints[self._patrol_index]
+        dx = (target.x or 0) - (self.pos.x or 0)
+        dy = (target.y or 0) - (self.pos.y or 0)
+        dist_sq = dx * dx + dy * dy
+      end
+
+      if dist_sq > 0 then
+        local len = math.sqrt(dist_sq)
+        local speed = (self.speed or 80)
+          * (self._speed_mult or 1.0)
+          * (self._elite_speed_mult or 1.0)
+        self.vel.x = (dx / len) * speed
+        self.vel.y = (dy / len) * speed
+        if dx ~= 0 then
+          self.facing = (dx >= 0) and 1 or -1
+          set_enemy_hflip(self)
+        end
+      end
+    end
+  }
+end
+
+local function apply_overrides(self, overrides)
+  overrides = overrides or {}
+  print(string.format("[ENEMY] apply_overrides id=%s type=%s movement='%s' attack='%s' attack2='%s' behavior='%s'",
+    tostring(go.get_id()),
+    tostring(overrides.enemy_type),
+    tostring(overrides.movement),
+    tostring(overrides.attack_pattern),
+    tostring(overrides.attack_pattern2),
+    tostring(overrides.behavior)))
+
+  self.spawn_id = overrides.spawn_id or self.spawn_id
+  self.enemy_type = overrides.enemy_type
+
+  if overrides.room_id ~= nil then
+    self._room_id = overrides.room_id
+    self._room_bounds = get_room_bounds(overrides.room_id)
+  end
+
+  if overrides.enemy_type then
+    apply_enemy_type_config(self, overrides.enemy_type)
+    self._type_config_applied = true
+  end
+  EnemyOverrides.apply_skin_override(self, overrides, print)
+  apply_enemy_animation_config(self, self.enemy_type_config)
+
+  local difficulty_scale = nil
+  local spawner_already_scaled = overrides.difficulty_applied == true
+  if not spawner_already_scaled then
+    local health_mult = tonumber(overrides.health_mult)
+    local damage_mult = tonumber(overrides.damage_mult)
+    spawner_already_scaled = (health_mult and health_mult ~= 1.0)
+                          or (damage_mult and damage_mult ~= 1.0)
+  end
+  if overrides.difficulty_override and overrides.difficulty_override ~= "" and not spawner_already_scaled then
+    difficulty_scale = EnemyOverrides.resolve_difficulty_scaling(overrides.difficulty_override)
+    if difficulty_scale then
+      print(string.format("[ENEMY] Applying difficulty '%s': health=%.1fx damage=%.1fx",
+        tostring(overrides.difficulty_override),
+        difficulty_scale.health_mult or 1,
+        difficulty_scale.damage_mult or 1))
+    end
+  end
+
+  if overrides.loot_table then
+    self.loot_table = overrides.loot_table
+    print(string.format("[ENEMY] Override loot_table: %s", tostring(overrides.loot_table)))
+  end
+  if overrides.drops ~= nil then
+    self.drops = (type(overrides.drops) == "string") and EnemyOverrides.parse_drops_string(overrides.drops) or overrides.drops
+    if type(self.drops) == "table" and next(self.drops) == nil then
+      -- `drops = none` normalizes to an explicit empty table. It must suppress
+      -- both inline type drops and an inherited type-level loot table.
+      self.loot_table = nil
+    end
+    if self.drops and type(self.drops) == "table" then
+      print("[ENEMY] Override drops table applied")
+    end
+  end
+  if overrides.elite then
+    self.elite = true
+    local elite_health_mult = ELITE_CONFIG.health_mult or 2.0
+    local elite_damage_mult = ELITE_CONFIG.damage_mult or 1.5
+    local elite_speed_mult = ELITE_CONFIG.speed_mult or 1.0
+    local elite_scale_mult = ELITE_CONFIG.scale_mult or 1.2
+    self.health = self.health * elite_health_mult
+    self.max_health = self.max_health * elite_health_mult
+    self.contact_damage = self.contact_damage * elite_damage_mult
+    self._elite_speed_mult = elite_speed_mult
+    if elite_scale_mult ~= 1.0 then
+      local current_scale = go.get_scale()
+      go.set_scale(vmath.vector3(current_scale.x * elite_scale_mult, current_scale.y * elite_scale_mult, 1))
+    end
+    print(string.format("[ENEMY] Elite variant activated - health=%.1fx damage=%.1fx speed=%.1fx scale=%.1fx",
+      elite_health_mult, elite_damage_mult, elite_speed_mult, elite_scale_mult))
+  end
+
+  local health_mult = tonumber(overrides.health_mult) or 1.0
+  local damage_mult = tonumber(overrides.damage_mult) or 1.0
+  local speed_mult = tonumber(overrides.speed_mult) or 1.0
+
+  if difficulty_scale then
+    health_mult = health_mult * (difficulty_scale.health_mult or 1.0)
+    damage_mult = damage_mult * (difficulty_scale.damage_mult or 1.0)
+  end
+
+  if health_mult ~= 1.0 then
+    self.health = self.health * health_mult
+    self.max_health = self.max_health * health_mult
+  end
+  if damage_mult ~= 1.0 then
+    self.contact_damage = self.contact_damage * damage_mult
+  end
+  -- Movement patterns apply this multiplier exactly once. Keeping the base
+  -- speed intact also lets absolute chase_speed use the same multiplier rule.
+  self._speed_mult = speed_mult
+
+  if overrides.facing then
+    local facing = tonumber(overrides.facing)
+    if not facing then
+      local lower = tostring(overrides.facing):lower()
+      facing = (lower == "left" or lower == "-1") and -1 or 1
+    end
+    if facing == 0 then facing = 1 end
+    self.facing = facing
+    set_enemy_hflip(self)
+    pcall(msg.post, "#anim", MSG_ANIM_SET_FACING, { dir = self.facing })
+  end
+
+  self.faction = overrides.faction
+  self.group_id = overrides.group_id
+  if overrides.ally_detection_range then
+    self.ally_detection_range = tonumber(overrides.ally_detection_range) or 200
+  end
+  if overrides.detection_range ~= nil then
+    local detection_range = tonumber(overrides.detection_range)
+    if detection_range and detection_range > 0 then
+      self._detection_range = detection_range
+    end
+  end
+  if overrides.chase_speed ~= nil then
+    local chase_speed = tonumber(overrides.chase_speed)
+    if chase_speed and chase_speed > 0 then
+      self.chase_speed = chase_speed
+    end
+  end
+  if overrides.chase_speed_mult ~= nil then
+    local chase_speed_mult = tonumber(overrides.chase_speed_mult)
+    if chase_speed_mult and chase_speed_mult > 0 then
+      self._chase_speed_mult = chase_speed_mult
+    end
+  end
+  if self.group_id and self.spawn_id then
+    local ok_group, GroupCoordination = pcall(require, "mvtk.enemies.group_coordination")
+    if ok_group and GroupCoordination and GroupCoordination.join_group then
+      pcall(GroupCoordination.join_group, self.spawn_id, self.group_id)
+    end
+  end
+
+  self.patrol_route = overrides.patrol_route
+  self.behavior_override = overrides.behavior
+  self.movement_override = overrides.movement
+  self.attack_pattern_override = overrides.attack_pattern
+  self.attack_pattern2_override = overrides.attack_pattern2
+  if overrides.patrol_height ~= nil then
+    local ph = tonumber(overrides.patrol_height)
+    if ph then self.patrol_height = ph end
+  end
+  if overrides.patrol_distance ~= nil then
+    local patrol_distance = tonumber(overrides.patrol_distance)
+    if patrol_distance and patrol_distance > 0 then
+      self.patrol_distance = patrol_distance
+      self.patrol_width = patrol_distance * 0.5
+    end
+  end
+  if overrides.hover_height ~= nil then
+    local hover_height = tonumber(overrides.hover_height)
+    if hover_height and hover_height > 0 then
+      self.hover_height = hover_height
+      self.patrol_height = hover_height
+    end
+  end
+  if overrides.contact_damage ~= nil then
+    local contact_damage = tonumber(overrides.contact_damage)
+    if contact_damage and contact_damage > 0 then
+      self.contact_damage = contact_damage
+    end
+  end
+  if overrides.knockback_force ~= nil then
+    local knockback_force = tonumber(overrides.knockback_force)
+    if knockback_force and knockback_force > 0 then
+      self.contact_knockback_px = knockback_force
+    end
+  end
+  if overrides.contact_damage_cooldown ~= nil then
+    local cooldown = tonumber(overrides.contact_damage_cooldown)
+    if cooldown and cooldown >= 0 then
+      self.contact_damage_cooldown = cooldown
+    end
+  end
+  if overrides.shoot_cooldown ~= nil then
+    local shoot_cooldown = tonumber(overrides.shoot_cooldown)
+    if shoot_cooldown and shoot_cooldown > 0 then
+      self.shoot_cooldown = shoot_cooldown
+    end
+  end
+  if overrides.projectile_speed ~= nil then
+    local projectile_speed = tonumber(overrides.projectile_speed)
+    if projectile_speed and projectile_speed > 0 then
+      self.projectile_speed = projectile_speed
+    end
+  end
+  if overrides.charge_speed ~= nil then
+    local charge_speed = tonumber(overrides.charge_speed)
+    if charge_speed and charge_speed > 0 then
+      self.charge_speed = charge_speed
+    end
+  end
+  local positive_tuning_keys = {
+    "projectile_damage",
+    "charge_distance", "charge_duration", "charge_cooldown",
+    "attack_detection_range",
+    "swoop_detection_range", "swoop_speed", "swoop_duration",
+    "dart_speed", "dart_interval", "dart_vertical_speed",
+    "rise_range", "rise_height", "rise_speed",
+    "attack_range", "attack_height",
+  }
+  for _, tuning_key in ipairs(positive_tuning_keys) do
+    local value = tonumber(overrides[tuning_key])
+    if value and value > 0 then
+      self[tuning_key] = value
+    end
+  end
+  for _, tuning_key in ipairs({ "attack_windup", "attack_cooldown" }) do
+    local value = tonumber(overrides[tuning_key])
+    if value and value >= 0 then
+      self[tuning_key] = value
+    end
+  end
+  if overrides.iframes_on_hit ~= nil then
+    local iframes_on_hit = tonumber(overrides.iframes_on_hit)
+    if iframes_on_hit and iframes_on_hit >= 0 then
+      self.iframes_on_hit = iframes_on_hit
+    end
+  end
+  if overrides.patrol_route and overrides.patrol_route ~= self._patrol_route then
+    self._patrol_waypoints = nil
+  end
+  self._patrol_route = overrides.patrol_route or self._patrol_route
+
+  local patterns = {}
+  local used_behavior = false
+  self._uses_run_animation = false
+
+  local default_behavior = optional_key(overrides.behavior)
+    or (self.enemy_type_config and self.enemy_type_config.behavior)
+  if not default_behavior and overrides.enemy_type then
+    local et_str = behavior_value_to_string(overrides.enemy_type) or tostring(overrides.enemy_type)
+    default_behavior = EnemyOverrides.DEFAULT_BEHAVIOR_BY_TYPE[et_str]
+      or EnemyOverrides.DEFAULT_BEHAVIOR_BY_TYPE[et_str:lower()]
+  end
+
+  local resolution = EnemyBehaviorResolver.resolve({
+    behavior = default_behavior,
+    grounded_movement = self._grounded_movement,
+    movement = overrides.movement,
+    attack_pattern = overrides.attack_pattern,
+    attack_pattern2 = overrides.attack_pattern2,
+  })
+  self._resolved_behavior = resolution
+  self._uses_run_animation = resolution.uses_run_animation == true
+  local resolved_movement = resolution.movement
+  if resolved_movement == "chase_ground"
+      or resolved_movement == "ground_patrol_chase"
+      or resolved_movement == "patrol_horizontal" then
+    self._grounded_movement = true
+  elseif resolved_movement == "chase_flying"
+      or resolved_movement == "patrol_vertical"
+      or resolved_movement == "ghost_float" then
+    self._grounded_movement = false
+  end
+
+  for _, warning in ipairs(resolution.conflicts or {}) do
+    print("[ENEMY] Behavior conflict: " .. tostring(warning))
+  end
+  for _, unknown in ipairs(resolution.unknown or {}) do
+    print("[ENEMY] Warning: Unknown behavior pattern '" .. tostring(unknown) .. "'")
+  end
+  for _, pattern_name in ipairs(resolution.patterns or {}) do
+    if add_pattern(patterns, pattern_name, "resolved behavior") then
+      used_behavior = true
+    end
+  end
+  -- An explicit disabled attack can intentionally resolve to no patterns
+  -- (for example, disabling a bat's attack-only preset). Do not resurrect the
+  -- prefab's legacy pattern1/pattern2 fallback in that case.
+  if not used_behavior and #(resolution.unknown or {}) == 0 then
+    used_behavior = not EnemyBehaviorResolver.is_inherit(default_behavior)
+      or not EnemyBehaviorResolver.is_inherit(overrides.movement)
+      or not EnemyBehaviorResolver.is_inherit(overrides.attack_pattern)
+      or not EnemyBehaviorResolver.is_inherit(overrides.attack_pattern2)
+  end
+
+  if not used_behavior then
+    print(string.format("[ENEMY] No behavior patterns resolved, keeping defaults (%d patterns) for %s",
+      #(self.patterns or {}), tostring(go.get_id())))
+    for _, pat in ipairs(self.patterns or {}) do
+      patterns[#patterns + 1] = pat
+    end
+  end
+  if self._patrol_route and self._patrol_route ~= "" then
+    if resolve_patrol_waypoints(self) then
+      patterns[#patterns + 1] = build_patrol_route_pattern()
+    end
+  end
+  if #patterns > 0 then
+    self.patterns = patterns
+  end
+  compute_locomotion_profile(self)
+  print(string.format("[ENEMY] Final patterns count=%d for %s (type=%s)",
+    #self.patterns, tostring(go.get_id()), tostring(overrides.enemy_type)))
+end
+
+local function spawn_drop_collectible(self, drop_id, drop_config)
+  if not drop_id or drop_id == "" then
+    return false
+  end
+  local cfg = drop_config or {}
+  local chance = tonumber(cfg.chance) or 1.0
+  if math.random() > chance then
+    return false
+  end
+
+  local min = tonumber(cfg.min) or tonumber(cfg.amount) or 1
+  local max = tonumber(cfg.max) or min
+  if max < min then
+    max = min
+  end
+  local amount = (max > min) and math.random(min, max) or min
+
+  self._drop_counter = (self._drop_counter or 0) + 1
+  local seed = string.format("enemy_drop:%s:%d:%d", tostring(self.spawn_id or go.get_id()),
+    self._drop_counter, os.time())
+  local id_hash = hash(seed)
+  local id_str = hash_to_hex and hash_to_hex(id_hash) or tostring(id_hash)
+
+  local spawn_id = CollectibleManager.spawn_collectible(drop_id, go.get_position(), {
+    id = id_str,
+    value = amount,
+    from_enemy_drop = true,
+  })
+  if not spawn_id then
+    return false
+  end
+
+  local factory_url = msg.url("main:/room_manager#collectible_factory")
+  local ok, instance = pcall(factory.create, factory_url, go.get_position(), nil, {
+    collectible_type = drop_id,
+    collectible_id = id_str,
+  }, 1)
+  if not ok then
+    print(string.format("[ENEMY] Failed to spawn drop '%s': %s", tostring(drop_id), tostring(instance)))
+    return false
+  end
+  return true
+end
+local function projectile_direction(self, dir)
+  local dx, dy
+  if type(dir) == "number" then
+    dx, dy = dir, 0
+  elseif dir ~= nil then
+    dx = tonumber(dir.x) or 0
+    dy = tonumber(dir.y) or 0
+  else
+    dx, dy = tonumber(self.facing) or 1, 0
+  end
+
+  local length = math.sqrt(dx * dx + dy * dy)
+  if length <= 0 then
+    return tonumber(self.facing) or 1, 0
+  end
+  return dx / length, dy / length
+end
+
+local function spawn_projectile(self, dir, speed)
+  play_enemy_attack_animation(self, choose_attack_anim_state(self))
+  if enemy_crash_enabled("disable_projectiles") then
+    return
+  end
+  local dx, dy = projectile_direction(self, dir)
+  local offset = v3(dx * 36, 18 + dy * 36, 0)
+  local anchor = go.get_position()
+  local p = anchor + offset
+  local url = C.URL.FACTORY.enemy_projectile
+  local projectile_speed = tonumber(speed) or tonumber(self.projectile_speed) or 300
+  if projectile_speed <= 0 then
+    projectile_speed = 300
+  end
+  local projectile_damage = tonumber(self.projectile_damage)
+  if not projectile_damage or projectile_damage <= 0 then
+    projectile_damage = tonumber(self.enemy_type_config and self.enemy_type_config.projectile_damage)
+  end
+  if not projectile_damage or projectile_damage <= 0 then
+    projectile_damage = tonumber(self.contact_damage) or 1
+  end
+  if projectile_damage <= 0 then projectile_damage = 1 end
+  local properties = {
+    dir = dx < 0 and -1 or 1,
+    dir_x = dx,
+    dir_y = dy,
+    speed = projectile_speed,
+    damage = projectile_damage,
+    source_actor = msg.url(nil, go.get_id(), nil),
+    source_attack = "enemy_projectile",
+    parryable = true,
+    reaction_type = "light",
+    stun_t = 0.08,
+    -- The shot spawns 36 px ahead of the enemy. Its first frame sweeps from the
+    -- enemy (at muzzle height) to there, so a wall the enemy stands against
+    -- stops the shot: a ray that starts inside or past a wall never reports it.
+    origin_x = anchor.x,
+    origin_y = anchor.y + 18,
+    probe_origin = true,
+  }
+  local projectile_visual = optional_key(self.projectile_visual)
+  if projectile_visual then
+    properties.projectile_visual = projectile_visual
+  end
+  pcall(factory.create, url, p, nil, properties, 1)
+end
+
+local function strike_player(self, attack)
+  local player_url = C.URL and C.URL.PLAYER
+  if not player_url then
+    return false
+  end
+
+  attack = type(attack) == "table" and attack or {}
+  local direction = tonumber(attack.direction) or tonumber(self.facing) or 1
+  direction = direction < 0 and -1 or 1
+  local damage = tonumber(attack.damage) or tonumber(self.contact_damage) or 1
+  local knockback = tonumber(attack.knockback) or tonumber(self.contact_knockback_px) or 0
+  local knockback_y = tonumber(attack.knockback_y) or 0
+  local stun_t = tonumber(attack.stun_t) or tonumber(self.contact_stun_t) or 0.1
+
+  -- Keep melee attacks on the same normalized damage-message contract used
+  -- by contact hits and projectiles. The protected call also makes a room
+  -- transition that removes the player between range-check and strike safe.
+  local ok = pcall(function()
+    local payload = DamagePayload.build({
+      amount = damage,
+      kx = knockback * direction,
+      ky = knockback_y,
+      stun_t = stun_t,
+      parryable = attack.parryable == true,
+      source_actor = msg.url(nil, go.get_id(), nil),
+      source_attack = attack.source_attack or "melee_swipe",
+      reaction_type = attack.reaction_type or "light",
+    })
+    msg.post(player_url, DAMAGE_MSG, payload)
+  end)
+  return ok
+end
+
+function init(self)
+  local baked_authoring = {
+    enemy_type = self.enemy_type,
+    skin = self.skin,
+    facing = self.facing,
+    elite = self.elite,
+    difficulty = self.difficulty,
+    drops = self.drops,
+    loot_table = self.loot_table,
+    faction = self.faction,
+    group_id = self.group_id,
+    ally_detection_range = self.ally_detection_range,
+    health_mult = self.health_mult,
+    damage_mult = self.damage_mult,
+    speed_mult = self.speed_mult,
+    detection_range = self.detection_range,
+    chase_speed = self.chase_speed,
+    chase_speed_mult = self.chase_speed_mult,
+    movement = self.movement,
+    attack_pattern = self.attack_pattern,
+    attack_pattern2 = self.attack_pattern2,
+    contact_damage = self.contact_damage,
+    knockback_force = self.knockback_force,
+    contact_damage_cooldown = self.contact_damage_cooldown,
+    patrol_route = self.patrol_route,
+    patrol_height_override = self.patrol_height_override,
+    patrol_distance = self.patrol_distance,
+    hover_height = self.hover_height,
+    shoot_cooldown = self.shoot_cooldown,
+    projectile_speed = self.projectile_speed,
+    projectile_damage = self.projectile_damage,
+    charge_speed = self.charge_speed,
+    charge_distance = self.charge_distance,
+    charge_duration = self.charge_duration,
+    charge_cooldown = self.charge_cooldown,
+    attack_detection_range = self.attack_detection_range,
+    swoop_detection_range = self.swoop_detection_range,
+    swoop_speed = self.swoop_speed,
+    swoop_duration = self.swoop_duration,
+    dart_speed = self.dart_speed,
+    dart_interval = self.dart_interval,
+    dart_vertical_speed = self.dart_vertical_speed,
+    rise_range = self.rise_range,
+    rise_height = self.rise_height,
+    rise_speed = self.rise_speed,
+    attack_range = self.attack_range,
+    attack_height = self.attack_height,
+    attack_windup = self.attack_windup,
+    attack_cooldown = self.attack_cooldown,
+    room_id = self.room_id,
+    iframes_on_hit = self.iframes_on_hit,
+    max_enemies_per_room = 0,
+  }
+  self.health = self.max_health or 3
+  self.vel = v3(0,0,0)
+  self.pos = go.get_position()
+  self.facing = 1
+  print(string.format("[ENEMY] init id=%s at (%.1f, %.1f) pattern1=%s pattern2=%s",
+    tostring(go.get_id()), self.pos.x or 0, self.pos.y or 0,
+    tostring(self.pattern1), tostring(self.pattern2)))
+  self.start_pos = v3(self.pos)
+  self.spawn_projectile = spawn_projectile
+  self.strike_player = strike_player
+  self.play_attack_animation = play_enemy_attack_animation
+  self.patterns = {}
+  self.poise = 0
+  self.stunned_t = 0
+  self._debug_update_count = 0
+  self._type_config_applied = false  -- flag to avoid double-applying type config
+  self._audio = EnemyAudio.resolve(nil)
+  self.anim_map = {}
+  self._anim_locked = false
+  self._anim_lock_state = nil
+  self._current_loop_anim = nil
+  self._uses_run_animation = false
+  self.skin = nil
+  self._requested_skin = nil
+  self._missing_skin_warning = nil
+  self._missing_instance_skin_warning = nil
+  self._loco_move_state = nil
+  self._loco_idle_state = nil
+  rebuild_anim_map(self, nil)
+  compute_locomotion_profile(self)
+  configure_anim_default(self)
+  local p1 = Patterns[hash(self.pattern1)]; if p1 then self.patterns[#self.patterns+1] = p1() end
+  local p2 = Patterns[hash(self.pattern2)]; if p2 then self.patterns[#self.patterns+1] = p2() end
+  
+  -- Runtime overrides (set via apply_tiled_overrides message)
+  self.spawn_id = nil
+  self.loot_table = nil  -- Override loot table ID
+  self.drops = nil       -- Override drop table
+  self.elite = false     -- Elite variant flag
+  self.faction = nil     -- Faction ID for AI
+  self.group_id = nil    -- Group for coordinated behavior
+  self.ally_detection_range = COORD_CONFIG.ally_detection_range or 200  -- Range to call allies (from game_config.lua)
+  self._room_id = nil
+  self._patrol_route = nil
+  self._patrol_waypoints = nil
+  self._patrol_index = 1
+  self._patrol_dir = 1
+  self._drop_counter = 0
+  self._contact_damage_timers = {}
+
+  -- Room bounds and terrain
+  self._room_bounds = nil           -- Cached {min_x, max_x, min_y, max_y}
+  self._ignores_terrain = false     -- Ghost-type enemies phase through platforms/ground
+  self._grounded_movement = false   -- Ground rollers chase only on the horizontal axis
+  -- Project ledge defaults; a resolved enemy type overrides them. Enemies whose
+  -- type does not resolve can still walk a Tiled ground movement, so they need these.
+  self._ledge = LedgeGuard.settings(nil, EnemyDefaults, TileSettings)
+  self._detection_range = 200       -- Detection range for chase behaviors
+  self._chase_speed_mult = 1.0     -- Authored chase multiplier (1 = unchanged)
+  self._speed_mult = 1.0           -- Per-instance Tiled movement multiplier
+  self._elite_speed_mult = 1.0     -- Elite movement multiplier, applied once
+  self.chase_speed = nil
+  self.patrol_distance = nil
+  self.hover_height = nil
+  self.shoot_cooldown = nil
+  self.projectile_speed = nil
+  self.projectile_visual = nil
+  self.charge_speed = nil
+
+  -- Group coordination state
+  self._allies_alerted = false      -- Have we alerted allies this encounter?
+  self._player_detected = false     -- Is player currently detected?
+  self._alert_cooldown = 0          -- Cooldown before re-alerting
+  self._group_coordination = nil    -- Cached GroupCoordination module
+
+  local baked_enemy_type = EnemyOverrides.resolve_enemy_type(baked_authoring.enemy_type)
+  if baked_enemy_type then
+    baked_authoring.enemy_type = baked_enemy_type
+    local overrides = EnemyOverrides.normalize(baked_authoring)
+    local mgr = get_enemy_manager()
+    local spawn_id = nil
+    if mgr and mgr.spawn_enemy then
+      local spawn_ok, result = pcall(mgr.spawn_enemy, baked_enemy_type, self.pos, overrides)
+      if spawn_ok then
+        spawn_id = result
+      else
+        print(string.format("[ENEMY] EnemyManager.spawn_enemy ERROR: %s", tostring(result)))
+      end
+    end
+    overrides.spawn_id = spawn_id
+    self.spawn_id = spawn_id
+    if spawn_id and mgr and mgr.register_enemy_instance then
+      pcall(mgr.register_enemy_instance, spawn_id, go.get_id())
+    end
+    apply_overrides(self, overrides)
+  end
+end
+
+-- Helper: Alert nearby allies when player detected
+local function alert_nearby_allies(self)
+  if self._allies_alerted or not self.spawn_id then return end
+  if self._alert_cooldown > 0 then return end
+
+  -- Lazy-load GroupCoordination
+  if self._group_coordination == nil then
+    local ok, mod = pcall(require, "mvtk.enemies.group_coordination")
+    self._group_coordination = ok and mod or false
+  end
+
+  local GroupCoord = self._group_coordination
+  if not GroupCoord then return end
+
+  -- Get nearby allies and alert them
+  local allies = GroupCoord.get_nearby_allies and GroupCoord.get_nearby_allies(self.spawn_id, self.ally_detection_range)
+  if allies and #allies > 0 then
+    local alerted_count = 0
+    for _, ally_data in ipairs(allies) do
+      local ally = ally_data.enemy
+      -- EnemyManager stores 'url' not 'instance_url'
+      local ally_url = ally and (ally.url or ally.instance_url)
+      if ally_url then
+        -- Send alert message to ally
+        local ok = pcall(msg.post, ally_url, hash("ally_alert"), {
+          alerter_id = self.spawn_id,
+          player_pos = self._last_player_pos,
+        })
+        if ok then alerted_count = alerted_count + 1 end
+      end
+    end
+    if alerted_count > 0 then
+      print(string.format("[ENEMY] Alerted %d allies within range %d", alerted_count, self.ally_detection_range))
+    end
+  end
+
+  -- Signal group attack if in coordinated mode
+  if self.group_id then
+    pcall(GroupCoord.signal_attack, self.group_id)
+  end
+
+  self._allies_alerted = true
+  self._alert_cooldown = COORD_CONFIG.alert_cooldown or 3.0  -- Cooldown from game_config.lua
+end
+
+function update(self, dt)
+  if Pause and Pause.get and Pause.get() then return end
+  local timescale = (Pause and (Pause.dt_scale or Pause.scale) and (Pause.dt_scale or Pause.scale)()) or 1.0
+  dt = FrameClock.snap(dt) * timescale
+
+  if self._dying then
+    if self._delete_after_death_t then
+      self._delete_after_death_t = self._delete_after_death_t - dt
+      if self._delete_after_death_t <= 0 then
+        go.delete(".")
+      end
+    end
+    return
+  end
+
+  self._debug_update_count = (self._debug_update_count or 0) + 1
+
+  if self._debug_update_count == 5 then
+    local pat_names = {}
+    for i, pat in ipairs(self.patterns or {}) do
+      pat_names[i] = pat.update and "has_update" or "NO_update"
+    end
+    print(string.format("[ENEMY] update#5 id=%s patterns=%d [%s] speed=%s stunned=%.2f",
+      tostring(go.get_id()), #(self.patterns or {}),
+      table.concat(pat_names, ","),
+      tostring(self.speed), self.stunned_t or 0))
+  end
+
+  -- Update ally alert cooldown
+  if self._alert_cooldown and self._alert_cooldown > 0 then
+    self._alert_cooldown = self._alert_cooldown - dt
+  end
+
+  -- Advance i-frame timer & hurt flash
+  Invulnerability.update(self, dt)
+
+  -- Decay per-target contact damage cooldowns to prevent touch stunlock.
+  if self._contact_damage_timers and next(self._contact_damage_timers) then
+    for target, t in pairs(self._contact_damage_timers) do
+      local remaining = t - dt
+      if remaining <= 0 then
+        self._contact_damage_timers[target] = nil
+      else
+        self._contact_damage_timers[target] = remaining
+      end
+    end
+  end
+
+  -- Check for player proximity and alert allies (group coordination)
+  if self.ally_detection_range and self.ally_detection_range > 0 then
+    local player_url = C.URL and C.URL.PLAYER
+    if player_url then
+      local ok, player_pos = pcall(go.get_position, player_url)
+      if ok and player_pos then
+        local dx = player_pos.x - self.pos.x
+        local dy = player_pos.y - self.pos.y
+        local dist_sq = dx * dx + dy * dy
+        local detect_range_sq = self.ally_detection_range * self.ally_detection_range
+
+        if dist_sq <= detect_range_sq then
+          -- Player detected!
+          if not self._player_detected then
+            self._player_detected = true
+            self._last_player_pos = player_pos
+            -- Alert allies on first detection
+            alert_nearby_allies(self)
+          end
+          self._last_player_pos = player_pos
+        else
+          -- Player left detection range
+          if self._player_detected then
+            self._player_detected = false
+            self._allies_alerted = false  -- Reset for next encounter
+          end
+        end
+      end
+    end
+  end
+
+  if (self.stunned_t or 0) > 0 then
+    self.stunned_t = math.max(0, self.stunned_t - dt)
+    -- no poise recovery during stun
+  else
+    for _, pat in ipairs(self.patterns) do
+      if pat.update then pat.update(self, dt) end
+    end
+    -- passive poise recovery
+    self.poise = math.max(0, self.poise - (self.poise_recover_per_s or 1) * dt)
+  end
+  LedgeGuard.apply(self, dt)
+  local anim_vx = self.vel.x or 0
+  local anim_vy = self.vel.y or 0
+  update_locomotion_animation(self, anim_vx, anim_vy)
+  self.pos.x = self.pos.x + self.vel.x * dt
+  self.pos.y = self.pos.y + self.vel.y * dt
+
+  -- Clamp to room bounds (prevents all enemies from leaving their room)
+  local bounds = self._room_bounds
+  if bounds then
+    local margin = 16
+    if self.pos.x < bounds.min_x + margin then
+      self.pos.x = bounds.min_x + margin
+      self.vel.x = 0
+    elseif self.pos.x > bounds.max_x - margin then
+      self.pos.x = bounds.max_x - margin
+      self.vel.x = 0
+    end
+    if self.pos.y < bounds.min_y + margin then
+      self.pos.y = bounds.min_y + margin
+      self.vel.y = 0
+    elseif self.pos.y > bounds.max_y - margin then
+      self.pos.y = bounds.max_y - margin
+      self.vel.y = 0
+    end
+  end
+
+  go.set_position(self.pos)
+  local mgr = get_enemy_manager()
+  if mgr and mgr.set_enemy_position and self.spawn_id then
+    mgr.set_enemy_position(self.spawn_id, self.pos)
+  end
+  self.vel.x, self.vel.y = 0, 0
+end
+
+function final(self)
+  if self.spawn_id then
+    local mgr = get_enemy_manager()
+    if mgr and mgr.unregister_enemy_instance then
+      pcall(mgr.unregister_enemy_instance, self.spawn_id)
+    end
+    self.spawn_id = nil
+  end
+end
+
+local function finish_enemy_death(self)
+  if self._death_deleted then return end
+  self._death_deleted = true
+  go.delete(".")
+end
+
+local function begin_enemy_death(self)
+  if self._dying then return end
+  self._dying = true
+  if self._audio and self._audio.death then
+    Audio.sfx(self._audio.death)
+  end
+  self._anim_locked = false
+  self._delete_after_death_t = 0.75
+  Util.post_component_enabled("#co", false)
+  set_anim_state(self, "death", true)
+end
+
+local function is_attack_trigger(message)
+  if not message then return false end
+  -- Defold populates `group` with the other collider's group for trigger_response.
+  local g = message.group or message.other_group or message.own_group
+  return g == ATTACK_GROUP
+end
+
+function on_message(self, message_id, message, sender)
+  if message_id == MSG_ANIM_DONE then
+    if self._dying then
+      finish_enemy_death(self)
+      return
+    end
+    self._anim_locked = false
+    self._anim_lock_state = nil
+    self._current_loop_anim = nil
+    return
+  end
+  if self._dying then
+    return
+  end
+  if message_id == hash("trigger_response") then
+    if message.enter and is_attack_trigger(message) then
+      print(string.format("[ENEMY] trigger_response from attack other=%s group=%s other_group=%s", tostring(message.other_id), tostring(message.group), tostring(message.other_group)))
+      -- Damage is applied by the attack object's script (melee_hitbox, projectile,
+      -- etc.) via mvtk_apply_damage.  No self-post here to avoid double damage.
+    end
+  elseif message_id == hash('contact_point_response') then
+    -- Contact can arrive when hitboxes are kinematic instead of triggers
+    if message.group == ATTACK_GROUP or message.other_group == ATTACK_GROUP then
+      local dmg = 1
+      local ok_dmg, dmg_val = pcall(go.get, message.other_id, "damage")
+      if ok_dmg and type(dmg_val) == "number" then dmg = dmg_val end
+      local kb = 0
+      local dir = 1
+      local ok_dir, dir_val = pcall(go.get, message.other_id, "dir")
+      if ok_dir and type(dir_val) == "number" then dir = dir_val end
+      local ok_kb, kb_val = pcall(go.get, message.other_id, "knockback")
+      if ok_kb and type(kb_val) == "number" then kb = kb_val end
+      msg.post(".", DAMAGE_MSG, DamagePayload.build({
+        amount = dmg,
+        dtype = "slash",
+        kx = kb * dir,
+        ky = 0,
+        stun_t = 0.08,
+        parryable = false,
+        source_actor = message.other_id,
+      }))
+      return
+    end
+    -- Terrain collision: push non-ghost enemies out of ground/wall tiles
+    if not self._ignores_terrain then
+      local g = message.group
+      local surface_kind = SurfaceClassifier.classify_collision(message)
+      if SurfaceClassifier.is_terrain_group(g) and surface_kind ~= SurfaceClassifier.KINDS.UNKNOWN then
+        local normal = message.normal
+        local depth = message.distance or 0
+        if normal and depth > 0 then
+          self.pos.x = self.pos.x + normal.x * depth
+          self.pos.y = self.pos.y + normal.y * depth
+          go.set_position(self.pos)
+          -- Cancel velocity into the wall
+          local dot = self.vel.x * normal.x + self.vel.y * normal.y
+          if dot < 0 then
+            self.vel.x = self.vel.x - dot * normal.x
+            self.vel.y = self.vel.y - dot * normal.y
+          end
+        end
+        return
+      end
+    end
+    local other = message.other_id
+    if other and message and message.group and message.group == hash('player') then
+      local target_key = tostring(other)
+      local contact_cd = tonumber(self.contact_damage_cooldown) or 0
+      if contact_cd > 0 then
+        local remaining = self._contact_damage_timers and self._contact_damage_timers[target_key]
+        if remaining and remaining > 0 then
+          return
+        end
+      end
+      local dmg = tonumber(self.contact_damage or 1) or 1
+      local px = 0
+      local ok_pos, ppos = pcall(go.get_world_position, other)
+      if ok_pos and ppos then px = ppos.x end
+      local dir = 1
+      if px ~= 0 then
+        dir = (px >= (self.pos.x or 0)) and 1 or -1
+      end
+      local kb = tonumber(self.contact_knockback_px or 0) or 0
+      local stun_t = tonumber(self.contact_stun_t or 0.10) or 0.10
+      pcall(msg.post, other, DAMAGE_MSG, DamagePayload.build({
+        amount = dmg,
+        damage_type = "physical",
+        kx = kb * dir,
+        ky = 140,
+        stun_t = stun_t,
+        parryable = false,
+        source_actor = go.get_id(),
+        source_attack = "enemy_contact",
+      }))
+      if contact_cd > 0 then
+        self._contact_damage_timers[target_key] = contact_cd
+      end
+    end
+  elseif message_id == hash("external_force") then
+    local vx = message and message.vx or 0
+    local vy = message and message.vy or 0
+    if vx ~= 0 or vy ~= 0 then
+      self.vel.x = (self.vel.x or 0) + vx
+      self.vel.y = (self.vel.y or 0) + vy
+    end
+  elseif message_id == hash("platform_delta") then
+    local dx = message and (message.dx or 0) or 0
+    local dy = message and (message.dy or 0) or 0
+    if dx ~= 0 or dy ~= 0 then
+      self.pos.x = (self.pos.x or 0) + dx
+      self.pos.y = (self.pos.y or 0) + dy
+      go.set_position(self.pos)
+    end
+  elseif message_id == DAMAGE_MSG or message_id == HIT_MSG then
+    if Invulnerability.is_invulnerable(self) then
+      return
+    end
+    local incoming = DamagePayload.normalize(message, sender)
+    local amt = incoming.amount or 1
+    local dtype = incoming.damage_type or incoming.dtype or "physical"
+    if amt > 0 then
+      self.health = (self.health or 0) - amt
+      local iframes = self.iframes_on_hit or EnemyDefaults.iframes_on_hit
+      if iframes and iframes > 0 then
+        if not self.sprite_url then
+          local ok, url = pcall(msg.url, "#sprite")
+          if ok then self.sprite_url = url end
+        end
+        Invulnerability.start(self, iframes, "hit")
+      end
+    end
+    -- build knockback
+    local kx = (incoming.kx or 0) * (self.knockback_mult or 1)
+    local ky = (incoming.ky or 0) * (self.knockback_mult or 1)
+    if incoming.reaction_type then
+      local dir = vmath.vector3((kx >= 0) and 1 or -1, ky, 0)
+      local reaction = HitReactions.apply_reaction(go.get_id(), incoming.reaction_type, dir, {
+        damage = amt,
+        skip_hitstop = true,
+        skip_shake = true,
+      })
+      if reaction and reaction.knockback_velocity then
+        if kx == 0 and ky == 0 then
+          kx = (reaction.knockback_velocity.x or 0) * (self.knockback_mult or 1)
+          ky = (reaction.knockback_velocity.y or 0) * (self.knockback_mult or 1)
+        end
+        if reaction.stagger_duration and reaction.stagger_duration > 0 then
+          self.stunned_t = math.max(self.stunned_t or 0, reaction.stagger_duration)
+        end
+      end
+    end
+    self.vel.x = self.vel.x + kx
+    self.vel.y = self.vel.y + ky
+    -- accumulate poise and check stagger
+    self.poise = (self.poise or 0) + math.max(0, amt)
+    if incoming.reaction_type == "stun" and (incoming.stun_t or 0) > 0 then
+      self.stunned_t = math.max(self.stunned_t or 0, incoming.stun_t)
+    elseif self.poise >= (self.poise_threshold or 999) then
+      self.stunned_t = math.max(self.stunned_t or 0, incoming.stun_t or 0.30)
+      self.poise = 0
+    end
+    print(string.format('[ENEMY] took %.1f(%s) damage (hp=%.1f)', amt, tostring(dtype), self.health))
+    if not enemy_crash_enabled("disable_combat_fx") then
+      local okFeel, Feel = pcall(require, 'mvtk.core.gamefeel')
+      if okFeel and Feel and Feel.damage_number then
+        pcall(Feel.damage_number, amt, go.get_position(), { dtype = dtype, target = 'enemy' })
+      end
+    end
+    if self.health > 0 then
+      if EnemyAudio.should_play_hurt(self._audio, amt, self.health) then
+        Audio.sfx(self._audio.hurt)
+      end
+      set_anim_state(self, "hurt", true)
+    end
+    if self.health <= 0 then
+      -- Drop loot (use override loot_table or default loot factory)
+      local handled_drops = false
+      if self.loot_table then
+        -- Use loot table system
+        local ok_loot, LootTables = pcall(require, "developer.config.loot_tables")
+        if ok_loot and LootTables and LootTables[self.loot_table] then
+          local loot = LootTables[self.loot_table]
+          -- Spawn drops from table
+          for _, drop in ipairs(loot.drops or {}) do
+            if math.random() <= (drop.chance or 1.0) then
+              local drop_url = msg.url("main:/room_manager#collectible_factory")
+              pcall(factory.create, drop_url, go.get_position(), nil, {
+                collectible_type = tostring(drop.type or "currency"),
+                amount = drop.amount or 1
+              }, 1)
+            end
+          end
+          handled_drops = true
+        end
+      elseif self.drops and type(self.drops) == "table" then
+        for drop_id, drop_config in pairs(self.drops) do
+          local ok_spawn = spawn_drop_collectible(self, drop_id, drop_config)
+          if ok_spawn then
+            handled_drops = true
+          end
+        end
+      else
+        -- Fallback to simple loot factory
+        local f = msg.url(nil, go.get_id(), hash("loot_factory"))
+        if go.exists(f) then
+          local ok, err = pcall(factory.create, f, go.get_position(), nil, { amount = 5 }, 1)
+          if not ok then
+            print(string.format("[ENEMY] Failed to create loot: %s", tostring(err)))
+          end
+        elseif not handled_drops then
+          print("[ENEMY] Loot factory missing; skipping loot drop")
+        end
+      end
+      
+      -- Notify EnemyManager
+      if self.spawn_id then
+        local ok_mgr, EnemyMgr = pcall(require, "mvtk.enemies.enemy_manager")
+        if ok_mgr and EnemyMgr and EnemyMgr.unregister_enemy_instance then
+          EnemyMgr.unregister_enemy_instance(self.spawn_id)
+        end
+      end
+      begin_enemy_death(self)
+      return
+    end
+  elseif message_id == hash('mvtk_counter') then
+    -- Counter-hit from a player parry: apply a brief heavy stun
+    self.stunned_t = math.max(self.stunned_t or 0, 0.40)
+    self.poise = 0
+  elseif message_id == hash('apply_tiled_overrides') then
+    local overrides = EnemyOverrides.normalize(message or {})
+    overrides.spawn_id = message and message.spawn_id or nil
+    apply_overrides(self, overrides)
+  elseif message_id == hash('ally_alert') then
+    -- Received alert from a nearby ally that player was detected
+    if not self._player_detected then
+      self._player_detected = true
+      self._last_player_pos = message.player_pos
+      print(string.format("[ENEMY] Received ally alert from %s", tostring(message.alerter_id)))
+      -- Don't re-alert (would cause chain reaction)
+      self._allies_alerted = true
+    end
+  end
+end

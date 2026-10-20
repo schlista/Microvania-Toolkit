@@ -1,0 +1,52 @@
+-- mvtk/hazards/fire_jet.script
+local HazardRegistry = require "mvtk.hazards.hazard_registry"
+
+go.property("damage", 20)
+go.property("active_duration", 1.0)
+go.property("inactive_duration", 2.0)
+go.property("warning_time", 0.5)
+
+function init(self)
+    self.active = false
+    self.timer = self.inactive_duration
+    self.state = "inactive"
+end
+
+function update(self, dt)
+    self.timer = self.timer - dt
+    if self.state == "inactive" then
+        if self.timer <= 0 then
+            self.state = "warning"
+            self.timer = self.warning_time
+            msg.post("#sprite", "play_animation", {id = hash("warning")})
+        end
+    elseif self.state == "warning" then
+        if self.timer <= 0 then
+            self.state = "active"
+            self.timer = self.active_duration
+            self.active = true
+            msg.post("#sprite", "play_animation", {id = hash("fire")})
+            msg.post("#particle", "start_emitter")
+        end
+    elseif self.state == "active" then
+        if self.timer <= 0 then
+            self.state = "inactive"
+            self.timer = self.inactive_duration
+            self.active = false
+            msg.post("#particle", "stop_emitter")
+        end
+    end
+end
+
+function on_message(self, message_id, message, sender)
+    if message_id == hash("collision_response") and self.active then
+        if message.other_group == hash("player") then
+            HazardRegistry.post_damage(message.other_id, {
+                amount = self.damage,
+                source_actor = go.get_id(),
+                source_attack = "fire_jet",
+                parryable = false,
+            })
+        end
+    end
+end

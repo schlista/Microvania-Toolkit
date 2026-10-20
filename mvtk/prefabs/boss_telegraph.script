@@ -1,0 +1,50 @@
+-- Boss Attack Telegraph
+-- A short-lived visual placed by boss_telegraph.lua during an attack's
+-- wind-up. Fades in, holds, then fades out and self-destructs when `duration`
+-- elapses. Shape ("line" / "circle" / "cone") and size come from factory
+-- properties set at spawn time.
+--
+-- Attach a sprite component named "#sprite" with a generic shape image; the
+-- script scales / tints it based on properties.
+
+go.property("shape", "line")
+go.property("duration", 0.5)
+go.property("size_x", 80.0)
+go.property("size_y", 40.0)
+go.property("facing", 1)
+go.property("color_r", 1.0)
+go.property("color_g", 0.2)
+go.property("color_b", 0.2)
+go.property("color_a", 0.5)
+
+local function clamp(v, lo, hi) return math.max(lo, math.min(hi, v)) end
+
+function init(self)
+    self.elapsed = 0
+    -- Orient the visual along the boss's facing direction
+    local scale = vmath.vector3(self.size_x / 64 * (self.facing >= 0 and 1 or -1),
+                                self.size_y / 64, 1)
+    pcall(go.set_scale, scale)
+    pcall(go.set, "#sprite", "tint", vmath.vector4(self.color_r, self.color_g, self.color_b, 0.0))
+end
+
+function update(self, dt)
+    self.elapsed = self.elapsed + dt
+    local t = clamp(self.elapsed / math.max(0.0001, self.duration), 0, 1)
+    -- Fade in 20%, hold, fade out last 30%; pulse slightly to sell "imminent".
+    local alpha
+    if t < 0.2 then
+        alpha = (t / 0.2) * self.color_a
+    elseif t > 0.7 then
+        alpha = (1 - (t - 0.7) / 0.3) * self.color_a
+    else
+        alpha = self.color_a
+    end
+    local pulse = 0.85 + 0.15 * math.sin(self.elapsed * 18)
+    pcall(go.set, "#sprite", "tint",
+        vmath.vector4(self.color_r, self.color_g, self.color_b, alpha * pulse))
+
+    if self.elapsed >= self.duration then
+        go.delete()
+    end
+end

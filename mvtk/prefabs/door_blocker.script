@@ -1,0 +1,295 @@
+-- mvtk/prefabs/door_blocker.script
+local PU = require "mvtk.prefabs.prefab_utils"
+local Util = require "mvtk.core.util"
+local DoorState = require("mvtk.rooms.door_state")
+local Flags = require("mvtk.core.flags")
+local Checkpoint = require("mvtk.core.checkpoint")
+local SaveManager = require("mvtk.game.save_system.save_manager")
+local AbilityManagerOk, AbilityManager = pcall(require, "mvtk.abilities.ability_manager")
+local AbilityConfigOk, AbilityConfig = pcall(require, "developer.config.abilities")
+local InventoryOk, Inventory = pcall(require, "mvtk.core.inventory")
+
+go.property("door_id", "")
+go.property("room_id", "")
+
+-- Unlock requirements (all optional; empty text means "no requirement")
+go.property("require_ability", "")
+go.property("require_key", "")
+go.property("require_item", "")
+go.property("consume_key", true)
+
+-- Messaging / behavior
+go.property("unlock_message", "unlock")
+go.property("sound_locked", "")
+go.property("sound_unlock", "")
+go.property("starts_locked", true)
+go.property("auto_delete_when_open", 0)
+go.property("scale_x", 1.0)
+go.property("scale_y", 1.0)
+
+local OPENED_MSG = hash("mvtk_door_opened")
+local CONTACT_MSG = hash("contact_point_response")
+local TRIGGER_MSG = hash("trigger_response")
+local INTERACT_MSG = hash("mvtk_interact")
+local PLAYER = hash("player")
+local EMPTY = ""
+local NONE = "none"
+
+local function optional_text(value)
+    if value == nil or value == EMPTY or value == NONE then
+        return EMPTY
+    end
+    return value
+end
+
+local FALLBACK_ABILITIES = {
+    "slide", "slide_iframes", "double_jump", "extended_jump",
+    "air_dash", "air_dash_iframes", "wall_climb",
+    "charge_attack", "down_strike", "ranged_attack",
+}
+
+local ability_lookup = nil
+
+local function ensure_ability_lookup()
+    if ability_lookup then return end
+    ability_lookup = {}
+    if AbilityConfigOk and AbilityConfig and type(AbilityConfig.abilities) == "table" then
+        for id, def in pairs(AbilityConfig.abilities) do
+            ability_lookup[id] = {
+                id = id,
+                name = (def and def.name) or (id:gsub("_", " ")),
+            }
+        end
+    end
+    for _, id in ipairs(FALLBACK_ABILITIES) do
+        if not ability_lookup[id] then
+            ability_lookup[id] = { id = id, name = id:gsub("_", " ") }
+        end
+    end
+end
+
+local function ability_info_from_id(need_id)
+    if not need_id or need_id == EMPTY then return nil end
+    ensure_ability_lookup()
+    return ability_lookup[need_id]
+end
+
+local function has_required_ability(need_id)
+    if not need_id or need_id == EMPTY then
+        return true, nil
+    end
+    local ok_flag, has_flag = pcall(Flags.has, need_id)
+    if ok_flag and has_flag then
+        return true, ability_info_from_id(need_id)
+    end
+    local info = ability_info_from_id(need_id)
+    if info then
+        local ok_flag_str, has_flag_str = pcall(Flags.has, info.id)
+        if ok_flag_str and has_flag_str then
+            return true, info
+        end
+        if AbilityManagerOk and AbilityManager and AbilityManager.is_ability_unlocked then
+            local ok_am, unlocked = pcall(AbilityManager.is_ability_unlocked, info.id)
+            if ok_am and unlocked then
+                return true, info
+            end
+        end
+    end
+    return false, info
+end
+
+local function as_bool(v)
+    if type(v) == "boolean" then return v end
+    return (v or 0) ~= 0
+end
+
+local function resolve_door_id(self)
+    if self.door_id and self.door_id ~= EMPTY then return self.door_id end
+    return EMPTY
+end
+
+local function set_collision_enabled(on)
+    local url = msg.url(nil, go.get_id(), hash("co"))
+    -- Recorded so a room hide/show cannot re-enable an open door's collision.
+    pcall(Util.post_component_enabled, url, on)
+end
+
+local function disable_blocker(self, silent)
+    local presentation = require("mvtk.tiled.object_presentation")
+    if silent then presentation.restore("opened")
+    else presentation.emit("opened", "opened") end
+    presentation.visible(false)
+    set_collision_enabled(false)
+    if self.sound_unlock and self.sound_unlock ~= EMPTY then
+        PU.play_sound(self.sound_unlock)
+    else
+        PU.play_sound("door_open")
+    end
+end
+
+local function enable_blocker(self)
+    require("mvtk.tiled.object_presentation").restore("closed")
+    require("mvtk.tiled.object_presentation").visible(true)
+    set_collision_enabled(false)
+    set_collision_enabled(true)
+end
+
+local function check_key(self)
+    local need = self.require_key or EMPTY
+    if need == EMPTY then
+        need = self.require_item or EMPTY
+    end
+    if need == EMPTY then return true end
+    if not (InventoryOk and Inventory and Inventory.has) then
+        print("[door_blocker] Inventory unavailable; cannot check key")
+        return false
+    end
+    if not Inventory.has(need) then
+        PU.toast("Requires matching key")
+        if self.sound_locked and self.sound_locked ~= EMPTY then
+            PU.play_sound(self.sound_locked)
+        end
+        return false
+    end
+    if as_bool(self.consume_key) then
+        Inventory.consume(need, 1)
+    end
+    return true
+end
+
+local function has_any_requirement(self)
+    return (self.require_ability and self.require_ability ~= EMPTY)
+        or (self.require_key and self.require_key ~= EMPTY)
+        or (self.require_item and self.require_item ~= EMPTY)
+end
+
+local function try_unlock(self, source)
+    local door_id = resolve_door_id(self)
+    print(string.format("[door_blocker] try_unlock door_id=%s source=%s", tostring(door_id), tostring(source)))
+    if door_id == EMPTY then return end
+    if DoorState.is_open(door_id) then
+        print("[door_blocker] try_unlock: already open, skipping")
+        return
+    end
+
+    -- Proximity (trigger) unlocks only fire when the door has an authored
+    -- requirement. A locked door with no requirement can only be opened by an
+    -- external `unlock_message` (pressure plate, boss defeat, scripted event).
+    if source == "trigger" and not has_any_requirement(self) then
+        print("[door_blocker] try_unlock: no requirement authored; ignoring proximity unlock")
+        return
+    end
+
+    local need = self.require_ability or EMPTY
+    local has_it, info = has_required_ability(need)
+    print(string.format("[door_blocker] try_unlock ability_check need=%s has_it=%s info=%s",
+        tostring(need), tostring(has_it), info and info.id or "nil"))
+    if need ~= EMPTY and not has_it then
+        local label = (info and info.name) or "required ability"
+        PU.toast(("Requires %s"):format(label))
+        if self.sound_locked and self.sound_locked ~= EMPTY then
+            PU.play_sound(self.sound_locked)
+        end
+        return
+    end
+
+    if not check_key(self) then
+        print("[door_blocker] try_unlock: key check failed")
+        return
+    end
+
+    print(string.format("[door_blocker] UNLOCKING door_id=%s", tostring(door_id)))
+    DoorState.open_edge(door_id)
+    pcall(Checkpoint.autosave, "door_unlock")
+    if SaveManager and SaveManager.save_game then pcall(SaveManager.save_game) end
+    PU.toast("Door unlocked")
+end
+
+function init(self)
+    self.require_ability = optional_text(self.require_ability)
+    self.require_key = optional_text(self.require_key)
+    self.require_item = optional_text(self.require_item)
+    self.sound_locked = optional_text(self.sound_locked)
+    self.sound_unlock = optional_text(self.sound_unlock)
+    local door_id = resolve_door_id(self)
+    local pos = go.get_world_position()
+    print(string.format("[door_blocker] INIT url=%s door_id=%s pos=(%.1f,%.1f) starts_locked=%s require_ability=%s require_key=%s require_item=%s consume_key=%s",
+        tostring(msg.url()),
+        tostring(self.door_id),
+        pos.x, pos.y,
+        tostring(self.starts_locked),
+        tostring(self.require_ability), tostring(self.require_key),
+        tostring(self.require_item), tostring(self.consume_key)))
+    if door_id == EMPTY then
+        print("[door_blocker] Missing door_id property! Deleting.")
+        go.delete()
+        return
+    end
+
+    if (self.scale_x and self.scale_x ~= 1.0) or (self.scale_y and self.scale_y ~= 1.0) then
+        local sx = (self.scale_x and self.scale_x > 0) and self.scale_x or 1.0
+        local sy = (self.scale_y and self.scale_y > 0) and self.scale_y or 1.0
+        pcall(go.set_scale, vmath.vector3(sx, sy, 1.0))
+        print(string.format("[door_blocker] applied scale (%.3f, %.3f) from script props", sx, sy))
+    end
+
+    DoorState.listen(door_id, msg.url())
+
+    local ds_open = DoorState.is_open(door_id)
+    local is_open = ds_open or (not as_bool(self.starts_locked))
+    print(string.format("[door_blocker] door_id=%s DoorState.is_open=%s starts_locked=%s -> initial_open=%s",
+        tostring(door_id), tostring(ds_open), tostring(self.starts_locked), tostring(is_open)))
+
+    set_collision_enabled(false)
+
+    if is_open then
+        disable_blocker(self, true)
+        if as_bool(self.auto_delete_when_open) then
+            go.delete()
+            return
+        end
+    else
+        enable_blocker(self)
+    end
+
+    -- Register interaction prompt so the player can press the interact button to unlock.
+    local im = PU.get_interaction()
+    if im and im.register then
+        im.register(msg.url(), {
+            label = "Unlock Door",
+            range = 196,
+            priority = 10,
+            position_fn = function(url) return go.get_world_position(url) end,
+        })
+    end
+end
+
+function on_message(self, message_id, message, sender)
+    local door_id = resolve_door_id(self)
+    if message_id == OPENED_MSG and message and message.door_id == door_id then
+        disable_blocker(self)
+        if as_bool(self.auto_delete_when_open) then go.delete() end
+    elseif message_id == TRIGGER_MSG then
+        if message and message.enter and message.other_group == PLAYER then
+            try_unlock(self, "trigger")
+        end
+    elseif message_id == INTERACT_MSG then
+        try_unlock(self, "interact")
+    elseif message_id == hash(self.unlock_message) then
+        -- Allow external systems (e.g., pressure plates) to force unlock.
+        DoorState.open_edge(door_id)
+    elseif message_id == CONTACT_MSG then
+        -- Physical collision is handled by the player script.
+    end
+end
+
+function final(self)
+    local door_id = resolve_door_id(self)
+    if door_id ~= EMPTY then
+        DoorState.unlisten(door_id, msg.url())
+    end
+    local im = PU.get_interaction()
+    if im and im.unregister then
+        im.unregister(msg.url())
+    end
+end

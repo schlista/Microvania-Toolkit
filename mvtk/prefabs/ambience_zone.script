@@ -1,0 +1,262 @@
+-- mvtk/prefabs/ambience_zone.script
+-- Area trigger that plays a looping ambience sound while inside.
+
+local PU = require "mvtk.prefabs.prefab_utils"
+local Audio = require "mvtk.audio.audio"
+local SafeSound = require "mvtk.audio.safe_sound"
+
+go.property("zone_id", "")
+go.property("ambience_id", "")
+go.property("ambience_component", "")
+go.property("gain", 1.0)
+go.property("music_volume_percent", 100.0)
+go.property("stop_on_exit", true)
+go.property("trigger_once", false)
+
+local EMPTY = ""
+local AUDIO_GO_URL = nil
+
+local function get_audio_go_url()
+    if AUDIO_GO_URL ~= nil then
+        return AUDIO_GO_URL
+    end
+    local ok, url = pcall(msg.url, "main:/audio")
+    if ok then
+        AUDIO_GO_URL = url
+    else
+        AUDIO_GO_URL = false
+    end
+    return AUDIO_GO_URL or nil
+end
+
+local function trace(self, event, extra)
+    local zone_id = self and self.zone_id_key or "<uninitialized>"
+    local ambience_id = self and (self.ambience_id_str or self.ambience_id_value) or "<unset>"
+    local gain = self and self.gain or -1
+    local inside = self and self.inside or false
+    local message = string.format(
+        "[AMBIENCE_ZONE] event=%s zone=%s go=%s ambience=%s gain=%.3f inside=%s",
+        tostring(event),
+        tostring(zone_id),
+        tostring(go.get_id()),
+        tostring(ambience_id),
+        tonumber(gain) or -1,
+        tostring(inside)
+    )
+    if extra and extra ~= "" then
+        message = message .. " " .. tostring(extra)
+    end
+    print(message)
+end
+
+local function resolve_ambience_component_url(self)
+    local component = self and self.ambience_component
+    if component == nil or component == EMPTY then
+        return nil
+    end
+    local audio_go_url = get_audio_go_url()
+    if not audio_go_url then
+        return nil
+    end
+    local ok, url = pcall(msg.url, audio_go_url.socket, audio_go_url.path, component)
+    if ok then
+        return url
+    end
+    return nil
+end
+
+
+local function apply_props(self, props)
+    props = props or {}
+    if props.ambience_id ~= nil then
+        self.ambience_id_value = props.ambience_id ~= EMPTY and props.ambience_id or nil
+        self.ambience_id_str = PU.resolve_id(props.ambience_id)
+    end
+    if props.sound_id ~= nil then
+        self.ambience_id_value = props.sound_id ~= EMPTY and props.sound_id or nil
+        self.ambience_id_str = PU.resolve_id(props.sound_id)
+    end
+    if props.ambience_component ~= nil then
+        self.ambience_component = props.ambience_component
+        self.ambience_component_url = resolve_ambience_component_url(self)
+    end
+    if props.gain ~= nil then self.gain = tonumber(props.gain) or self.gain end
+    if props.volume ~= nil then self.gain = tonumber(props.volume) or self.gain end
+    if props.music_volume_percent ~= nil then
+        self.music_volume_percent = tonumber(props.music_volume_percent) or self.music_volume_percent
+    end
+    if props.stop_on_exit ~= nil then self.stop_on_exit = props.stop_on_exit ~= false end
+    if props.trigger_once ~= nil then self.trigger_once = props.trigger_once == true end
+    trace(self, "apply_props", string.format(
+        "props_ambience=%s props_sound=%s music_volume_percent=%s stop_on_exit=%s trigger_once=%s",
+        tostring(props.ambience_id),
+        tostring(props.sound_id),
+        tostring(self.music_volume_percent),
+        tostring(self.stop_on_exit),
+        tostring(self.trigger_once)
+    ))
+    if self.inside then
+        if self._music_duck_active and Audio.clear_music_duck then
+            Audio.clear_music_duck(self.zone_id_key)
+            self._music_duck_active = false
+        end
+        if Audio.set_music_duck and (tonumber(self.music_volume_percent) or 100) < 100 then
+            Audio.set_music_duck(self.zone_id_key, self.music_volume_percent)
+            self._music_duck_active = true
+        end
+    end
+end
+
+local function apply_music_duck(self)
+    local percent = tonumber(self.music_volume_percent) or 100
+    percent = math.max(0, math.min(100, percent))
+    if percent >= 100 then
+        trace(self, "music_duck_skipped", "reason=full_music_volume")
+        return
+    end
+    if Audio.set_music_duck then
+        Audio.set_music_duck(self.zone_id_key, percent)
+        self._music_duck_active = true
+        trace(self, "music_duck_set", string.format("percent=%.2f", percent))
+    end
+end
+
+local function clear_music_duck(self)
+    if not self._music_duck_active then
+        return
+    end
+    if Audio.clear_music_duck then
+        Audio.clear_music_duck(self.zone_id_key)
+        trace(self, "music_duck_cleared", "")
+    end
+    self._music_duck_active = false
+end
+
+local function start_ambience(self)
+    if self.ambience_component_url then
+        trace(self, "start_request", "method=direct_sound url=" .. tostring(self.ambience_component_url))
+        local options = nil
+        if self.gain ~= nil then
+            options = { gain = self.gain }
+        end
+        local ok, err = SafeSound.play(self.ambience_component_url, options)
+        if ok then
+            trace(self, "start_playing", "url=" .. tostring(self.ambience_component_url))
+        else
+            trace(self, "start_failed", "url=" .. tostring(self.ambience_component_url) .. " err=" .. tostring(err))
+        end
+        return
+    end
+
+    local ambience_id = self.ambience_id_value or self.ambience_id_str
+    if ambience_id and ambience_id ~= "" then
+        trace(self, "start_request", "method=" .. tostring(Audio.ambience and "ambience" or "sfx"))
+        if Audio.ambience then
+            Audio.ambience(ambience_id, { gain = self.gain })
+        else
+            Audio.sfx(ambience_id, { gain = self.gain })
+        end
+    else
+        trace(self, "start_skipped", "reason=missing_ambience_id")
+    end
+end
+
+local function stop_ambience(self)
+    if not self.stop_on_exit then
+        trace(self, "stop_skipped", "reason=stop_on_exit_false")
+        return
+    end
+    if self.ambience_component_url then
+        trace(self, "stop_request", "method=direct_sound url=" .. tostring(self.ambience_component_url))
+        local ok, err = SafeSound.stop(self.ambience_component_url)
+        if ok then
+            trace(self, "stop_complete", "url=" .. tostring(self.ambience_component_url))
+        else
+            trace(self, "stop_failed", "url=" .. tostring(self.ambience_component_url) .. " err=" .. tostring(err))
+        end
+        return
+    end
+    local ambience_id = self.ambience_id_value or self.ambience_id_str
+    if ambience_id and ambience_id ~= "" then
+        trace(self, "stop_request", "method=" .. tostring(Audio.stop_ambience and "stop_ambience" or "stop_sfx"))
+        if Audio.stop_ambience then
+            Audio.stop_ambience(ambience_id)
+        else
+            Audio.stop_sfx(ambience_id)
+        end
+    else
+        trace(self, "stop_skipped", "reason=missing_ambience_id")
+    end
+end
+
+function init(self)
+    self.zone_id_key = (self.zone_id ~= EMPTY and self.zone_id) or PU.resolve_id(self.zone_id) or tostring(go.get_id())
+    self.ambience_id_value = self.ambience_id ~= EMPTY and self.ambience_id or nil
+    self.ambience_id_str = PU.resolve_id(self.ambience_id)
+    self.ambience_component_url = resolve_ambience_component_url(self)
+    self.inside = false
+    self._music_duck_active = false
+    trace(self, "init", string.format(
+        "music_volume_percent=%s stop_on_exit=%s trigger_once=%s component_url=%s",
+        tostring(self.music_volume_percent),
+        tostring(self.stop_on_exit),
+        tostring(self.trigger_once),
+        tostring(self.ambience_component_url)
+    ))
+end
+
+function on_message(self, message_id, message, sender)
+    if message_id == hash("apply_tiled_props") and message and message.properties then
+        apply_props(self, message.properties)
+        return
+    end
+
+    if message_id ~= hash("trigger_response") then
+        return
+    end
+
+    local other_group = message.other_group or message.group
+    trace(self, "trigger_response", string.format(
+        "sender=%s enter=%s other_group=%s group=%s other_id=%s",
+        tostring(sender),
+        tostring(message.enter),
+        tostring(message.other_group),
+        tostring(message.group),
+        tostring(message.other_id)
+    ))
+    if other_group ~= hash("player") then
+        trace(self, "trigger_ignored", "reason=non_player")
+        return
+    end
+
+    if message.enter then
+        if self.trigger_once and self._used then
+            trace(self, "enter_ignored", "reason=trigger_once_already_used")
+            return
+        end
+        if not self.inside then
+            self.inside = true
+            trace(self, "enter", "action=start_ambience")
+            apply_music_duck(self)
+            start_ambience(self)
+            if self.trigger_once then
+                self._used = true
+            end
+        else
+            trace(self, "enter_ignored", "reason=already_inside")
+        end
+    else
+        if self.inside then
+            self.inside = false
+            trace(self, "exit", "action=stop_ambience")
+            stop_ambience(self)
+            clear_music_duck(self)
+        else
+            trace(self, "exit_ignored", "reason=already_outside")
+        end
+    end
+end
+
+function final(self)
+    clear_music_duck(self)
+end

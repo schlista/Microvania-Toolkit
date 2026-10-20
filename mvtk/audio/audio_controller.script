@@ -1,0 +1,912 @@
+-- mvtk/audio/audio_controller.script
+-- ============================================================================
+-- Audio Controller - Centralized Audio Management
+-- ============================================================================
+-- Manages all game audio including music crossfading, theme routing, and SFX playback.
+--
+-- Key Features:
+-- - Smooth music crossfading with configurable fade duration
+-- - Theme-based music system (area themes vs boss themes)
+-- - Volume control for music and SFX groups
+-- - SFX playback with gain and pan control
+-- - Debounce protection to prevent rapid re-triggering
+-- - Extensive debug logging for troubleshooting
+-- - Singleton enforcement (prevents multiple audio controllers)
+--
+-- Architecture:
+--   Sound Components → Audio Controller → sound.play() / sound.set_gain()
+--   Music mapping: theme_name → track_id → sound_component_url
+--   SFX mapping: sfx_id → sound_component_url
+--
+-- Music System:
+--   - Tracks are referenced by IDs (e.g., "graveyard_1", "graveyard_boss_1")
+--   - Themes map to tracks (e.g., "graveyard" → "graveyard_1")
+--   - Crossfading handles smooth transitions between tracks
+--   - Debounce prevents rapid re-triggering (300ms global, 500ms per-track)
+--
+-- Message Interface:
+--   - play_music: Play a music track with optional crossfade
+--   - stop_all_music: Stop all music immediately
+--   - set_area_theme: Set background music for current area
+--   - set_boss_theme: Switch to boss music (or back to area music)
+--   - sfx: Play a sound effect with optional gain/pan
+--   - set_volume: Adjust music or SFX volume
+--
+-- Usage:
+--   msg.post(C.URL.AUDIO, "play_music", {id = "graveyard_1", t = 0.8})
+--   msg.post(C.URL.AUDIO, "sfx", {id = "hit_melee", gain = 0.8})
+--   msg.post(C.URL.AUDIO, "set_area_theme", {area = "graveyard", t = 1.0})
+
+-- ============================================================================
+-- DEPENDENCIES
+-- ============================================================================
+
+local C = require "mvtk.core.constants"
+local Util = require "mvtk.core.util"
+local Debug = require "developer.config.debug_config"
+local SoundDebug = require "mvtk.audio.sound_debug"
+local SafeSound = require "mvtk.audio.safe_sound"
+local VolumeGroups = require "mvtk.audio.volume_groups"
+local MusicCrossfade = require "mvtk.audio.music_crossfade"
+local AMBIENT_TRACE_ENABLED = Debug.global.enable
+  or (Debug.audio and Debug.audio.controller)
+
+-- Build hint: Defold may drop modules that are only loaded through
+-- pcall(require, ...) in some script paths. Keep a literal require here
+-- so ambient_sounds.lua is always included in the archive.
+if false then
+  require "developer.config.ambient_sounds"
+end
+
+-- Load ambient sound configuration (maps sound_id to component names)
+local AmbientSoundsConfig = nil
+local AmbientSoundsConfigError = nil
+do
+  local ok, cfg = pcall(require, "developer.config.ambient_sounds")
+  if ok then
+    AmbientSoundsConfig = cfg
+  else
+    AmbientSoundsConfigError = tostring(cfg)
+  end
+end
+
+-- ============================================================================
+-- SINGLETON ENFORCEMENT
+-- ============================================================================
+
+-- Track number of active audio controller instances (should never exceed 1)
+local controller_instances = 0
+
+-- ============================================================================
+-- TIMING UTILITY
+-- ============================================================================
+
+-- High-resolution time for debounce protection
+-- Tries socket.gettime() for millisecond precision, falls back to os.time()
+local get_time = function()
+  local ok, socket = pcall(require, "socket")
+  if ok and socket and socket.gettime then
+    return socket.gettime()  -- High-precision (milliseconds)
+  end
+  return os.time()  -- Low-precision (seconds)
+end
+
+-- Install sound debugging hooks only when debug flags are enabled
+if Debug.global.enable or (Debug.audio and (Debug.audio.trace_sfx or Debug.audio.music or Debug.audio.controller)) then
+  SoundDebug.install()
+end
+
+-- ============================================================================
+-- SCRIPT PROPERTIES (Editable in editor)
+-- ============================================================================
+
+go.property("crossfade_time", 0.8)  -- Default crossfade duration in seconds
+
+-- ============================================================================
+-- STATE TRACKING
+-- ============================================================================
+
+-- Current music state
+local current = {
+  theme = nil,  -- Current theme ID (area or boss)
+  area  = nil,  -- Current area theme
+  boss  = nil,  -- Current boss theme
+  track = nil,  -- Currently playing track ID
+}
+
+-- Volume levels (0.0 to 1.0)
+local vol = { music = 1.0, sfx = 1.0, ambient = 1.0 }
+local music_duck_overrides = {}
+local music_duck_multiplier = 1.0
+
+-- ============================================================================
+-- UTILITY FUNCTIONS
+-- ============================================================================
+
+local clamp01 = VolumeGroups.clamp01
+local clamp_pan = VolumeGroups.clamp_pan
+
+local normalize_hash_string = Util.normalize_hash_string
+
+local function stable_hash_key(value)
+  if value == nil then
+    return nil
+  end
+  local normalized = normalize_hash_string(value)
+  if normalized then
+    return normalized
+  end
+  local s = tostring(value or "")
+  if s == "" then
+    return nil
+  end
+  return s
+end
+
+local function make_component_url(component_name)
+  if not component_name or component_name == "" then
+    return nil
+  end
+  return msg.url(nil, go.get_id(), hash(component_name))
+end
+
+local function sound_component_exists(url)
+  if not url then
+    return false
+  end
+  local ok = pcall(go.get, url, "gain")
+  return ok == true
+end
+
+local ambient_trace
+
+local function resolve_ambient_url(self, sound_id)
+  if not sound_id then
+    return nil, "no_sound_id"
+  end
+
+  local lookup_key = stable_hash_key(sound_id)
+  local component_key = normalize_hash_string(sound_id)
+  if component_key == nil and type(sound_id) == "string" then
+    component_key = sound_id
+  end
+  ambient_trace(string.format(
+    "resolve sound_id=%s type=%s lookup_key=%s component_key=%s",
+    tostring(sound_id),
+    type(sound_id),
+    tostring(lookup_key),
+    tostring(component_key)
+  ))
+
+  if self and self._ambient then
+    local existing = self._ambient[sound_id] or (lookup_key and self._ambient[lookup_key])
+    if existing and sound_component_exists(existing) then
+      ambient_trace("resolve cache_hit", tostring(sound_id), tostring(existing))
+      return existing, "existing"
+    elseif existing then
+      ambient_trace("resolve cache_stale", tostring(sound_id), tostring(existing))
+    end
+  end
+
+  if not component_key or component_key == "" then
+    return nil, "missing"
+  end
+
+  local candidates = {
+    "ambient_" .. component_key,
+    "sfx_" .. component_key,
+    component_key,
+  }
+  for _, component_name in ipairs(candidates) do
+    local candidate_url = make_component_url(component_name)
+    local exists = candidate_url and sound_component_exists(candidate_url)
+    ambient_trace("resolve candidate",
+      "sound_id=" .. tostring(sound_id),
+      "component=" .. tostring(component_name),
+      "url=" .. tostring(candidate_url),
+      "exists=" .. tostring(exists == true))
+    if exists then
+      if self and self._ambient then
+        self._ambient[sound_id] = candidate_url
+        if lookup_key then
+          self._ambient[lookup_key] = candidate_url
+        end
+        local component_hash = hash(component_key)
+        self._ambient[component_hash] = candidate_url
+        self._ambient[stable_hash_key(component_hash)] = candidate_url
+      end
+      return candidate_url, "auto:" .. component_name
+    end
+  end
+
+  ambient_trace("resolve missing",
+    "sound_id=" .. tostring(sound_id),
+    "lookup_key=" .. tostring(lookup_key),
+    "component_key=" .. tostring(component_key))
+  return nil, "missing"
+end
+
+local function resolve_ambient_message(self, raw_id)
+  local id = normalize_hash_string(raw_id) or stable_hash_key(raw_id) or raw_id
+  if not id then
+    return nil, nil
+  end
+  local lookup_key = stable_hash_key(raw_id) or stable_hash_key(id)
+  local url = self._ambient and (self._ambient[raw_id] or (lookup_key and self._ambient[lookup_key]) or self._ambient[id])
+  if url and not sound_component_exists(url) then
+    url = nil
+  end
+  if not url then
+    url = select(1, resolve_ambient_url(self, raw_id))
+  end
+  return id, url
+end
+
+ambient_trace = function(...)
+  if AMBIENT_TRACE_ENABLED then
+    print("[AMBIENT_TRACE]", ...)
+  end
+end
+
+VolumeGroups.configure({
+  vol = vol,
+  get_music_duck_overrides = function() return music_duck_overrides end,
+  get_music_duck_multiplier = function() return music_duck_multiplier end,
+  set_music_duck_multiplier = function(value) music_duck_multiplier = value end,
+  stable_hash_key = stable_hash_key,
+  ambient_trace = ambient_trace,
+})
+
+local clamp_music_duck = VolumeGroups.clamp_music_duck
+local sync_group_volumes_from_settings = VolumeGroups.sync_group_volumes_from_settings
+local recompute_music_duck = VolumeGroups.recompute_music_duck
+local music_duck_key = VolumeGroups.music_duck_key
+local set_group_volumes = VolumeGroups.set_group_volumes
+
+-- ============================================================================
+-- DEBUG LOGGING
+-- ============================================================================
+
+-- Conditional logging (only if audio debug enabled)
+local function log(...)
+  if Debug.global.enable or (Debug.audio and Debug.audio.controller) then
+    print("[AUDIO_CTL]", ...)
+  end
+end
+
+-- Unconditional debug logging (always prints for critical debugging)
+local function debug_print(...)
+  print("[AUDIO_DEBUG]", ...)
+end
+
+local function snapshot_music_flags(self, reason)
+  self = self or {}
+  self._music_playing = self._music_playing or {}
+  local entries = {}
+  for name, state in pairs(self._music_playing) do
+    entries[#entries + 1] = string.format("%s=%s", tostring(name), tostring(state))
+  end
+  table.sort(entries)
+  debug_print("  >> MUSIC FLAGS [" .. tostring(reason) .. "]: " .. (next(entries) and table.concat(entries, ", ") or "<none>"))
+end
+
+local function audit_music_components(self, reason)
+  if not (Debug.global.enable or (Debug.audio and Debug.audio.controller)) then
+    return
+  end
+  if not (self and self._music) then
+    debug_print("  >> MUSIC AUDIT [" .. tostring(reason) .. "]: <no music components>")
+    return
+  end
+  local entries = {}
+  for name, url in pairs(self._music) do
+    -- Defold does not expose a stable public API for querying sound playback
+    -- status of individual components; keep this audit lightweight.
+    local status = url and "mapped" or "missing"
+    entries[#entries + 1] = string.format("%s=%s", tostring(name), status)
+  end
+  table.sort(entries)
+  debug_print("  >> MUSIC AUDIT [" .. tostring(reason) .. "]: " .. (next(entries) and table.concat(entries, ", ") or "<none>"))
+end
+
+local function safe_sound_stop(self, url, key)
+  if not url then
+    return
+  end
+  local ok, err = SafeSound.stop(url)
+  if not ok and err then
+    debug_print("sound.stop failed for", tostring(key or url), err)
+  end
+  if self and key then
+    self._music_playing = self._music_playing or {}
+    self._music_playing[key] = false
+    snapshot_music_flags(self, "safe_sound_stop:" .. tostring(key))
+  end
+end
+
+local function safe_sound_set_gain(url, gain, label)
+  if not url then
+    return
+  end
+  local ok, err = SafeSound.set_gain(url, gain)
+  if not ok and err then
+    debug_print("sound.set_gain failed for", tostring(label or url), err)
+  end
+end
+
+local function dump_music_state(self, reason)
+  if not (Debug.global.enable or (Debug.audio and Debug.audio.controller)) then
+    return
+  end
+
+  local entries = {}
+  if self and self._music_playing then
+    for name, active in pairs(self._music_playing) do
+      if active then
+        table.insert(entries, tostring(name))
+      end
+    end
+  end
+
+  table.sort(entries)
+  local summary = (#entries > 0) and table.concat(entries, ", ") or "<none>"
+  debug_print("  >> MUSIC STATE [" .. tostring(reason or "state") .. "]:", summary)
+end
+
+-- ============================================================================
+-- MUSIC CONTROL FUNCTIONS
+-- ============================================================================
+
+MusicCrossfade.configure({
+  current = current,
+  get_time = get_time,
+  safe_sound_stop = safe_sound_stop,
+  safe_sound_set_gain = safe_sound_set_gain,
+  debug_print = debug_print,
+  dump_music_state = dump_music_state,
+  snapshot_music_flags = snapshot_music_flags,
+  audit_music_components = audit_music_components,
+})
+
+local stop_all_music = MusicCrossfade.stop_all_music
+local resolve_track = MusicCrossfade.resolve_track
+local cleanup_previous_fade = MusicCrossfade.cleanup_previous_fade
+local start_crossfade = MusicCrossfade.start_crossfade
+local apply_theme = MusicCrossfade.apply_theme
+
+-- ============================================================================
+-- LIFECYCLE FUNCTIONS
+-- ============================================================================
+
+-- Initialize audio controller
+-- self: Script instance
+--
+-- Sets up:
+-- 1. Singleton enforcement (deletes self if duplicate detected)
+-- 2. SFX and music URL mappings
+-- 3. Music theme mapping (theme names to track IDs)
+-- 4. Crossfade state initialization
+-- 5. Volume group configuration
+-- 6. Initial music stop (prevents auto-play on load)
+function init(self)
+  -- Singleton check - only allow one audio controller
+  controller_instances = controller_instances + 1
+  if controller_instances > 1 then
+    debug_print("=============================================")
+    debug_print("*** FATAL: Multiple audio controllers detected ***")
+    debug_print("Existing instance count:", controller_instances)
+    debug_print("This controller will disable itself to prevent double playback.")
+    debug_print("=============================================")
+    go.delete()  -- Self-destruct to prevent conflicts
+    return
+  end
+
+  -- Publish audio controller URL for other systems
+  C.URL.AUDIO = msg.url()
+
+  -- SFX URL mappings (sound effect ID → sound component URL)
+  -- These map to sound components in this game object
+                                              self._sfx = {
+    -- AUTO-GENERATED (from /developer/game/audio/*.sound)
+    air_dash = msg.url(nil, go.get_id(), hash("sfx_air_dash")),
+    boss_phase = msg.url(nil, go.get_id(), hash("sfx_boss_phase")),
+    collectible_sparkle = msg.url(nil, go.get_id(), hash("sfx_collectible_sparkle")),
+    combat_impact_heavy = msg.url(nil, go.get_id(), hash("sfx_combat_impact_heavy")),
+    combat_impact_light = msg.url(nil, go.get_id(), hash("sfx_combat_impact_light")),
+    death_blast = msg.url(nil, go.get_id(), hash("sfx_death_blast")),
+    door_close = msg.url(nil, go.get_id(), hash("sfx_door_close")),
+    door_open = msg.url(nil, go.get_id(), hash("sfx_door_open")),
+    lever_off = msg.url(nil, go.get_id(), hash("sfx_lever_off")),
+    lever_on = msg.url(nil, go.get_id(), hash("sfx_lever_on")),
+    footstep_default = msg.url(nil, go.get_id(), hash("sfx_footstep_default")),
+    footstep_grass = msg.url(nil, go.get_id(), hash("sfx_footstep_grass")),
+    footstep_metal = msg.url(nil, go.get_id(), hash("sfx_footstep_metal")),
+    footstep_stone = msg.url(nil, go.get_id(), hash("sfx_footstep_stone")),
+    hit_melee = msg.url(nil, go.get_id(), hash("sfx_hit_melee")),
+    hit_projectile = msg.url(nil, go.get_id(), hash("sfx_hit_projectile")),
+    wall_hit = msg.url(nil, go.get_id(), hash("sfx_wall_hit")),
+    wall_break = msg.url(nil, go.get_id(), hash("sfx_wall_break")),
+    land = msg.url(nil, go.get_id(), hash("sfx_land")),
+    burn_sizzle = msg.url(nil, go.get_id(), hash("sfx_burn_sizzle")),
+    cough = msg.url(nil, go.get_id(), hash("sfx_cough")),
+    parry_ring = msg.url(nil, go.get_id(), hash("sfx_parry_ring")),
+    slide = msg.url(nil, go.get_id(), hash("sfx_slide")),
+    ui_back = msg.url(nil, go.get_id(), hash("sfx_ui_back")),
+    ui_click = msg.url(nil, go.get_id(), hash("sfx_ui_click")),
+    ui_confirm = msg.url(nil, go.get_id(), hash("sfx_ui_confirm")),
+    ui_move = msg.url(nil, go.get_id(), hash("sfx_ui_move")),
+    water = msg.url(nil, go.get_id(), hash("sfx_water")),
+    attack_down = msg.url(nil, go.get_id(), hash("sfx_attack_down")),
+    enemy_hurt = msg.url(nil, go.get_id(), hash("sfx_enemy_hurt")),
+    enemy_death = msg.url(nil, go.get_id(), hash("sfx_enemy_death")),
+    -- Aliases (preserved)
+    attack_light = msg.url(nil, go.get_id(), hash("sfx_attack_light")),
+    attack_heavy = msg.url(nil, go.get_id(), hash("sfx_attack_heavy")),
+    projectile_fire = msg.url(nil, go.get_id(), hash("sfx_projectile_fire")),
+    projectile_hit = msg.url(nil, go.get_id(), hash("sfx_hit_projectile")),
+    player_hurt = msg.url(nil, go.get_id(), hash("sfx_hit_melee")),
+    player_death = msg.url(nil, go.get_id(), hash("sfx_hit_projectile")),
+    collectible_pick = msg.url(nil, go.get_id(), hash("sfx_collectible_sparkle")),
+    platform_crumble = msg.url(nil, go.get_id(), hash("sfx_land")),
+    platform_respawn = msg.url(nil, go.get_id(), hash("sfx_ui_click")),
+    parry_success = msg.url(nil, go.get_id(), hash("sfx_parry_ring")),
+    parry_miss = msg.url(nil, go.get_id(), hash("sfx_air_dash")),
+  }
+  self._sfx_hash = {}
+  for key, url in pairs(self._sfx) do
+    if type(key) == "string" then
+      self._sfx_hash[hash(key)] = url
+    end
+  end
+
+  -- Music URL mappings (track ID → sound component URL)
+  self._music = {
+    -- AUTO-GENERATED by Project > Sync Music (from developer/assets/music/*). Do not edit by hand.
+  }
+  self._music_hash = {}
+  for key in pairs(self._music) do
+    if type(key) == "string" then
+      self._music_hash[hash(key)] = key
+    end
+  end
+
+  -- Music theme mapping (theme name → track ID)
+  -- Allows referring to music by theme (e.g., "graveyard") instead of track ID
+  self._music_map = {
+    -- Reset to empty; add theme aliases after syncing project music.
+  }
+  self._music_map_hash = {}
+  for key, track in pairs(self._music_map) do
+    if type(key) == "string" then
+      self._music_map_hash[hash(key)] = track
+    end
+  end
+
+  -- Ambient sound URL mappings (ambient sound ID → sound component URL)
+  -- Built dynamically from developer/config/ambient_sounds.lua
+  self._ambient = {}
+  if AmbientSoundsConfig then
+    local loaded_count = 0
+    for sound_id, config in pairs(AmbientSoundsConfig) do
+      local component_name = config.component or ("ambient_" .. sound_id)
+      local ambient_url = nil
+      local resolved_component = nil
+      local candidates = {
+        component_name,
+        "ambient_" .. tostring(sound_id),
+        "sfx_" .. tostring(sound_id),
+        tostring(sound_id),
+      }
+      for _, candidate_name in ipairs(candidates) do
+        local candidate_url = make_component_url(candidate_name)
+        if candidate_url and sound_component_exists(candidate_url) then
+          ambient_url = candidate_url
+          resolved_component = candidate_name
+          break
+        end
+      end
+
+      if ambient_url then
+        self._ambient[sound_id] = ambient_url
+        self._ambient[tostring(sound_id)] = ambient_url
+        local sound_hash = hash(tostring(sound_id))
+        self._ambient[sound_hash] = ambient_url
+        self._ambient[stable_hash_key(sound_hash)] = ambient_url
+        loaded_count = loaded_count + 1
+        ambient_trace("mapping", tostring(sound_id), "->", tostring(ambient_url), "component=" .. tostring(resolved_component))
+      else
+        ambient_trace("mapping_missing", tostring(sound_id), "component=" .. tostring(component_name))
+      end
+    end
+    log("Loaded", loaded_count, "ambient sound mappings from config")
+    ambient_trace("mapping_loaded", "count=" .. tostring(loaded_count))
+  else
+    ambient_trace("mapping_loaded", "count=0 (no ambient config)")
+    if AmbientSoundsConfigError then
+      ambient_trace("config_load_failed", AmbientSoundsConfigError)
+    end
+  end
+
+  music_duck_overrides = {}
+  music_duck_multiplier = 1.0
+
+  -- Crossfade state machine
+  self._from = nil                     -- Track fading out (ID)
+  self._from_url = nil                 -- Track fading out (URL)
+  self._to = nil                       -- Track fading in (ID)
+  self._to_url = nil                   -- Track fading in (URL)
+  self._fade_total = 0                 -- Total fade duration (seconds)
+  self._fader = 0                      -- Remaining fade time (seconds)
+  self._fade_dir = 0                   -- Fade direction (0=off, 1=active)
+
+  -- Playback tracking
+  self._music_playing = {}             -- Track playing state {[track_id] = bool}
+  self._last_play_time = {}            -- Per-track debounce timestamps
+  self._last_any_music_change = 0      -- Global debounce timestamp (prevents rapid any music changes)
+
+  sync_group_volumes_from_settings()
+  set_group_volumes()
+
+  -- CRITICAL FIX: Stop all music tracks on initialization to prevent auto-playing
+  debug_print("=============================================")
+  debug_print("AUDIO CONTROLLER INITIALIZED")
+  debug_print("URL:", C.URL.AUDIO)
+  debug_print("Controller instances:", controller_instances)
+  debug_print("Stopping all music tracks to prevent layering...")
+
+  -- NUCLEAR OPTION: Set master gain to 0, stop all, then restore gain
+  debug_print("  >> Setting music group gain to 0.0 to force immediate silence...")
+  pcall(sound.set_group_gain, hash("music"), 0.0)
+
+  stop_all_music(self)
+
+  -- Restore gain immediately (sounds are stopped, this just sets the level for future plays)
+  debug_print("  >> Restoring music group gain to", vol.music)
+  pcall(sound.set_group_gain, hash("music"), vol.music)
+
+  debug_print("=============================================")
+  dump_music_state(self, "init")
+  audit_music_components(self, "init")
+end
+
+-- ============================================================================
+-- MUSIC RESOLUTION AND CROSSFADING
+-- ============================================================================
+
+-- Crossfade helpers are provided by mvtk.audio.music_crossfade.
+
+-- Update crossfade state each frame
+-- self: Script instance
+-- dt: Delta time in seconds
+--
+-- Handles smooth volume transitions during crossfade:
+-- - Fades out old track (1.0 → 0.0 gain)
+-- - Fades in new track (0.0 → 1.0 gain)
+-- - Stops old track when crossfade completes
+function update(self, dt)
+  -- ========== MUSIC CROSSFADE ==========
+  if self._fade_dir ~= 0 and (self._fader or 0) > 0 then
+    local total = self._fade_total
+    if total and total > 0 then
+      -- Count down fade timer
+      self._fader = math.max(0, self._fader - dt)
+      local progress = 1.0 - (self._fader / total)  -- 0.0 to 1.0
+      progress = math.max(0, math.min(1, progress))
+
+      -- Calculate gains (crossfade curves)
+      local from_gain = 1.0 - progress  -- Fade out: 1.0 → 0.0
+      local to_gain = progress          -- Fade in: 0.0 → 1.0
+
+      -- Apply gains to tracks
+      if self._from_url then
+        safe_sound_set_gain(self._from_url, math.max(0, from_gain), self._from)
+      end
+      if self._to_url then
+        safe_sound_set_gain(self._to_url, math.max(0, to_gain), self._to)
+      end
+
+      -- Crossfade complete
+      if self._fader == 0 then
+        self._fade_dir = 0
+        debug_print("=============================================")
+        debug_print("CROSSFADE COMPLETE")
+        debug_print("  >> STOPPING old track:", tostring(self._from))
+
+        -- Stop old track (no longer needed)
+        if self._from_url then
+          safe_sound_stop(self, self._from_url, self._from)
+        end
+        self._from = nil
+        self._from_url = nil
+
+        -- Ensure new track is at full volume
+        if self._to_url then
+          safe_sound_set_gain(self._to_url, 1.0, self._to)
+        end
+        if self._to then
+          self._music_playing[self._to] = true
+        end
+
+        debug_print("  Now playing:", tostring(self._to))
+        dump_music_state(self, "crossfade_complete")
+        snapshot_music_flags(self, "crossfade_complete")
+        audit_music_components(self, "crossfade_complete")
+        debug_print("=============================================")
+      end
+    else
+      self._fade_dir = 0
+    end
+  end
+
+
+end
+
+-- ============================================================================
+-- MESSAGE HANDLERS
+-- ============================================================================
+
+-- Handle incoming messages
+-- self: Script instance
+-- message_id: Hashed message name
+-- message: Message data table
+-- sender: URL of sender
+--
+-- Supported messages:
+-- - set_volume: Adjust music or SFX volume (message.kind, message.value)
+-- - play_music: Play music track with crossfade (message.id, message.t)
+-- - stop_all_music: Stop all music immediately
+-- - set_area_theme: Set area background music (message.area, message.t)
+-- - set_boss_theme: Switch to boss music (message.boss, message.active, message.t)
+-- - sfx: Play sound effect (message.id, message.gain, message.pan)
+function on_message(self, message_id, message, sender)
+  -- Adjust volume for music or SFX group
+  if message_id == hash("set_volume") then
+    local kind = message and message.kind
+    if kind and vol[kind] ~= nil then
+      vol[kind] = clamp01(message.value)
+      set_group_volumes()
+      debug_print("Volume changed:", kind, "=", vol[kind])
+    end
+
+  -- Play a music track with optional crossfade
+  elseif message_id == hash("play_music") then
+    local id = message and message.id
+    debug_print("=============================================")
+    debug_print("play_music message received, id:", tostring(id))
+    if id then
+      local fade_time = message.t or 0
+      local from = current.track
+      local _, resolved_url = resolve_track(self, id)
+      if resolved_url then
+        current.area = id
+      end
+      start_crossfade(self, from, id, fade_time)
+    else
+      debug_print("*** ERROR: play_music missing id")
+      debug_print("=============================================")
+    end
+
+  elseif message_id == hash("stop_all_music") then
+    debug_print("=============================================")
+    debug_print("STOP ALL MUSIC command received")
+    debug_print("Stopping all music tracks...")
+    for name, url in pairs(self._music) do
+      debug_print("  Stopping:", name)
+      safe_sound_stop(self, url, name)
+      if self._music_playing then
+        self._music_playing[name] = false
+      end
+    end
+    dump_music_state(self, "stop_all_music")
+    snapshot_music_flags(self, "stop_all_music_message")
+    audit_music_components(self, "stop_all_music_message")
+    self._from = nil
+    self._from_url = nil
+    self._to = nil
+    self._to_url = nil
+    self._fade_dir = 0
+    current.track = nil
+    current.theme = nil
+    debug_print("All music stopped and state reset")
+    debug_print("=============================================")
+
+  elseif message_id == hash("set_area_theme") then
+    local area = message and message.area
+    current.area = area or current.area
+    if current.area then
+      apply_theme(self, current.area, message.t)
+    end
+
+  elseif message_id == hash("set_boss_theme") then
+    local boss = message and message.boss
+    local active = (message and message.active) and true or false
+    current.boss = boss
+    if active and boss then
+      apply_theme(self, boss, message.t)
+    elseif current.area then
+      apply_theme(self, current.area, message.t)
+    end
+
+  elseif message_id == hash("play_ambient") then
+    local raw_id = message and message.id
+    if not raw_id then
+      ambient_trace("play_ambient missing_id", "sender=" .. tostring(sender))
+      log("play_ambient missing id")
+      return
+    end
+    local id, url = resolve_ambient_message(self, raw_id)
+    ambient_trace(string.format(
+      "play_ambient request raw=%s resolved=%s url=%s gain=%s sender=%s ambient_group=%.2f",
+      tostring(raw_id),
+      tostring(id),
+      tostring(url),
+      tostring(message and message.gain),
+      tostring(sender),
+      vol.ambient or -1
+    ))
+    if not url then
+      log("play_ambient not found:", tostring(id or raw_id))
+      return
+    end
+    local options = nil
+    if message and message.gain ~= nil then
+      options = { gain = clamp01(message.gain) }
+    end
+    local ok, err = SafeSound.play(url, options)
+    if not ok then
+      ambient_trace("play_ambient failed", "id=" .. tostring(id) .. " err=" .. tostring(err))
+      log("play_ambient failed for", tostring(id), ":", err)
+    else
+      ambient_trace("play_ambient success", "id=" .. tostring(id) .. " url=" .. tostring(url))
+    end
+
+  elseif message_id == hash("stop_ambient") then
+    local raw_id = message and message.id
+    if not raw_id then
+      ambient_trace("stop_ambient missing_id", "sender=" .. tostring(sender))
+      log("stop_ambient missing id")
+      return
+    end
+    local id, url = resolve_ambient_message(self, raw_id)
+    ambient_trace(string.format(
+      "stop_ambient request raw=%s resolved=%s url=%s sender=%s",
+      tostring(raw_id),
+      tostring(id),
+      tostring(url),
+      tostring(sender)
+    ))
+    if not url then
+      log("stop_ambient not found:", tostring(id or raw_id))
+      return
+    end
+    local ok, err = SafeSound.stop(url)
+    if not ok then
+      ambient_trace("stop_ambient failed", "id=" .. tostring(id) .. " err=" .. tostring(err))
+    else
+      ambient_trace("stop_ambient success", "id=" .. tostring(id) .. " url=" .. tostring(url))
+    end
+
+  elseif message_id == hash("sfx") or message_id == hash("play_sfx") then
+    local raw_id = message and (message.id or message.sound_id or message.sfx_id)
+    local id = raw_id
+    local url = nil
+    if type(raw_id) == "userdata" or type(raw_id) == "hash" then
+      local id_str = normalize_hash_string(raw_id)
+      if id_str then
+        id = id_str
+      end
+      if self._sfx_hash then
+        url = self._sfx_hash[raw_id]
+      end
+    end
+    if not id and not url then
+      log("sfx missing id")
+      return
+    end
+
+    url = url or (self._sfx and self._sfx[id])
+    if not url then
+      log("sfx not found:", tostring(id or raw_id))
+      return
+    end
+
+    local options = nil
+    if message then
+      if message.gain ~= nil then
+        options = options or {}
+        options.gain = clamp01(message.gain)
+      end
+      if message.pan ~= nil then
+        options = options or {}
+        options.pan = clamp_pan(message.pan)
+      end
+    end
+
+    local ok, err = SafeSound.play(url, options)
+    if not ok then
+      log("sfx play failed for", id, ":", err)
+    end
+
+  elseif message_id == hash("stop_sfx") then
+    local raw_id = message and message.id
+    if not raw_id then
+      log("stop_sfx missing id")
+      return
+    end
+    local id = raw_id
+    local url = nil
+    if type(raw_id) == "userdata" or type(raw_id) == "hash" then
+      local id_str = normalize_hash_string(raw_id)
+      if id_str then
+        id = id_str
+      end
+      if self._sfx_hash then
+        url = self._sfx_hash[raw_id]
+      end
+    end
+    url = url or (self._sfx and self._sfx[id])
+    if not url then
+      log("stop_sfx not found:", tostring(id))
+      return
+    end
+    SafeSound.stop(url)
+
+  elseif message_id == hash("set_music_duck") then
+    local zone_id = message and (message.id or message.zone_id)
+    local zone_key = music_duck_key(zone_id)
+    if zone_key == nil then
+      ambient_trace("set_music_duck missing_id", "sender=" .. tostring(sender))
+      return
+    end
+    local raw_percent = message and (message.percent or message.music_volume_percent or message.value)
+    local duck = tonumber(raw_percent)
+    if duck == nil then
+      duck = 100
+    end
+    if duck > 1 then
+      duck = duck / 100
+    end
+    duck = clamp_music_duck(duck)
+    music_duck_overrides[zone_key] = duck
+    local effective = recompute_music_duck()
+    ambient_trace(string.format(
+      "set_music_duck zone=%s requested=%s stored=%.2f effective=%.2f sender=%s",
+      tostring(zone_key),
+      tostring(raw_percent),
+      duck,
+      effective,
+      tostring(sender)
+    ))
+    set_group_volumes()
+
+  elseif message_id == hash("clear_music_duck") then
+    local zone_id = message and (message.id or message.zone_id)
+    local zone_key = music_duck_key(zone_id)
+    if zone_key == nil then
+      ambient_trace("clear_music_duck missing_id", "sender=" .. tostring(sender))
+      return
+    end
+    music_duck_overrides[zone_key] = nil
+    local effective = recompute_music_duck()
+    ambient_trace(string.format(
+      "clear_music_duck zone=%s effective=%.2f sender=%s",
+      tostring(zone_key),
+      effective,
+      tostring(sender)
+    ))
+    set_group_volumes()
+  end
+end
+
+-- Clean up audio controller on shutdown
+-- self: Script instance
+--
+-- Decrements controller instance count (for singleton tracking)
+function final(self)
+  music_duck_overrides = {}
+  music_duck_multiplier = 1.0
+
+  if controller_instances > 0 then
+    controller_instances = controller_instances - 1
+  end
+end

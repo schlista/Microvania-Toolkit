@@ -1,0 +1,403 @@
+script: "/mvtk/editor_host/gui/layout_editor.gui_script"
+fonts {
+  name: "ui_font"
+  font: "/builtins/fonts/default.font"
+}
+fonts {
+  name: "room_label"
+  font: "/developer/assets/fonts/fredoka.font"
+}
+nodes {
+  size {
+    x: 10.0
+    y: 10.0
+  }
+  color {
+    x: 0.0
+    y: 0.0
+    z: 0.0
+  }
+  type: TYPE_BOX
+  id: "root"
+  pivot: PIVOT_SW
+  alpha: 0.0
+}
+nodes {
+  position {
+    x: 20.0
+    y: 1060.0
+  }
+  size {
+    x: 120.0
+    y: 44.0
+  }
+  color {
+    x: 0.32
+    y: 0.32
+    z: 0.32
+  }
+  type: TYPE_BOX
+  id: "btn_menu"
+  pivot: PIVOT_NW
+  alpha: 0.95
+}
+nodes {
+  size {
+    x: 110.0
+    y: 44.0
+  }
+  position {
+    x: 60.0
+    y: -22.0
+  }
+  color {
+    x: 1.0
+    y: 1.0
+    z: 1.0
+  }
+  type: TYPE_TEXT
+  text: "Menu"
+  font: "ui_font"
+  id: "btn_menu_label"
+  parent: "btn_menu"
+  pivot: PIVOT_CENTER
+  inherit_alpha: true
+}
+nodes {
+  position {
+    x: 10.0
+    y: 52.0
+  }
+  size {
+    x: 10.0
+    y: 10.0
+  }
+  color {
+    x: 0.0
+    y: 0.0
+    z: 0.0
+  }
+  type: TYPE_BOX
+  id: "button_container"
+  alpha: 0.0
+}
+nodes {
+  position {
+    x: 100.0
+  }
+  size {
+    x: 140.0
+    y: 50.0
+  }
+  color {
+    x: 0.2
+    y: 0.4
+    z: 0.8
+  }
+  type: TYPE_BOX
+  id: "btn_rescan"
+  parent: "button_container"
+  alpha: 0.5
+}
+nodes {
+  size {
+    x: 150.0
+    y: 50.0
+  }
+  type: TYPE_TEXT
+  text: "Rescan Rooms"
+  font: "ui_font"
+  id: "txt_scan"
+  parent: "btn_rescan"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    x: 260.0
+  }
+  size {
+    x: 140.0
+    y: 50.0
+  }
+  color {
+    x: 0.7
+    y: 0.4
+    z: 0.2
+  }
+  type: TYPE_BOX
+  id: "btn_export"
+  parent: "button_container"
+  alpha: 0.5
+}
+nodes {
+  size {
+    x: 124.0
+    y: 57.0
+  }
+  type: TYPE_TEXT
+  text: "Export"
+  font: "ui_font"
+  id: "txt_export"
+  parent: "btn_export"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    x: 420.0
+  }
+  size {
+    x: 140.0
+    y: 50.0
+  }
+  color {
+    x: 0.7
+    y: 0.2
+    z: 0.2
+  }
+  type: TYPE_BOX
+  id: "btn_clear"
+  parent: "button_container"
+  alpha: 0.5
+}
+nodes {
+  size {
+    x: 124.0
+    y: 57.0
+  }
+  type: TYPE_TEXT
+  text: "Clear"
+  font: "ui_font"
+  id: "txt_clear"
+  parent: "btn_clear"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    x: 920.0
+    y: 700.0
+  }
+  size {
+    x: 10.0
+    y: 10.0
+  }
+  color {
+    x: 0.0
+    y: 0.0
+    z: 0.0
+  }
+  type: TYPE_BOX
+  id: "room_list_container"
+  pivot: PIVOT_NE
+  alpha: 0.0
+}
+nodes {
+  size {
+    x: 128.0
+    y: 48.0
+  }
+  color {
+    x: 0.0
+    y: 0.0
+    z: 0.0
+  }
+  type: TYPE_BOX
+  id: "lbl_rooms"
+  pivot: PIVOT_NE
+  parent: "room_list_container"
+  size_mode: SIZE_MODE_AUTO
+}
+nodes {
+  size {
+    x: 119.0
+    y: 48.0
+  }
+  type: TYPE_TEXT
+  text: "Rooms"
+  font: "ui_font"
+  id: "txt_rooms"
+  pivot: PIVOT_NE
+  parent: "lbl_rooms"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    y: -52.0
+  }
+  size {
+    x: 260.0
+    y: 600.0
+  }
+  color {
+    x: 0.0
+    y: 0.0
+    z: 0.0
+  }
+  type: TYPE_BOX
+  id: "room_list_clip"
+  pivot: PIVOT_NE
+  parent: "room_list_container"
+  clipping_mode: CLIPPING_MODE_STENCIL
+  alpha: 0.0
+}
+nodes {
+  position {
+    x: 1814.0
+    y: 80.0
+  }
+  size {
+    x: 140.0
+    y: 72.0
+  }
+  color {
+    x: 0.2
+    y: 0.2
+    z: 0.2
+  }
+  type: TYPE_BOX
+  id: "trash_zone"
+  pivot: PIVOT_CENTER
+  inherit_alpha: true
+  alpha: 0.65
+}
+nodes {
+  size {
+    x: 130.0
+    y: 64.0
+  }
+  position {
+    x: 0.0
+    y: 0.0
+  }
+  color {
+    x: 1.0
+    y: 1.0
+    z: 1.0
+  }
+  type: TYPE_TEXT
+  text: "Trash"
+  font: "ui_font"
+  id: "txt_trash"
+  parent: "trash_zone"
+  pivot: PIVOT_CENTER
+  inherit_alpha: true
+}
+nodes {
+  position {
+    x: 960.0
+    y: 540.0
+  }
+  size {
+    x: 1920.0
+    y: 1080.0
+  }
+  color {
+    x: 0.0
+    y: 0.0
+    z: 0.0
+  }
+  type: TYPE_BOX
+  id: "popup_overlay"
+  alpha: 0.75
+  enabled: false
+}
+nodes {
+  position {
+    x: 960.0
+    y: 540.0
+  }
+  size {
+    x: 600.0
+    y: 280.0
+  }
+  color {
+    x: 0.15
+    y: 0.15
+    z: 0.2
+  }
+  type: TYPE_BOX
+  id: "popup_box"
+  enabled: false
+}
+nodes {
+  position {
+    x: 960.0
+    y: 620.0
+  }
+  size {
+    x: 560.0
+    y: 40.0
+  }
+  color {
+    x: 1.0
+    y: 0.3
+    z: 0.3
+  }
+  type: TYPE_TEXT
+  text: "No Starting Room Defined"
+  font: "ui_font"
+  id: "popup_title"
+  enabled: false
+}
+nodes {
+  position {
+    x: 960.0
+    y: 540.0
+  }
+  size {
+    x: 560.0
+    y: 100.0
+  }
+  color {
+    x: 0.9
+    y: 0.9
+    z: 0.9
+  }
+  type: TYPE_TEXT
+  text: "Use Tiled to create a Starting Room.\nAdd 'is_starting_room' property or\na 'player_start' object to a room."
+  font: "ui_font"
+  id: "popup_message"
+  line_break: true
+  enabled: false
+}
+nodes {
+  position {
+    x: 960.0
+    y: 440.0
+  }
+  size {
+    x: 160.0
+    y: 50.0
+  }
+  color {
+    x: 0.3
+    y: 0.5
+    z: 0.7
+  }
+  type: TYPE_BOX
+  id: "popup_ok_btn"
+  enabled: false
+}
+nodes {
+  position {
+    x: 960.0
+    y: 440.0
+  }
+  size {
+    x: 10.0
+    y: 10.0
+  }
+  color {
+    x: 1.0
+    y: 1.0
+    z: 1.0
+  }
+  type: TYPE_TEXT
+  text: "OK"
+  font: "ui_font"
+  id: "popup_ok_text"
+  enabled: false
+}
+material: "/builtins/materials/gui.material"
+adjust_reference: ADJUST_REFERENCE_PARENT
+max_nodes: 4096
+max_dynamic_textures: 256

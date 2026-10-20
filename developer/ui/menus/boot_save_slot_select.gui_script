@@ -1,0 +1,324 @@
+-- mvtk/boot/gui/save_slot_select.gui_script
+-- Save Slot Selection Screen - shown when user clicks "Play Game" from main menu
+-- Displays 3 save slots with playtime info, allows selecting/deleting saves
+
+local Checkpoint = require "mvtk.core.checkpoint"
+local SaveManager = require "mvtk.game.save_system.save_manager"
+local CFG = require "developer.config.resolved_config"
+local ok_cm, CollectibleManager = pcall(require, "mvtk.collectibles.collectible_manager")
+
+local MAX_SLOTS = (CFG.progression and CFG.progression.saves and CFG.progression.saves.max_slots) or 3
+
+local function n(id)
+    local ok, node = pcall(gui.get_node, id)
+    return ok and node or nil
+end
+
+local function fmt_playtime(s)
+    s = tonumber(s or 0) or 0
+    local h = math.floor(s / 3600)
+    local m = math.floor((s % 3600) / 60)
+    if h > 0 then
+        return string.format("%dh %dm", h, m)
+    else
+        return string.format("%d min", m)
+    end
+end
+
+local function fmt_date(timestamp)
+    if not timestamp or timestamp == 0 then return "" end
+    local ok, result = pcall(os.date, "%Y-%m-%d %H:%M", timestamp)
+    if ok then return result end
+    return ""
+end
+
+local function set_enabled(self, enabled)
+    local root = n("root")
+    if root then
+        gui.set_enabled(root, enabled)
+        if enabled then
+            gui.animate(root, gui.PROP_COLOR, vmath.vector4(0.05, 0.05, 0.08, 1), gui.EASING_LINEAR, 0.2)
+        else
+            gui.set_color(root, vmath.vector4(0.05, 0.05, 0.08, 0))
+        end
+    end
+end
+
+local function get_slot_info()
+    return Checkpoint.list_slots(MAX_SLOTS)
+end
+
+local function update_slot_display(self)
+    for i=1,3 do local bg=n("slot"..i.."_bg"); if bg then gui.set_enabled(bg,i<=MAX_SLOTS) end end
+    local slots = get_slot_info()
+    self.slots = slots
+    
+    for i = 1, MAX_SLOTS do
+        local slot = slots[i]
+        local bg = n("slot" .. i .. "_bg")
+        local info = n("slot" .. i .. "_info")
+        local meta_node = n("slot" .. i .. "_meta")
+        
+        if slot and slot.exists then
+            -- Has save data
+            local m = slot.meta or {}
+            if info then
+                gui.set_text(info, "Playtime: " .. fmt_playtime(m.playtime_s))
+            end
+            if meta_node then
+                local date_str = fmt_date(m.last_saved)
+                if date_str ~= "" then
+                    gui.set_text(meta_node, "Last saved: " .. date_str)
+                else
+                    gui.set_text(meta_node, "")
+                end
+            end
+        elseif slot and slot.error and slot.error ~= "missing" then
+            if info then gui.set_text(info, "Save unavailable") end
+            if meta_node then gui.set_text(meta_node, slot.error .. " (file preserved)") end
+        else
+            -- Empty slot
+            if info then
+                gui.set_text(info, "- Empty Slot -")
+            end
+            if meta_node then
+                gui.set_text(meta_node, "Start a new adventure")
+            end
+        end
+    end
+end
+
+local function update_selection(self)
+    -- Use original colors from GUI, brighten for selection
+    for i = 1, MAX_SLOTS do
+        local bg = n("slot" .. i .. "_bg")
+        if bg then
+            local base_color = self.original_colors and self.original_colors["slot" .. i .. "_bg"]
+            if base_color then
+                if self.selected == i then
+                    -- Brighten the original color for selection
+                    local hilite = vmath.vector4(
+                        math.min(base_color.x * 1.8, 1.0),
+                        math.min(base_color.y * 1.8, 1.0),
+                        math.min(base_color.z * 1.8, 1.0),
+                        1.0
+                    )
+                    gui.set_color(bg, hilite)
+                else
+                    gui.set_color(bg, base_color)
+                end
+            end
+            gui.set_scale(bg, self.selected == i and vmath.vector3(1.02, 1.02, 1) or vmath.vector3(1, 1, 1))
+        end
+    end
+
+    -- Back button
+    local btn_back = n("btn_back")
+    if btn_back then
+        local base_color = self.original_colors and self.original_colors["btn_back"]
+        if base_color then
+            if self.selected == MAX_SLOTS + 1 then
+                local hilite = vmath.vector4(
+                    math.min(base_color.x * 1.5, 1.0),
+                    math.min(base_color.y * 1.5, 1.0),
+                    math.min(base_color.z * 1.5, 1.0),
+                    1.0
+                )
+                gui.set_color(btn_back, hilite)
+            else
+                gui.set_color(btn_back, base_color)
+            end
+        end
+        gui.set_scale(btn_back, self.selected == MAX_SLOTS + 1 and vmath.vector3(1.05, 1.05, 1) or vmath.vector3(1, 1, 1))
+    end
+end
+
+local function show_screen(self)
+    if self.visible then return end
+    self.visible = true
+    set_enabled(self, true)
+    msg.post(".", "acquire_input_focus")
+    
+    -- Reset selection
+    self.selected = 1
+    
+    -- Refresh slot info
+    update_slot_display(self)
+    update_selection(self)
+end
+
+local function hide_screen(self)
+    if not self.visible then return end
+    self.visible = false
+    set_enabled(self, false)
+    msg.post(".", "release_input_focus")
+end
+
+local function select_slot(self, slot_index)
+    local slot = self.slots[slot_index]
+    if not slot then return end
+    if slot.error and slot.error ~= "missing" then return end
+    
+    -- Set the checkpoint slot
+    Checkpoint.set_slot(slot.slot)
+    
+    if slot.exists then
+        -- Load existing save
+        print(string.format("[SAVE_SELECT] Loading existing save from slot %d", slot.slot))
+        if not Checkpoint.load(slot.slot) then
+            print("[SAVE_SELECT] Cannot load save: " .. tostring(Checkpoint.last_error))
+            update_slot_display(self)
+            return
+        end
+    else
+        -- Create new save
+        print(string.format("[SAVE_SELECT] Creating new game in slot %d", slot.slot))
+        if ok_cm and CollectibleManager and CollectibleManager.reset then
+            CollectibleManager.reset()
+        end
+        local ok, created = pcall(SaveManager.create_new_save, slot.slot)
+        if not ok or not created then
+            print("[SAVE_SELECT] Failed to create new save; remaining in slot selection")
+            update_slot_display(self)
+            return
+        end
+    end
+    
+    -- Tell the boot manager to start the game
+    hide_screen(self)
+    msg.post("/host#script", hash("start_game_now"), { slot = slot.slot })
+end
+
+local function delete_slot(self, slot_index)
+    local slot = self.slots[slot_index]
+    if not slot or (not slot.exists and (not slot.error or slot.error == "missing")) then return end
+    
+    print(string.format("[SAVE_SELECT] Deleting save slot %d", slot.slot))
+    
+    local ok, deleted = pcall(SaveManager.delete_save, slot.slot)
+    if not ok then
+        print("[SAVE_SELECT] Failed to delete save slot " .. tostring(slot.slot) .. ": " .. tostring(deleted))
+    elseif not deleted then
+        print("[SAVE_SELECT] Failed to delete save slot " .. tostring(slot.slot))
+    else
+        Checkpoint.reset_to_defaults(slot.slot)
+        if ok_cm and CollectibleManager and CollectibleManager.reset then
+            CollectibleManager.reset()
+        end
+    end
+    
+    -- Refresh display
+    update_slot_display(self)
+    update_selection(self)
+end
+
+local function execute_selection(self)
+    if self.selected >= 1 and self.selected <= MAX_SLOTS then
+        select_slot(self, self.selected)
+    elseif self.selected == MAX_SLOTS + 1 then
+        -- Back button
+        hide_screen(self)
+        msg.post("/host#script", hash("back_to_main_menu"), {})
+    end
+end
+
+function init(self)
+    self.root = n("root")
+    self.visible = false
+    self.selected = 1
+    self.slots = {}
+
+    -- Store original colors from the GUI file
+    self.original_colors = {}
+    for i = 1, MAX_SLOTS do
+        local bg = n("slot" .. i .. "_bg")
+        if bg then
+            self.original_colors["slot" .. i .. "_bg"] = gui.get_color(bg)
+        end
+    end
+    local btn_back = n("btn_back")
+    if btn_back then
+        self.original_colors["btn_back"] = gui.get_color(btn_back)
+    end
+
+    -- Initially hidden
+    set_enabled(self, false)
+end
+
+function on_input(self, action_id, action)
+    if not self.visible then return false end
+    
+    if action and action.pressed then
+        -- Navigation
+        if action_id == hash("key_up") or action_id == hash("key_w")
+            or action_id == hash("gamepad_lpad_up")
+            or action_id == hash("gamepad_lstick_up") then
+            self.selected = self.selected > 1 and self.selected - 1 or (MAX_SLOTS + 1)
+            update_selection(self)
+            return true
+        elseif action_id == hash("key_down") or action_id == hash("key_s")
+            or action_id == hash("gamepad_lpad_down")
+            or action_id == hash("gamepad_lstick_down") then
+            self.selected = self.selected < (MAX_SLOTS + 1) and self.selected + 1 or 1
+            update_selection(self)
+            return true
+        end
+        
+        -- Select
+        if action_id == hash("gamepad_rpad_down") or action_id == hash("key_enter") then
+            execute_selection(self)
+            return true
+        end
+        
+        -- Delete (X button)
+        if action_id == hash("gamepad_rpad_left") or action_id == hash("key_x")
+            or action_id == hash("key_delete") then
+            if self.selected >= 1 and self.selected <= MAX_SLOTS then
+                delete_slot(self, self.selected)
+            end
+            return true
+        end
+        
+        -- Back
+        if action_id == hash("gamepad_rpad_right") or action_id == hash("gamepad_back")
+            or action_id == hash("key_escape") or action_id == hash("key_m") then
+            hide_screen(self)
+            msg.post("/host#script", hash("back_to_main_menu"), {})
+            return true
+        end
+    end
+    
+    -- Mouse/touch input
+    if (action_id == hash("touch") or action_id == hash("click")) and action.pressed then
+        local x, y = action.x, action.y
+        
+        -- Check slot clicks
+        for i = 1, MAX_SLOTS do
+            local bg = n("slot" .. i .. "_bg")
+            if bg and gui.pick_node(bg, x, y) then
+                self.selected = i
+                update_selection(self)
+                select_slot(self, i)
+                return true
+            end
+        end
+        
+        -- Check back button
+        local btn_back = n("btn_back")
+        if btn_back and gui.pick_node(btn_back, x, y) then
+            hide_screen(self)
+            msg.post("/host#script", hash("back_to_main_menu"), {})
+            return true
+        end
+    end
+    
+    return false
+end
+
+function on_message(self, message_id, message, sender)
+    if message_id == hash("show_save_slots") or message_id == hash("show_start_screen") then
+        show_screen(self)
+    elseif message_id == hash("hide_save_slots") or message_id == hash("hide_start_screen") then
+        hide_screen(self)
+    end
+end

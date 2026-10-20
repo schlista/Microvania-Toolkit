@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<template>
+ <object name="Grapple Point" type="grapple_point">
+  <properties>
+   <property name="mvtk_template_version" type="string" value="2.7.0"/>
+  </properties>
+  <point/>
+ </object>
+</template>

@@ -1,0 +1,1609 @@
+-- mvtk/main.script
+-- Main game script that coordinates between all game systems
+
+local C = require "mvtk.core.constants"
+local Util = require "mvtk.core.util"
+local Logger = require "mvtk.core.logger"
+local ConfigValidator = require "mvtk.core.config_validator"
+-- Build dependency manifest: ensures all developer config files are included
+-- in the game archive even though framework code loads them via pcall(require).
+require "mvtk.core.build_deps"
+local Config = require("developer.config.resolved_config")
+local RuntimeSettings = require("developer.config.runtime_settings")
+local Debug = require("developer.config.debug_config")
+-- Ensure screenshot markers module is loaded at startup so it registers
+-- its checkpoint provider even if the minimap/world map GUI isn't yet initialized.
+pcall(require, "mvtk.map.screenshot_markers")
+local GameManager = require "mvtk.game.game_manager"
+local SaveManager = require "mvtk.game.save_system.save_manager"
+local Checkpoint = require "mvtk.core.checkpoint"
+local TiledRoomRegistry = require "mvtk.tiled.tiled_room_registry"
+local TiledParser = require "mvtk.tiled.tiled_parser"
+local LayoutIO = require "mvtk.rooms.layout_io"
+local TileSettings = require "developer.config.tile_settings"
+local RoomManager = require "mvtk.map.streaming.room_manager"
+local ProgressionManager = require "mvtk.game.progression.progression_manager"
+local FileLogger = require "mvtk.core.file_logger"
+local EnemyManager = require "mvtk.enemies.enemy_manager"
+local CollectibleManager = require "mvtk.collectibles.collectible_manager"
+local NPCManager = require "mvtk.npcs.npc_manager"
+local Flags = require "mvtk.core.flags"
+local GateManager = require "mvtk.world.gates.gate_manager"
+local TriggerPayloads = require "mvtk.shared.trigger_payloads"
+local TriggerCutscene = require "mvtk.game.triggers.cutscene"
+local TriggerDialogue = require "mvtk.game.triggers.dialogue"
+local TriggerBossArena = require "mvtk.game.triggers.boss_arena"
+local TriggerMinimapMarker = require "mvtk.game.triggers.minimap_marker"
+local LootResolver = require "mvtk.game.loot_resolver"
+local BossSetup = require "mvtk.game.boss_setup"
+local TriggerZones = require "mvtk.game.trigger_zones"
+local DetectionOk, Detection = pcall(require, "mvtk.enemies.detection")
+
+local TriggerServices = {
+    cutscene = TriggerCutscene,
+    dialogue = TriggerDialogue,
+    boss_arena = TriggerBossArena,
+    minimap_marker = TriggerMinimapMarker,
+}
+
+local PlayerSettings = RuntimeSettings.get_player_settings()
+
+local PLAYER_TRIGGER_HALF_WIDTH = tonumber(PlayerSettings.collider_half_width) or 48
+if PLAYER_TRIGGER_HALF_WIDTH < 0 then PLAYER_TRIGGER_HALF_WIDTH = 0 end
+local PLAYER_TRIGGER_HALF_HEIGHT = tonumber(PlayerSettings.collider_half_height) or 62
+if PLAYER_TRIGGER_HALF_HEIGHT < 0 then PLAYER_TRIGGER_HALF_HEIGHT = 0 end
+
+local main_log
+local spawn_logger = Logger.get_logger("SPAWNER")
+
+local function trigger_log(...)
+    if Debug.global.enable or Debug.gameplay.main or (Debug.physics and Debug.physics.triggers) then
+        print(...)
+    end
+end
+
+local function spawn_log(...)
+    if (Debug.global and Debug.global.enable)
+        or (Debug.gameplay and Debug.gameplay.spawner)
+    then
+        print(...)
+    end
+end
+
+local normalize_hash_string = Util.normalize_hash_string
+
+local function trim_string(value)
+    if value == nil then
+        return nil
+    end
+    local s = Util.trim(value)
+    if s == "" then
+        return nil
+    end
+    return s
+end
+
+local function split_csv(value)
+    local items = {}
+    local raw = trim_string(value)
+    if not raw then
+        return items
+    end
+    for token in raw:gmatch("[^,]+") do
+        local item = trim_string(token)
+        if item then
+            items[#items + 1] = item
+        end
+    end
+    return items
+end
+
+local function coerce_bool(value, default)
+    return Util.to_bool(value, default and true or false)
+end
+
+LootResolver.configure({
+    trim_string = trim_string,
+    require_config = Util.require_config,
+})
+
+local parse_drop_amount = LootResolver.parse_drop_amount
+local parse_drop_table = LootResolver.parse_drop_table
+local merge_drop_tables = LootResolver.merge_drop_tables
+local build_loot_table_drops = LootResolver.build_loot_table_drops
+
+local build_boss_rewards_from_props = BossSetup.build_boss_rewards_from_props
+local build_boss_audio_from_props = BossSetup.build_boss_audio_from_props
+local resolve_boss_arena_audio_props = BossSetup.resolve_boss_arena_audio_props
+local build_effective_boss_props = BossSetup.build_effective_boss_props
+local resolve_boss_preset_id = BossSetup.resolve_boss_preset_id
+local resolve_boss_display_name = BossSetup.resolve_boss_display_name
+local normalize_boss_health_bar_position = BossSetup.normalize_boss_health_bar_position
+local build_boss_phase_transition = BossSetup.build_boss_phase_transition
+local build_boss_phase_definition = BossSetup.build_boss_phase_definition
+local collect_tiled_boss_phases = BossSetup.collect_tiled_boss_phases
+
+local function sorted_string_keys(t)
+    local out = {}
+    if type(t) ~= "table" then
+        return out
+    end
+    for k, _ in pairs(t) do
+        if type(k) == "string" and k ~= "" then
+            out[#out + 1] = k
+        end
+    end
+    table.sort(out)
+    return out
+end
+
+local CUTSCENE_IDS_CACHE = nil
+
+local function cutscene_ids()
+    if CUTSCENE_IDS_CACHE ~= nil then
+        return CUTSCENE_IDS_CACHE
+    end
+
+    local seen = {}
+    local ids = {}
+
+    local function add_from_module(module_name)
+        local ok, cutscenes = pcall(require, module_name)
+        if ok and type(cutscenes) == "table" then
+            for _, id in ipairs(sorted_string_keys(cutscenes)) do
+                if not seen[id] then
+                    seen[id] = true
+                    ids[#ids + 1] = id
+                end
+            end
+        end
+    end
+
+    add_from_module("developer.config.narrative.cutscenes")
+    add_from_module("developer.config.narrative.cutscenes_generated")
+
+    table.sort(ids)
+    CUTSCENE_IDS_CACHE = ids
+    if #CUTSCENE_IDS_CACHE == 0 then
+        CUTSCENE_IDS_CACHE = {}
+    end
+    return CUTSCENE_IDS_CACHE
+end
+
+local function resolve_cutscene_id(value)
+    local normalized = normalize_hash_string(value)
+    if normalized then
+        return normalized
+    end
+    if type(value) == "userdata" then
+        for _, id in ipairs(cutscene_ids()) do
+            if value == hash(id) then
+                return id
+            end
+        end
+    end
+    return nil
+end
+
+local function room_matches(player_room, zone_room)
+    return (not zone_room) or (zone_room == "") or (not player_room) or (zone_room == player_room)
+end
+
+local function post_camera_enter_room(room_id, instant)
+    local normalized = normalize_hash_string(room_id)
+    if not normalized then
+        return
+    end
+
+    local camera_url = (C.URL and C.URL.CAMERA) or msg.url("main:/camera#script")
+    pcall(msg.post, camera_url, hash("enter_room"), {
+        room_id = normalized,
+        instant = instant == true,
+    })
+end
+
+local point_in_bounds = TriggerZones.point_in_bounds
+local player_overlaps_zone = TriggerZones.player_overlaps_zone
+local trigger_prop = TriggerZones.trigger_prop
+local trigger_once_zone = TriggerZones.trigger_once_zone
+local resolve_trigger_key = TriggerZones.resolve_trigger_key
+local resolve_once_flag = TriggerZones.resolve_once_flag
+local trigger_debug_id = TriggerZones.trigger_debug_id
+local post_trigger_toast = TriggerZones.post_trigger_toast
+local can_fire_zone = TriggerZones.can_fire_zone
+local zone_should_consume_on_fire = TriggerZones.zone_should_consume_on_fire
+local mark_zone_fired = TriggerZones.mark_zone_fired
+
+local function post_play_cutscene(cutscene_id)
+    local id = resolve_cutscene_id(cutscene_id)
+    if not id then
+        return
+    end
+    pcall(msg.post, "main:/cutscene_manager#cutscene", hash("play_cutscene"), {
+        id = id,
+        cutscene_id = id,
+    })
+end
+
+TriggerZones.configure({
+    PLAYER_TRIGGER_HALF_WIDTH = PLAYER_TRIGGER_HALF_WIDTH,
+    PLAYER_TRIGGER_HALF_HEIGHT = PLAYER_TRIGGER_HALF_HEIGHT,
+    normalize_hash_string = normalize_hash_string,
+    coerce_bool = coerce_bool,
+    trigger_log = trigger_log,
+    Flags = Flags,
+    TriggerServices = TriggerServices,
+})
+
+TriggerCutscene.configure({
+    normalize_hash_string = normalize_hash_string,
+    trigger_prop = trigger_prop,
+    trigger_log = trigger_log,
+    main_log = function(...) main_log(...) end,
+    trigger_debug_id = trigger_debug_id,
+    resolve_trigger_key = resolve_trigger_key,
+    resolve_cutscene_id = resolve_cutscene_id,
+    cutscene_ids = cutscene_ids,
+    post_play_cutscene = post_play_cutscene,
+    post_trigger_toast = post_trigger_toast,
+    Flags = Flags,
+})
+
+local process_cutscene_trigger = TriggerZones.process_cutscene_trigger
+
+TriggerDialogue.configure({
+    normalize_hash_string = normalize_hash_string,
+    trigger_prop = trigger_prop,
+    trigger_log = trigger_log,
+    main_log = function(...) main_log(...) end,
+    trigger_debug_id = trigger_debug_id,
+    resolve_trigger_key = resolve_trigger_key,
+    post_trigger_toast = post_trigger_toast,
+    Flags = Flags,
+})
+
+local process_dialogue_trigger = TriggerZones.process_dialogue_trigger
+
+BossSetup.configure({
+    trim_string = trim_string,
+    split_csv = split_csv,
+    coerce_bool = coerce_bool,
+    Util = Util,
+    post_play_cutscene = post_play_cutscene,
+    main_log = function(...) main_log(...) end,
+    parse_drop_table = parse_drop_table,
+    merge_drop_tables = merge_drop_tables,
+    build_loot_table_drops = build_loot_table_drops,
+})
+
+local resolve_boss_spawn_for_arena = BossSetup.resolve_boss_spawn_for_arena
+local trigger_boss_fight = BossSetup.trigger_boss_fight
+
+TriggerBossArena.configure({
+    room_matches = room_matches,
+    player_overlaps_zone = player_overlaps_zone,
+    resolve_boss_spawn_for_arena = resolve_boss_spawn_for_arena,
+    trigger_boss_fight = trigger_boss_fight,
+})
+
+local function reset_boss_fights(self, reason)
+    local ok_boss, BossManager = pcall(require, "mvtk.bosses.boss_manager")
+    if ok_boss and BossManager and BossManager.reset_active_bosses then
+        BossManager.reset_active_bosses(reason)
+    end
+
+    if self and self.boss_spawns then
+        for id, data in pairs(self.boss_spawns) do
+            if data and data.active_boss_url and go.exists(data.active_boss_url) then
+                go.delete(data.active_boss_url)
+            end
+            local defeated = false
+            if ok_boss and BossManager and BossManager.is_boss_defeated then
+                local check_id = data and (data.boss_preset or data.boss_type or data.boss_id or data.boss_tag or id)
+                if check_id then
+                    defeated = BossManager.is_boss_defeated(check_id)
+                end
+            end
+            if data then
+                data.spawned = defeated and true or false
+                data.active_boss_id = nil
+                data.active_boss_url = nil
+            end
+        end
+    end
+
+    if self and self.arena_locks then
+        for _, lock in pairs(self.arena_locks) do
+            lock.triggered = false
+            lock.player_inside = false
+        end
+    end
+
+    pcall(msg.post, "main:/room_manager#script", hash("unlock_all_rooms"), {
+        source = reason or "boss_reset",
+    })
+end
+
+main_log = function(...)
+    if Debug.global.enable or Debug.gameplay.main then
+        print(...)
+    end
+end
+
+TriggerMinimapMarker.configure({
+    main_log = function(...) main_log(...) end,
+})
+
+local function minimap_log(...)
+    if Debug.global.enable or Debug.minimap.load then
+        print(...)
+    end
+end
+
+local function minimap_safe_call(prefix, label, fn, ...)
+    local ok, res = pcall(fn, ...)
+    if ok then
+        minimap_log(string.format('%s %s ok', prefix, label))
+        return true, res
+    else
+        minimap_log(string.format('%s %s failed: %s', prefix, label, tostring(res)))
+        return false, res
+    end
+end
+
+local MINIMAP_ATLAS_PATH = "/developer/assets/minimap/minimap.atlas"
+local MINIMAP_IMAGE_PATH = "/developer/assets/minimap/layout_map.png"
+local UPDATED_ATLAS_PATH = "/developer/assets/minimap/updated_map.atlas"
+local UPDATED_IMAGE_PATH = "/developer/assets/minimap/updated_map.png"
+local MINIMAP_META_PATH = "/developer/assets/minimap/layout_map.lua"
+local UPDATED_META_DISK_PATH = "./developer/assets/minimap/updated_map.lua"
+local MINIMAP_META_DISK_PATH = "./developer/assets/minimap/layout_map.lua"
+
+local function load_minimap_meta()
+    local loader = loadstring or load
+    for _, disk_path in ipairs({ MINIMAP_META_DISK_PATH, UPDATED_META_DISK_PATH }) do
+        local f = io.open(disk_path, "r")
+        if f then
+            local txt = f:read("*all")
+            f:close()
+            if txt and #txt > 0 and loader then
+                local chunk, err = loader(txt)
+                if chunk then
+                    local ok, data = pcall(chunk)
+                    if ok and type(data) == "table" then
+                        minimap_log(string.format('[MINIMAP_LOAD] Loaded disk meta %s', disk_path))
+                        return data
+                    else
+                        minimap_log(string.format('[MINIMAP_LOAD] Disk meta eval failed: %s', tostring(data)))
+                    end
+                else
+                    minimap_log(string.format('[MINIMAP_LOAD] Disk meta compile failed: %s', tostring(err)))
+                end
+            end
+        end
+    end
+    -- Fallback to bundled resource
+    local ok_src, src = minimap_safe_call('[MINIMAP_LOAD]', 'load metadata', sys.load_resource, MINIMAP_META_PATH)
+    if ok_src and src and type(src) == 'string' and #src > 0 then
+        if loader then
+            local chunk, compile_err = loader(src)
+            if chunk then
+                local ok_eval, data = pcall(chunk)
+                if ok_eval and type(data) == 'table' then
+                    minimap_log(string.format('[MINIMAP_LOAD] Parsed bundled metadata width=%s height=%s', tostring(data.width or '?'), tostring(data.height or '?')))
+                    return data
+                else
+                    minimap_log(string.format('[MINIMAP_LOAD] Bundled metadata eval failed: %s', tostring(data)))
+                end
+            else
+                minimap_log(string.format('[MINIMAP_LOAD] Bundled metadata compile failed: %s', tostring(compile_err)))
+            end
+        end
+    else
+        minimap_log('[MINIMAP_LOAD] No loader available to parse metadata')
+    end
+    return nil
+end
+
+local function convert_tiled_to_defold(x, y, map)
+    -- Delegates to the shared TiledParser.tiled_to_defold() helper so the
+    -- Y-flip logic lives in one place (mvtk/tiled/tiled_parser.lua).
+    if not map or not map.height or not map.tileheight then
+        print("[SPAWN] WARNING: map not loaded, cannot Y-flip Tiled coords")
+        return vmath.vector3(x or 0, y or 0, 0)
+    end
+    local map_height_px = (map.height or 0) * (map.tileheight or 0)
+    local def_x, def_y = TiledParser.tiled_to_defold(x or 0, y or 0, map_height_px)
+    return vmath.vector3(def_x, def_y, 0)
+end
+
+local function normalize_room_id(value)
+    local s = tostring(value or "")
+    s = s:gsub("^developer/rooms/", "")
+    s = s:gsub("%.collection$", "")
+    s = s:gsub("^/+", "")
+    return s
+end
+
+local function room_contains(room, x, y)
+    local rx = tonumber(room and room.x)
+    local ry = tonumber(room and room.y)
+    local rw = tonumber(room and room.w)
+    local rh = tonumber(room and room.h)
+    if not (rx and ry and rw and rh) then
+        return false
+    end
+    -- Include per-room offsets (ox, oy) — the actual world bounds are (x+ox, y+oy)
+    local rox = tonumber(room.ox) or 0
+    local roy = tonumber(room.oy) or 0
+    local min_x = rx + rox
+    local min_y = ry + roy
+    return x >= min_x and x <= (min_x + rw) and y >= min_y and y <= (min_y + rh)
+end
+
+local function checkpoint_is_valid_for_layout(checkpoint)
+    if type(checkpoint) ~= "table" then return false end
+    local x = tonumber(checkpoint.x)
+    local y = tonumber(checkpoint.y)
+    if not (x and y) then return false end
+
+    local layout = LayoutIO and LayoutIO.load and LayoutIO.load({ runtime_preferred = true }) or nil
+    if not (layout and type(layout.rooms) == "table" and #layout.rooms > 0) then
+        -- Keep legacy behavior if layout bounds are unavailable.
+        return true
+    end
+
+    local cp_room = normalize_room_id(checkpoint.room_id)
+    local in_any_room = false
+
+    for _, room in ipairs(layout.rooms) do
+        local rid = normalize_room_id(room.id or room.path)
+        local inside = room_contains(room, x, y)
+        if inside then
+            in_any_room = true
+            if cp_room == "" or cp_room == rid then
+                return true
+            end
+        end
+        if cp_room ~= "" and rid == cp_room then
+            -- Claimed room exists: checkpoint must be inside it.
+            return inside
+        end
+    end
+
+    return in_any_room and cp_room == ""
+end
+
+-- Get the collection origin for authored room-local positions.
+local function get_room_offset(room_id)
+    if not room_id then return vmath.vector3(0, 0, 0) end
+    local layout = LayoutIO.load({ runtime_preferred = true })
+    if not layout or not layout.rooms then return vmath.vector3(0, 0, 0) end
+    local target_id = normalize_room_id(room_id)
+    for _, room in ipairs(layout.rooms) do
+        local id = normalize_room_id(room.id or room.path)
+        if id == target_id then
+            local ox, oy = require("mvtk.map.streaming.room_geometry").compute_spawn_xy(room)
+            return vmath.vector3(ox, oy, 0)
+        end
+    end
+    return vmath.vector3(0, 0, 0)
+end
+
+local function get_player_start_from_tiled()
+    spawn_log("[SPAWN_DIAG] ========== get_player_start_from_tiled BEGIN ==========")
+    local start_room = nil
+    local meta = nil
+    local layout = LayoutIO and LayoutIO.load and LayoutIO.load({ runtime_preferred = true }) or nil
+    spawn_log(string.format("[SPAWN_DIAG] get_player_start_from_tiled: layout=%s rooms=%s",
+        tostring(layout ~= nil),
+        layout and layout.rooms and tostring(#layout.rooms) or "nil"))
+
+    -- Dump ALL layout room data for diagnostics
+    if layout and layout.rooms then
+        for i, room in ipairs(layout.rooms) do
+            spawn_log(string.format("[SPAWN_DIAG] Layout room[%d]: id='%s' path='%s' x=%.1f y=%.1f w=%.1f h=%.1f ox=%.1f oy=%.1f tw=%s th=%s",
+                i,
+                tostring(room.id), tostring(room.path),
+                room.x or 0, room.y or 0, room.w or 0, room.h or 0,
+                room.ox or 0, room.oy or 0,
+                tostring(room.tw), tostring(room.th)))
+        end
+    end
+
+    local ok_rooms, rooms = pcall(TiledRoomRegistry.get_all_rooms)
+    spawn_log(string.format("[SPAWN_DIAG] get_all_rooms ok=%s", tostring(ok_rooms)))
+    if ok_rooms then
+        start_room = TiledRoomRegistry.get_starting_room(layout)
+        spawn_log(string.format("[SPAWN_DIAG] get_starting_room returned: %s", tostring(start_room)))
+        if start_room then
+            meta = TiledRoomRegistry.get_room_metadata(start_room) or {}
+            spawn_log(string.format("[SPAWN_DIAG] meta psx=%s psy=%s", tostring(meta.player_start_x), tostring(meta.player_start_y)))
+        end
+    else
+        spawn_logger.warn("Could not read the Tiled room registry: %s", tostring(rooms))
+    end
+
+    if not (start_room and meta and meta.player_start_x and meta.player_start_y) then
+        spawn_logger.warn(
+            "No valid Tiled player_start was found (start_room=%s, metadata=%s)",
+            tostring(start_room), tostring(meta ~= nil))
+        return nil
+    end
+
+    -- Load the map to convert Y from Tiled (top-left origin) to Defold (bottom-left)
+    local map = nil
+    local map_module_path = rooms and rooms[start_room] or ("developer.assets.tiled.maps." .. start_room)
+    spawn_log(string.format("[SPAWN_DIAG] Loading map module: '%s'", tostring(map_module_path)))
+    local ok_map, loaded_map = pcall(TiledParser.load, map_module_path)
+    if ok_map and type(loaded_map) == "table" then
+        map = loaded_map
+        spawn_log(string.format("[SPAWN_DIAG] Map loaded OK: width=%s height=%s tilewidth=%s tileheight=%s",
+            tostring(map.width), tostring(map.height), tostring(map.tilewidth), tostring(map.tileheight)))
+    else
+        spawn_log(string.format("[SPAWN_DIAG] Map load failed; checking layout metadata: ok=%s result=%s",
+            tostring(ok_map), tostring(loaded_map)))
+    end
+
+    -- If map failed to load, build a minimal map table from layout room dimensions
+    -- so convert_tiled_to_defold can still flip Y correctly.
+    if not map or not map.height or not map.tileheight then
+        local room_h = nil
+        local room_th = nil
+        local room_tw = nil
+        if layout and layout.rooms then
+            local target_id = normalize_room_id(start_room)
+            for _, room in ipairs(layout.rooms) do
+                local id = normalize_room_id(room.id or room.path)
+                if id == target_id then
+                    room_h = room.h
+                    room_th = room.th
+                    room_tw = room.tw
+                    break
+                end
+            end
+        end
+        if room_h and room_h > 0 then
+            -- Synthesize a minimal map table from layout metadata
+            local th = room_th or TileSettings.height or 128
+            map = {
+                height = math.ceil(room_h / th),
+                tileheight = th,
+                tilewidth = room_tw or TileSettings.width or 128,
+            }
+            spawn_log(string.format("[SPAWN_DIAG] map load failed, using layout room dimensions: h=%s th=%s", tostring(room_h), tostring(th)))
+        else
+            spawn_logger.error(
+                "Map '%s' did not load and room '%s' has no layout dimensions; the player_start Y coordinate cannot be converted safely",
+                tostring(map_module_path), tostring(start_room))
+        end
+    end
+
+    local map_h = map and map.height and map.tileheight and (map.height * map.tileheight) or 0
+    spawn_log(string.format("[SPAWN_DIAG] map loaded=%s map_height=%s", tostring(ok_map), tostring(map_h)))
+
+    local pos = convert_tiled_to_defold(meta.player_start_x, meta.player_start_y, map)
+    spawn_log(string.format("[SPAWN_DIAG] After Y-flip: tiled_pos=(%.2f,%.2f) -> defold_local=(%.2f,%.2f) map_pixel_h=%d",
+        meta.player_start_x, meta.player_start_y, pos.x, pos.y, map_h))
+
+    -- Apply layout offset so world coords match streamed room position
+    local offset = get_room_offset(start_room)
+    spawn_log(string.format("[SPAWN_DIAG] Room collection origin: (%.1f, %.1f)", offset.x or 0, offset.y or 0))
+    pos.x = pos.x + (offset.x or 0)
+    pos.y = pos.y + (offset.y or 0)
+
+    -- Validate: is the final position actually inside the room?
+    if layout and layout.rooms then
+        local target_id = normalize_room_id(start_room)
+        for _, room in ipairs(layout.rooms) do
+            local id = normalize_room_id(room.id or room.path)
+            if id == target_id then
+                local rox = (room.ox or 0)
+                local roy = (room.oy or 0)
+                local min_x = room.x + rox
+                local min_y = room.y + roy
+                local max_x = min_x + room.w
+                local max_y = min_y + room.h
+                local inside = pos.x >= min_x and pos.x <= max_x and pos.y >= min_y and pos.y <= max_y
+                spawn_log(string.format("[SPAWN_DIAG] Room bounds: (%.1f,%.1f)-(%.1f,%.1f) spawn=(%.1f,%.1f) INSIDE=%s",
+                    min_x, min_y, max_x, max_y, pos.x, pos.y, tostring(inside)))
+                if not inside then
+                    spawn_logger.warn(
+                        "Tiled player_start for room '%s' is outside its layout bounds: (%.1f, %.1f)",
+                        tostring(start_room), pos.x, pos.y)
+                end
+                break
+            end
+        end
+    end
+
+    spawn_log(string.format("[SPAWN_DIAG] get_player_start_from_tiled FINAL: (%.2f,%.2f) room=%s", pos.x, pos.y, tostring(start_room)))
+    spawn_log("[SPAWN_DIAG] ========== get_player_start_from_tiled END ==========")
+    return { position = pos, room_id = start_room }
+end
+
+local MINIMAP_ATLAS_HASH = hash(MINIMAP_ATLAS_PATH)
+local UPDATED_ATLAS_HASH = hash(UPDATED_ATLAS_PATH)
+
+local resource_checked = false
+local resource_module = nil
+
+local function get_resource_module()
+    if not resource_checked then
+        resource_module = rawget(_G, "resource")
+        if not resource_module and type(require) == "function" then
+            local ok, mod = pcall(require, "resource")
+            if ok then
+                resource_module = mod
+            end
+        end
+        resource_checked = true
+    end
+    return resource_module
+end
+
+
+local function request_minimap_reload_timer(self, handle, time_elapsed)
+    msg.post(".", hash("minimap_reload_requested"), {})
+end
+
+local function safe_resource_release(path)
+    local mod = get_resource_module()
+    if mod and mod.release then
+        return pcall(mod.release, path)
+    end
+    main_log(string.format("[MAIN] Resource module unavailable; cannot release %s", tostring(path)))
+    return false, "resource module unavailable"
+end
+
+function init(self)
+    -- Initialize file logger first
+    FileLogger.init()
+    FileLogger.log("=== GAME STARTUP BEGIN ===")
+
+    -- VALIDATE ALL CONFIG FILES BEFORE STARTING
+    -- This catches configuration errors early with helpful messages
+    if Debug and Debug.global and Debug.global.enable then
+        -- Full validation with detailed output (dev mode)
+        local valid, results = ConfigValidator.validate_all_configs()
+        if not valid then
+            -- Critical config errors - block game start
+            error("⛔ GAME BLOCKED: Fix config errors above before starting")
+        end
+    else
+        -- Quick validation (release mode)
+        local valid = ConfigValidator.validate_quick()
+        if not valid then
+            error("⛔ GAME BLOCKED: Configuration errors detected")
+        end
+    end
+
+    main_log("[MAIN] Initializing main game script...")
+
+    -- Optional on-screen profiler (developer/config/debug_config.lua perf.profiler_ui).
+    if Debug and Debug.perf and Debug.perf.profiler_ui and type(profiler) == "table" then
+        if type(profiler.enable_ui) == "function" then
+            pcall(profiler.enable_ui, true)
+        end
+        if type(profiler.set_ui_vsync_wait_visible) == "function" then
+            pcall(profiler.set_ui_vsync_wait_visible, true)
+        end
+    end
+    SaveManager.init()
+    GameManager.init()
+
+    -- Initialize collectible, enemy, and NPC systems
+    CollectibleManager.init()
+    EnemyManager.init()
+    NPCManager.init()
+    GateManager.init()
+
+    -- Get the current slot - should already be set by save slot selection screen
+    local slot = Checkpoint.slot or 1
+    
+    -- Check if checkpoint data is already loaded (from save slot selection screen)
+    local checkpoint_loaded = false
+    if Checkpoint.data and Checkpoint.data.meta and Checkpoint.data.meta.version then
+        checkpoint_loaded = true
+        print(string.format("[MAIN] Checkpoint already loaded from slot %s", tostring(slot)))
+    else
+        -- Try to load checkpoint - only use it if a save file actually exists
+        local load_ok, load_result = pcall(Checkpoint.load, slot)
+        if load_ok and load_result == true then
+            checkpoint_loaded = true
+            print(string.format("[MAIN] Checkpoint loaded successfully from slot %s", tostring(slot)))
+        else
+            print(string.format("[MAIN] No save file found in slot %s - starting new game", tostring(slot)))
+        end
+    end
+
+    -- Ignore stale checkpoints that no longer match current layout bounds.
+    if checkpoint_loaded then
+        local cp = Checkpoint.data and Checkpoint.data.checkpoint
+        if not checkpoint_is_valid_for_layout(cp) then
+            print(string.format("[MAIN] Ignoring stale checkpoint outside current layout: x=%s y=%s room=%s",
+                tostring(cp and cp.x), tostring(cp and cp.y), tostring(cp and cp.room_id)))
+            if Checkpoint.data then
+                Checkpoint.data.checkpoint = nil
+            end
+            checkpoint_loaded = false
+        end
+    end
+
+    -- If no save exists, seed a new one using the player_start exported from Tiled
+    local seeded_start = nil
+    if not checkpoint_loaded then
+        local start_info = get_player_start_from_tiled()
+        if start_info and start_info.position then
+            Checkpoint.set_slot(slot)
+            Checkpoint.set_checkpoint(start_info.position, start_info.room_id)
+            checkpoint_loaded = true
+            seeded_start = start_info
+            print(string.format("[MAIN] Seeded new save at Tiled player_start (room=%s, pos=%.1f, %.1f)",
+                tostring(start_info.room_id), start_info.position.x, start_info.position.y))
+        end
+    end
+    
+    -- Checkpoint will be applied when player_ready message is received in on_message()
+    -- This ensures the player game object exists before we try to set its position
+    self._startup_checkpoint_applied = false
+    self._checkpoint_loaded = checkpoint_loaded  -- Track if we should apply checkpoint
+    self._seeded_start = seeded_start
+    self.pending_ability_grants = {}
+    self.pending_map_markers = {}
+    self.boss_phase_defs = {}
+    self.player_url = nil
+    self._last_camera_room = nil
+    
+    -- Load progression data from save system
+    local save_data = SaveManager.get_save_data()
+    if save_data and save_data.progression then
+        ProgressionManager.init(save_data.progression)
+    else
+        ProgressionManager.init()
+    end
+    -- Keep gameplay behind startup resource readiness; the room streamer keeps
+    -- updating in LOADING and the player's existing arrival gate holds motion.
+    self._startup_preparing = not RoomManager.is_startup_ready()
+    GameManager.set_state(self._startup_preparing and GameManager.STATE.LOADING or GameManager.STATE.PLAYING)
+    if self._startup_preparing then
+        msg.post("main:/toast_gui#toast", "toast", { text = "Loading...", persistent = true, tag = "startup" })
+    end
+
+    -- Ensure settings menu is hidden on game start
+    pcall(msg.post, "main:/ui#settings", hash("hide_settings"), {})
+
+    timer.delay(0.05, false, request_minimap_reload_timer)
+
+    trigger_log(string.format("[TRIGGER] player_trigger_extents half_w=%.1f half_h=%.1f",
+        PLAYER_TRIGGER_HALF_WIDTH, PLAYER_TRIGGER_HALF_HEIGHT))
+    main_log("[MAIN] Main game script initialized")
+end
+
+local flush_pending_map_markers
+
+function update(self, dt)
+    -- Update core systems
+    GameManager.update(dt)
+    SaveManager.update(dt)
+    EnemyManager.update(dt)
+    flush_pending_map_markers(self)
+
+    if self._startup_preparing then
+        if not RoomManager.is_startup_ready() then return end
+        self._startup_preparing = false
+        msg.post("main:/toast_gui#toast", "dismiss_toast", { tag = "startup" })
+        if GameManager.get_state() == GameManager.STATE.LOADING then
+            GameManager.set_state(GameManager.STATE.PLAYING)
+        end
+    end
+
+    local player_url = C.URL and C.URL.PLAYER
+    if not player_url or not go.exists(player_url) then
+        self.zone_interact_request_pos = nil
+        return
+    end
+
+    local player_pos = go.get_position(player_url)
+    local player_room = nil
+    if RoomManager and RoomManager.get_current_room then
+        player_room = RoomManager.get_current_room()
+    end
+    local normalized_room = normalize_hash_string(player_room)
+    if normalized_room and normalized_room ~= self._last_camera_room then
+        post_camera_enter_room(normalized_room, self._last_camera_room == nil)
+        self._last_camera_room = normalized_room
+    end
+
+    local interact_pos = self.zone_interact_request_pos
+    self.zone_interact_request_pos = nil
+
+    -- Cutscene trigger zones
+    if self.cutscene_triggers then
+        for _, trigger in pairs(self.cutscene_triggers) do
+            if (not trigger.disabled) and room_matches(player_room, trigger.room_id) then
+                local inside = player_overlaps_zone(player_pos, trigger)
+                local entered = inside and not trigger.player_inside
+                local manual_interact = (not trigger.auto_play) and interact_pos and point_in_bounds(interact_pos, trigger)
+                if inside then
+                    trigger.player_inside = true
+                    if entered then
+                        trigger_log(string.format("[TRIGGER] zone_enter zone=%s room=%s player=(%.1f,%.1f) auto_play=%s",
+                            trigger_debug_id(trigger), tostring(player_room), player_pos.x, player_pos.y, tostring(trigger.auto_play)))
+                    end
+                    local activation_requested = (trigger.auto_play and entered) or manual_interact
+                    if activation_requested then
+                        trigger_log(string.format("[TRIGGER] cutscene_activation_request zone=%s entered=%s manual_interact=%s",
+                            trigger_debug_id(trigger), tostring(entered), tostring(manual_interact and true or false)))
+                        if can_fire_zone(trigger) then
+                            if process_cutscene_trigger(trigger) then
+                                mark_zone_fired(self, trigger)
+                            else
+                                trigger_log(string.format("[TRIGGER] cutscene_process_returned_false zone=%s", trigger_debug_id(trigger)))
+                            end
+                        else
+                            trigger_log(string.format("[TRIGGER] cutscene_blocked zone=%s reason=can_fire_zone_false",
+                                trigger_debug_id(trigger)))
+                        end
+                    end
+                else
+                    trigger.player_inside = false
+                end
+            else
+                trigger.player_inside = false
+            end
+        end
+    end
+
+    -- Dialogue trigger zones
+    if self.dialogue_triggers then
+        for _, trigger in pairs(self.dialogue_triggers) do
+            if (not trigger.disabled) and room_matches(player_room, trigger.room_id) then
+                local inside = player_overlaps_zone(player_pos, trigger)
+                local entered = inside and not trigger.player_inside
+                local manual_interact = (not trigger.auto_play) and interact_pos and point_in_bounds(interact_pos, trigger)
+                if inside then
+                    trigger.player_inside = true
+                    if entered then
+                        trigger_log(string.format("[TRIGGER] zone_enter zone=%s room=%s player=(%.1f,%.1f) auto_play=%s",
+                            trigger_debug_id(trigger), tostring(player_room), player_pos.x, player_pos.y, tostring(trigger.auto_play)))
+                    end
+                    local activation_requested = (trigger.auto_play and entered) or manual_interact
+                    if activation_requested then
+                        trigger_log(string.format("[TRIGGER] dialogue_activation_request zone=%s entered=%s manual_interact=%s",
+                            trigger_debug_id(trigger), tostring(entered), tostring(manual_interact and true or false)))
+                        if can_fire_zone(trigger) then
+                            if process_dialogue_trigger(trigger) then
+                                mark_zone_fired(self, trigger)
+                            else
+                                trigger_log(string.format("[TRIGGER] dialogue_process_returned_false zone=%s", trigger_debug_id(trigger)))
+                            end
+                        else
+                            trigger_log(string.format("[TRIGGER] dialogue_blocked zone=%s reason=can_fire_zone_false",
+                                trigger_debug_id(trigger)))
+                        end
+                    end
+                else
+                    trigger.player_inside = false
+                end
+            else
+                trigger.player_inside = false
+            end
+        end
+    end
+
+    -- A room becomes current at the seam, before the player's collider has
+    -- cleared its door tiles. Do not start an encounter that seals them yet.
+    -- Death resets spawn/arena flags while the corpse still occupies the room.
+    -- Do not re-arm the encounter during the death screen or respawn loading.
+    local boss_entry_clear = GameManager.is_playing() and BossSetup.room_entry_clear(player_pos,
+        RoomManager.get_room_bounds(player_room), PLAYER_TRIGGER_HALF_WIDTH,
+        PLAYER_TRIGGER_HALF_HEIGHT, TileSettings.width, TileSettings.height,
+        RoomManager.get_room_doors(player_room))
+
+    -- Arena lock zones (boss fight entry)
+    if self.arena_locks and boss_entry_clear then
+        for _, lock in pairs(self.arena_locks) do
+            TriggerServices.boss_arena.on_trigger(self, {
+                lock = lock,
+                player_room = player_room,
+                player_pos = player_pos,
+            })
+        end
+    end
+
+    -- Bosses without a boss_arena start when the player enters their room.
+    if self.boss_spawns and player_room and boss_entry_clear then
+        for _, boss_id in ipairs(BossSetup.room_entry_boss_ids(self, player_room)) do
+            trigger_boss_fight(self, boss_id)
+        end
+    end
+end
+
+local normalize_ability_id = Util.normalize_ability_id
+
+local function to_go_url(url_like)
+    if not url_like then
+        return nil
+    end
+    local ok_url, u = pcall(msg.url, url_like)
+    if not ok_url or not u then
+        return nil
+    end
+    return msg.url(u.socket, u.path, nil)
+end
+
+local function resolve_player_url(self, hinted_url)
+    local candidates = {}
+    candidates[#candidates + 1] = hinted_url
+    candidates[#candidates + 1] = self and self.player_url or nil
+    candidates[#candidates + 1] = C.URL.PLAYER
+
+    local seen = {}
+    for _, candidate in ipairs(candidates) do
+        local go_url = to_go_url(candidate)
+        if go_url then
+            local key = tostring(go_url)
+            if not seen[key] then
+                seen[key] = true
+                local ok_exists, exists = pcall(go.exists, go_url)
+                if ok_exists and exists then
+                    return go_url
+                end
+                local ok_pos, pos = pcall(go.get_world_position, go_url)
+                if ok_pos and pos then
+                    return go_url
+                end
+            end
+        end
+    end
+
+    return nil
+end
+
+local function set_player_url(self, player_url)
+    local go_url = to_go_url(player_url)
+    if not go_url then
+        return nil
+    end
+    if C then
+        C.URL = C.URL or {}
+        C.URL.PLAYER = go_url
+    end
+    if self then
+        self.player_url = go_url
+    end
+    if DetectionOk and Detection and Detection.set_player_url then
+        pcall(Detection.set_player_url, go_url)
+    end
+    return go_url
+end
+
+local function post_ability_grant_to_player(self, ability_id, enabled)
+    local player_go_url = resolve_player_url(self, nil)
+    if not player_go_url then
+        return false, nil
+    end
+
+    local grant_msg = (C and C.MSG and C.MSG.GRANT_ABILITY) or hash("mvtk_grant_ability")
+    local targets = {
+        player_go_url,
+        msg.url(player_go_url.socket, player_go_url.path, hash("script")),
+    }
+
+    local sent = false
+    local seen = {}
+    for _, target in ipairs(targets) do
+        local key = tostring(target)
+        if target and not seen[key] then
+            seen[key] = true
+            local ok = pcall(msg.post, target, grant_msg, {
+                ability = ability_id,
+                enabled = enabled and true or false,
+                toast_when_known = false,
+            })
+            if ok then
+                sent = true
+            end
+        end
+    end
+
+    return sent, player_go_url
+end
+
+local function queue_pending_grant(self, ability_id, enabled)
+    if not self then
+        return
+    end
+    self.pending_ability_grants = self.pending_ability_grants or {}
+    self.pending_ability_grants[ability_id] = enabled and true or false
+end
+
+local function flush_pending_grants(self)
+    if not self or type(self.pending_ability_grants) ~= "table" then
+        return
+    end
+
+    for ability_id, enabled in pairs(self.pending_ability_grants) do
+        local sent = post_ability_grant_to_player(self, ability_id, enabled)
+        if sent then
+            self.pending_ability_grants[ability_id] = nil
+            print(string.format("[MAIN] Flushed pending ability grant: %s", tostring(ability_id)))
+        end
+    end
+end
+
+flush_pending_map_markers = TriggerMinimapMarker.flush_pending_map_markers
+
+local function ensure_registry(self, key)
+    local registry = self[key]
+    if not registry then
+        registry = {}
+        self[key] = registry
+    end
+    return registry
+end
+
+local function as_runtime_trigger_zone(kind, zone)
+    zone.kind = kind
+    zone.player_inside = false
+    zone.triggered = false
+    zone.disabled = false
+    return zone
+end
+
+local function register_trigger_zone(self, registry_key, kind, zone)
+    ensure_registry(self, registry_key)[zone.id] = as_runtime_trigger_zone(kind, zone)
+    return zone
+end
+
+function on_message(self, message_id, message, sender)
+    if message_id == hash("mvtk_arrival_finished") then
+        GameManager.finish_restart(message.request, message.success)
+    elseif message_id == hash("player_ready") then
+        local hinted_player_url = message and message.url or nil
+        local player_url = set_player_url(self, hinted_player_url) or resolve_player_url(self, hinted_player_url)
+        if player_url then
+            set_player_url(self, player_url)
+        end
+        flush_pending_grants(self)
+
+        -- Player has been spawned and is ready - apply checkpoint position now
+        if not self._startup_checkpoint_applied then
+            self._startup_checkpoint_applied = true
+            
+            print("[MAIN] ========== PLAYER READY - CHECKING STARTUP CHECKPOINT ==========")
+            
+            player_url = player_url or resolve_player_url(self, hinted_player_url)
+            
+            -- Only apply checkpoint if a save file was actually loaded
+            if self._checkpoint_loaded then
+                local cp = Checkpoint.data and Checkpoint.data.checkpoint
+                if cp and cp.x and cp.y and checkpoint_is_valid_for_layout(cp) and player_url then
+                    local target_pos = vmath.vector3(cp.x, cp.y, 0)
+                    print(string.format("[MAIN] Applying saved checkpoint position: (%.1f, %.1f)", target_pos.x, target_pos.y))
+                    print(string.format("[MAIN] Player URL: %s", tostring(player_url)))
+                    
+                    if go.exists(player_url) then
+                        -- Player applies position, health and camera together
+                        -- only after destination collision is available.
+                        msg.post(player_url, C.MSG and C.MSG.RESTORE_HEALTH or hash("mvtk_restore_health"), {
+                            respawn_pos = target_pos, room_id = cp.room_id,
+                        })
+                        print("[MAIN] Startup checkpoint queued for room readiness")
+                    else
+                        print("[MAIN] ⚠️ Player game object doesn't exist")
+                    end
+                else
+                    print(string.format("[MAIN] No valid checkpoint in save data (cp=%s, player_url=%s)", tostring(cp ~= nil), tostring(player_url)))
+                end
+            else
+                print("[MAIN] ℹ️ No save file loaded - using default spawn position (new game)")
+            end
+            
+            print("[MAIN] ========== STARTUP CHECKPOINT COMPLETE ==========")
+        end
+    elseif message_id == hash("debug_request_player_pos") then
+        local emitter = message and message.emitter
+        local player_url = resolve_player_url(self, nil)
+        if player_url then
+            set_player_url(self, player_url)
+        end
+        if emitter and player_url then
+            local p = go.get_world_position(player_url)
+            msg.post(emitter, "debug_set_pos", { pos = p })
+            if Debug.global.enable or (Debug.fx and Debug.fx.particles) then
+                print(string.format("[MAIN] debug_request_player_pos -> %s to %s", tostring(p), tostring(emitter)))
+            end
+        else
+            if Debug.global.enable or (Debug.fx and Debug.fx.particles) then
+                print(string.format("[MAIN] debug_request_player_pos missing emitter/player (emitter=%s player=%s)",
+                    tostring(emitter), tostring(player_url)))
+            end
+        end
+    elseif message_id == hash("grant_ability_request") then
+        local raw = message and (message.ability or message.id or message.name)
+        local ability_id = normalize_ability_id(raw)
+        local enabled = not (message and message.enabled == false)
+        print(string.format("[MAIN] grant_ability_request raw=%s normalized=%s sender=%s",
+            tostring(raw), tostring(ability_id), tostring(sender)))
+        if ability_id then
+            if ProgressionManager and ProgressionManager.unlock_ability then
+                local ok_unlock, err_unlock = pcall(ProgressionManager.unlock_ability, ability_id, {
+                    enabled = enabled,
+                    -- Provenance: collectible grants are earned pickups; anything else is a reward.
+                    source = (message and message.source == "collectible") and "pickup" or "reward",
+                })
+                if not ok_unlock then
+                    print(string.format("[MAIN] grant_ability_request unlock error: %s", tostring(err_unlock)))
+                end
+            end
+
+            local sent, player_url = post_ability_grant_to_player(self, ability_id, enabled)
+            if not sent then
+                queue_pending_grant(self, ability_id, enabled)
+                print(string.format("[MAIN] grant_ability_request queued (player URL unavailable): %s (player=%s)",
+                    tostring(ability_id), tostring(player_url)))
+            end
+        else
+            print("[MAIN] grant_ability_request ignored: invalid ability id")
+        end
+    elseif message_id == (C.MSG and C.MSG.PLAYER_DIED or hash("mvtk_player_died")) then
+        print("========================================")
+        print("[MAIN] 📨 PLAYER DEATH MESSAGE RECEIVED from:", sender)
+        print("[MAIN] Message ID:", message_id)
+        print("========================================")
+        main_log("[MAIN] Player death message received")
+        reset_boss_fights(self, "player_died")
+        GameManager.handle_player_death()
+    elseif message_id == hash("cycle_map") then
+        -- Cycle minimap display modes (off -> panel -> fullscreen -> off)
+        pcall(msg.post, msg.url("main:/minimap_gui#minimap"), hash("toggle_minimap"), {})
+    elseif message_id == hash("pause_toggle") then
+        GameManager.handle_pause_toggle()
+    elseif message_id == hash("restart_game") then
+        GameManager.handle_restart()
+    elseif message_id == hash("debug_minimap_unload") then
+        main_log('[MAIN] Unloading original minimap resources...')
+
+        -- Release the original minimap atlas
+        local original_release_ok = safe_resource_release(MINIMAP_ATLAS_PATH)
+        main_log('[MAIN] Original atlas release: ' .. tostring(original_release_ok))
+
+        -- Tell GUI components to hide the minimap
+        local minimap_targets = {
+            "main:/minimap_gui#minimap",
+            "main:/world_map_gui#world_map"
+        }
+        for _, target in ipairs(minimap_targets) do
+            local ok_texture, err_texture = pcall(msg.post, target, "use_original_texture", {})
+            if ok_texture then
+                main_log("[MAIN] Sent use_original_texture to: " .. target)
+            else
+                main_log("[MAIN] Failed to send use_original_texture to " .. target .. ": " .. tostring(err_texture))
+            end
+        end
+
+    elseif message_id == hash("minimap_reload_requested") then
+        main_log('[MAIN] Minimap reload requested (runtime)')
+
+        local payload = {}
+        local map_data = nil
+
+        -- Check if updated files exist by trying to open them
+        local updated_file = io.open("./developer/assets/minimap/updated_map.png", "r")
+        if updated_file then
+            updated_file:close()
+            -- Updated files exist, signal to use them
+            payload.use_updated_atlas = true
+            payload.updated_atlas = UPDATED_ATLAS_PATH
+            minimap_log('[MINIMAP_LOAD] Updated files found on disk, flagged for updated atlas usage')
+        else
+            minimap_log('[MINIMAP_LOAD] No updated files found on disk')
+        end
+
+        map_data = load_minimap_meta()
+        if map_data then
+            payload.map = map_data
+            minimap_log(string.format('[MINIMAP_LOAD] Metadata applied width=%s height=%s', tostring(map_data.width or '?'), tostring(map_data.height or '?')))
+        end
+
+        local minimap_targets = {
+            "main:/minimap_gui#minimap",
+            "main:/world_map_gui#world_map"
+        }
+        for _, target in ipairs(minimap_targets) do
+            local ok_reload, err_reload = pcall(msg.post, target, "reload_minimap", payload)
+            if ok_reload then
+                main_log("[MAIN] Forwarded reload_minimap to: " .. target)
+            else
+                main_log("[MAIN] Failed to forward to " .. target .. ": " .. tostring(err_reload))
+            end
+        end
+    
+    -- ========================================
+    -- TILED OBJECT REGISTRATION HANDLERS
+    -- ========================================
+    
+    elseif message_id == hash("register_save_point") then
+        -- Store save point for checkpoint system
+        if not self.save_points then self.save_points = {} end
+        self.save_points[message.id] = {
+            position = message.position,
+            room_id = message.room_id,
+            name = message.name,
+            properties = message.properties
+        }
+        main_log(string.format("[MAIN] Registered save point '%s' in room %s", tostring(message.name), tostring(message.room_id)))
+    
+    elseif message_id == hash("register_spawn_point") then
+        -- Store spawn point for player spawning
+        if not self.spawn_points then self.spawn_points = {} end
+        self.spawn_points[message.id] = {
+            position = message.position,
+            room_id = message.room_id,
+            spawn_type = message.spawn_type,
+            name = message.name,
+            properties = message.properties
+        }
+        main_log(string.format("[MAIN] Registered spawn point '%s' (type: %s)", tostring(message.name), tostring(message.spawn_type)))
+    
+    elseif message_id == hash("register_cutscene_trigger") then
+        local zone = register_trigger_zone(
+            self,
+            "cutscene_triggers",
+            "cutscene",
+            TriggerPayloads.cutscene(message)
+        )
+        main_log(string.format("[MAIN] Registered cutscene trigger '%s'", tostring(zone.cutscene_id)))
+        trigger_log(string.format(
+            "[TRIGGER] register kind=cutscene id=%s trigger_id=%s room=%s pos=(%.1f,%.1f) size=(%s,%s) cutscene_id=%s auto_play=%s trigger_once=%s consume_on_fire=%s requires_flag=%s skip_if_flag=%s",
+            tostring(zone.id), tostring(zone.trigger_id), tostring(zone.room_id),
+            (zone.position and zone.position.x) or -1, (zone.position and zone.position.y) or -1,
+            tostring(zone.width), tostring(zone.height),
+            tostring(zone.cutscene_id), tostring(zone.auto_play), tostring(zone.trigger_once),
+            tostring(zone.consume_on_fire), tostring(zone.requires_flag), tostring(zone.skip_if_flag)))
+    
+    elseif message_id == hash("spawn_npc") then
+        -- Spawn NPC via NPC manager
+        local props = message.properties or {}
+        local npc_type = props.npc_type or "villager_male"
+        print(string.format("[MAIN] spawn_npc received: id='%s' type='%s' pos=(%s,%s)",
+            tostring(message.npc_id), tostring(npc_type),
+            tostring(message.position and message.position.x), tostring(message.position and message.position.y)))
+        local npc_data = NPCManager.spawn_npc(
+            message.npc_id,
+            npc_type,
+            message.position,
+            {
+                room_id = message.room_id,
+                name = props.npc_name,
+                dialogue_id = props.dialogue_id,
+                sprite = props.npc_sprite,
+                interaction_range = props.interaction_range,
+                facing = props.facing,
+            }
+        )
+        
+        if npc_data then
+            -- Build factory properties – pass all supported npc.go script properties
+            local factory_props = {
+                npc_id = tostring(message.npc_id or ""),
+                npc_type = tostring(npc_type or ""),
+            }
+            if props.npc_name and props.npc_name ~= "" then
+                factory_props.npc_name = tostring(props.npc_name)
+            end
+            -- Use npc_sprite from Tiled; fall back to the sprite defined in npc_types.lua
+            -- so that NPC objects with blank npc_sprite still show the correct character art.
+            local resolved_sprite = (props.npc_sprite and props.npc_sprite ~= "") and props.npc_sprite
+                or (npc_data.sprite and npc_data.sprite ~= "" and npc_data.sprite)
+                or nil
+            if resolved_sprite then
+                factory_props.npc_sprite = tostring(resolved_sprite)
+            end
+            if props.dialogue_id and props.dialogue_id ~= "" then
+                factory_props.dialogue_id = tostring(props.dialogue_id)
+            end
+            if props.facing then
+                factory_props.facing = tonumber(props.facing) or 1
+            end
+            if props.interaction_range then
+                factory_props.interaction_range = tonumber(props.interaction_range) or 48
+            end
+            if message.room_id then
+                factory_props.room_id = tostring(message.room_id)
+            end
+
+            -- Try to spawn visual game object for NPC
+            local factory_url = msg.url("main:/room_manager#npc_factory")
+            local spawn_ok, instance = pcall(factory.create, factory_url, message.position, nil, factory_props, 1)
+            
+            if spawn_ok then
+                NPCManager.register_instance(message.npc_id, instance)
+                pcall(msg.post, instance, hash("apply_tiled_props"), {
+                    properties = {
+                        npc_id = tostring(message.npc_id or ""),
+                        npc_type = tostring(npc_type or ""),
+                        room_id = tostring(message.room_id or ""),
+                        npc_name = props.npc_name,
+                        npc_sprite = resolved_sprite,
+                        dialogue_id = props.dialogue_id,
+                        dialogue_text = props.dialogue_text,
+                        facing = props.facing,
+                        interaction_range = props.interaction_range,
+                        despawn_flag = props.despawn_flag,
+                        reward_item = props.reward_item,
+                        reward_items = props.reward_items,
+                        reward_item_count = props.reward_item_count,
+                        reward_currency = props.reward_currency,
+                        reward_flag = props.reward_flag,
+                        reward_flags = props.reward_flags,
+                        reward_ability = props.reward_ability,
+                    }
+                })
+                print(string.format("[MAIN] Spawned NPC '%s' (type: %s) at (%.0f, %.0f) room=%s",
+                    message.npc_id, npc_type,
+                    message.position and message.position.x or 0, message.position and message.position.y or 0,
+                    tostring(message.room_id)))
+            else
+                print(string.format("[MAIN] NPC factory create FAILED for '%s': %s", tostring(message.npc_id), tostring(instance)))
+            end
+        else
+            print(string.format("[MAIN] NPC spawn failed for '%s' (type='%s') - check npc_types.lua", tostring(message.npc_id), tostring(npc_type)))
+        end
+    
+    elseif message_id == hash("register_boss_spawn") then
+        -- Baked markers send a compact room/object reference so the Defold
+        -- message buffer is never filled by dozens of duplicated properties.
+        -- BossSetup restores the exact flattened Tiled values on this side.
+        if not self.boss_spawns then self.boss_spawns = {} end
+        local registered_id, boss_data = BossSetup.build_boss_spawn_data(message)
+        if registered_id and boss_data then
+            self.boss_spawns[registered_id] = boss_data
+            main_log(string.format("[MAIN] Registered boss spawn '%s' (preset: %s, name: %s)",
+                tostring(registered_id), tostring(boss_data.boss_preset or "none"),
+                tostring(boss_data.boss_name)))
+        else
+            print(string.format(
+                "[MAIN] Boss spawn registration rejected (room=%s object_id=%s id=%s)",
+                tostring(message.room_id), tostring(message.object_id), tostring(message.id)))
+        end
+
+    elseif message_id == hash("register_boss_phase") then
+        if not self.boss_phase_defs then self.boss_phase_defs = {} end
+        local phase_record = {
+            id = message.id,
+            boss_id = normalize_hash_string(message.boss_id),
+            boss_type = normalize_hash_string(message.boss_preset or message.boss_type),
+            boss_preset = normalize_hash_string(message.boss_preset or message.boss_type),
+            arena_id = normalize_hash_string(message.arena_id),
+            room_id = normalize_hash_string(message.room_id),
+            phase_index = tonumber(message.phase) or 1,
+            health_min = tonumber(message.health_min),
+            health_max = tonumber(message.health_max),
+            attacks = message.attacks,
+            attack_interval_min = tonumber(message.attack_interval_min),
+            attack_interval_max = tonumber(message.attack_interval_max),
+            chase_speed = tonumber(message.chase_speed),
+            charge_speed = tonumber(message.charge_speed),
+            charge_distance = tonumber(message.charge_distance),
+            charge_telegraph_time = tonumber(message.charge_telegraph_time),
+            charge_duration = tonumber(message.charge_duration),
+            charge_cooldown = tonumber(message.charge_cooldown),
+            charge_recovery = tonumber(message.charge_recovery),
+            behavior = normalize_hash_string(message.behavior) or message.behavior,
+            speed_multiplier = tonumber(message.speed_multiplier),
+            damage_multiplier = tonumber(message.damage_multiplier),
+            transition_type = normalize_hash_string(message.transition_type) or message.transition_type,
+            transition_duration = tonumber(message.transition_duration),
+            transition_iframes = tonumber(message.transition_iframes),
+            transition_animation = normalize_hash_string(message.transition_animation) or message.transition_animation,
+            transition_camera_intensity = tonumber(message.transition_camera_intensity),
+            transition_camera_duration = tonumber(message.transition_camera_duration),
+            transition_flash = message.transition_flash,
+            transition_arena_darkness = message.transition_arena_darkness,
+            transition_spawn_hazards = message.transition_spawn_hazards,
+            transition_teleport_to = normalize_hash_string(message.transition_teleport_to) or message.transition_teleport_to,
+            transition_new_music = normalize_hash_string(message.transition_new_music) or message.transition_new_music,
+            -- Movement profile fields (see mvtk.bosses.movement_strategies)
+            movement_profile = normalize_hash_string(message.movement_profile) or message.movement_profile,
+            facing_lock = message.facing_lock,
+            hover_height = tonumber(message.hover_height),
+            jump_height = tonumber(message.jump_height),
+            jump_speed = tonumber(message.jump_speed),
+            leash_radius = tonumber(message.leash_radius),
+            attack_range = tonumber(message.attack_range),
+            properties = message.properties,
+        }
+        local replaced = false
+        for index, existing in ipairs(self.boss_phase_defs) do
+            if existing.id == phase_record.id then
+                self.boss_phase_defs[index] = phase_record
+                replaced = true
+                break
+            end
+        end
+        if not replaced then
+            self.boss_phase_defs[#self.boss_phase_defs + 1] = phase_record
+        end
+        main_log(string.format("[MAIN] Registered boss phase '%s' (phase=%s boss=%s arena=%s)",
+            tostring(message.id), tostring(message.phase), tostring(message.boss_id), tostring(message.arena_id)))
+    
+    elseif message_id == hash("register_fast_travel") then
+        -- Store fast travel station for map/teleport system
+        if not self.fast_travel_stations then self.fast_travel_stations = {} end
+        self.fast_travel_stations[message.id] = {
+            station_name = message.station_name,
+            position = message.position,
+            room_id = message.room_id,
+            requires_unlock = message.requires_unlock,
+            unlock_cost = message.unlock_cost,
+            unlocked = not message.requires_unlock,
+            properties = message.properties
+        }
+        -- Spawn the fast travel bench prefab
+        local factory_url = msg.url("main:/room_manager#fast_travel_factory")
+        local ok, instance = pcall(factory.create, factory_url, message.position, nil, {
+            station_id = message.id
+        }, 1)
+        -- Notify map systems
+        pcall(msg.post, "main:/world_map_gui#world_map", hash("register_fast_travel"), message)
+        main_log(string.format("[MAIN] Registered fast travel '%s' (%s)", tostring(message.id), tostring(message.station_name)))
+    
+    elseif message_id == hash("register_camera_zone") then
+        -- Forward to camera controller
+        local camera_message = {}
+        for k, v in pairs(message or {}) do
+            camera_message[k] = v
+        end
+        camera_message.room_id = normalize_hash_string(camera_message.room_id) or camera_message.room_id
+
+        pcall(msg.post, "main:/camera#script", hash("register_camera_zone"), camera_message)
+        main_log(string.format("[MAIN] Registered camera zone '%s' (mode: %s)", tostring(message.id), tostring(message.camera_mode)))
+    
+    elseif message_id == hash("register_arena_lock") then
+        -- Store arena lock data for boss fights
+        if not self.arena_locks then self.arena_locks = {} end
+        local props = {}
+        if message and message.properties then
+            for k, v in pairs(message.properties) do
+                props[k] = v
+            end
+        end
+        if message.arena_id ~= nil and props.arena_id == nil then props.arena_id = message.arena_id end
+        if message.boss_id ~= nil and props.boss_id == nil then props.boss_id = message.boss_id end
+        if message.boss_tag ~= nil and props.boss_tag == nil then props.boss_tag = message.boss_tag end
+        if message.boss_preset ~= nil and props.boss_preset == nil then props.boss_preset = message.boss_preset end
+        if message.boss_type ~= nil and props.boss_type == nil then props.boss_type = message.boss_type end
+        if message.encounter_id ~= nil and props.encounter_id == nil then props.encounter_id = message.encounter_id end
+        if message.is_boss_arena ~= nil and props.is_boss_arena == nil then props.is_boss_arena = message.is_boss_arena end
+        if message.charge_edge_padding ~= nil and props.charge_edge_padding == nil then
+            props.charge_edge_padding = tonumber(message.charge_edge_padding) or -1
+        end
+        self.arena_locks[message.id] = {
+            arena_id = message.arena_id,
+            boss_id = props.boss_id,
+            boss_tag = props.boss_tag,
+            boss_preset = props.boss_preset or props.boss_type,
+            boss_type = props.boss_preset or props.boss_type,
+            position = message.position,
+            width = message.width,
+            height = message.height,
+            room_id = message.room_id,
+            lock_on_enter = message.lock_on_enter,
+            charge_edge_padding = tonumber(message.charge_edge_padding),
+            properties = props,
+            locked = false
+        }
+        main_log(string.format("[MAIN] Registered arena lock '%s'", tostring(message.arena_id)))
+
+    elseif message_id == hash("lock_arena") then
+        local arena_id = message and message.arena_id
+        local boss_id = message and message.boss_id
+        local resolved_boss_id = nil
+
+        if self.arena_locks then
+            for _, lock in pairs(self.arena_locks) do
+                local lock_matches = false
+                if arena_id and lock.arena_id == arena_id then
+                    lock_matches = true
+                elseif boss_id and (lock.boss_id == boss_id or lock.boss_tag == boss_id) then
+                    lock_matches = true
+                end
+
+                if lock_matches then
+                    lock.triggered = true
+                    lock.player_inside = true
+                    resolved_boss_id = resolved_boss_id or resolve_boss_spawn_for_arena(self, lock)
+                end
+            end
+        end
+
+        if not resolved_boss_id and boss_id then
+            resolved_boss_id = boss_id
+        end
+
+        trigger_boss_fight(self, resolved_boss_id)
+    
+    elseif message_id == hash("register_map_marker") then
+        TriggerServices.minimap_marker.on_message(self, message_id, message, sender)
+    
+    elseif message_id == hash("register_dialogue_trigger") then
+        -- Store dialogue trigger data
+        local zone = register_trigger_zone(
+            self,
+            "dialogue_triggers",
+            "dialogue_trigger",
+            TriggerPayloads.dialogue(message)
+        )
+        main_log(string.format("[MAIN] Registered dialogue trigger '%s'", tostring(zone.dialogue_id)))
+        trigger_log(string.format(
+            "[TRIGGER] register kind=dialogue_trigger id=%s trigger_id=%s room=%s pos=(%.1f,%.1f) size=(%s,%s) dialogue_id=%s npc_id=%s auto_play=%s trigger_once=%s consume_on_fire=%s delay=%s requires_flag=%s skip_if_flag=%s",
+            tostring(zone.id), tostring(zone.trigger_id), tostring(zone.room_id),
+            (zone.position and zone.position.x) or -1, (zone.position and zone.position.y) or -1,
+            tostring(zone.width), tostring(zone.height),
+            tostring(zone.dialogue_id), tostring(zone.npc_id),
+            tostring(zone.auto_play), tostring(zone.trigger_once),
+            tostring(zone.consume_on_fire), tostring(zone.delay), tostring(zone.requires_flag), tostring(zone.skip_if_flag)))
+
+    elseif message_id == hash("unregister_dialogue_trigger") then
+        if self.dialogue_triggers and message and message.id then
+            self.dialogue_triggers[message.id] = nil
+            main_log(string.format("[MAIN] Unregistered dialogue trigger '%s'", tostring(message.id)))
+        end
+
+    elseif message_id == hash("request_zone_interact") then
+        self.zone_interact_request_pos = message and message.position or nil
+    
+    elseif message_id == hash("register_secret") then
+        -- Store secret data for tracking (when factory fails)
+        if not self.secrets then self.secrets = {} end
+        self.secrets[message.id] = {
+            secret_type = message.secret_type,
+            position = message.position,
+            room_id = message.room_id,
+            properties = message.properties,
+            revealed = false
+        }
+        -- Notify minimap of secret location (hidden until revealed)
+        pcall(msg.post, "main:/minimap_gui#minimap", hash("register_secret"), message)
+        main_log(string.format("[MAIN] Registered secret '%s' (type: %s)", tostring(message.id), tostring(message.secret_type)))
+    
+    elseif message_id == hash("trigger_boss_fight") then
+        TriggerServices.boss_arena.on_message(self, message_id, message, sender)
+    end
+end
+
+function final(self)
+    main_log("[MAIN] Cleaning up main game script...")
+
+    -- Autosave on exit to preserve player progress including screenshot markers
+    local ok_save, save_result = pcall(function()
+        if Checkpoint and Checkpoint.save then
+            return Checkpoint.save({ reason = "game_exit" })
+        end
+        return false
+    end)
+    if ok_save and save_result then
+        main_log("[MAIN] Autosaved on exit")
+    else
+        main_log("[MAIN] Autosave on exit failed or skipped")
+    end
+
+    -- Clean up updated minimap files
+    main_log('[MAIN] Cleaning up updated minimap resources...')
+
+    -- Release updated resources
+    local release_ok = safe_resource_release(UPDATED_ATLAS_PATH)
+    main_log('[MAIN] Updated atlas release: ' .. tostring(release_ok))
+
+    local img_release_ok = safe_resource_release(UPDATED_IMAGE_PATH)
+    main_log('[MAIN] Updated image release: ' .. tostring(img_release_ok))
+
+    -- Keep updated_map.* on disk as the editor's live-refresh staging copy.
+    -- layout_map.* remains the canonical startup artifact.
+    main_log('[MAIN] Updated minimap staging files preserved on disk')
+
+    GameManager.final()
+end

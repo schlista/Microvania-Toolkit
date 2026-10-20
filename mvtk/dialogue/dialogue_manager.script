@@ -1,0 +1,200 @@
+-- mvtk/dialogue/dialogue_manager.script
+-- Coordinates dialogue sequences. Receives `start_dialogue` requests from
+-- gameplay code and posts `open_dialogue` to the dialogue GUI. The GUI replies
+-- with `dialogue_closed` when the player dismisses the box; we then start the
+-- next queued entry.
+--
+-- Hardening (Phase 3 step 17):
+--   * Sequences are validated at registration time via DialogueRegistry; the
+--     manager additionally rejects sequences that fail a basic shape check
+--     before posting them, so a malformed config cannot wedge the GUI.
+--   * Retrigger cooldown: the same dialogue_id will not re-enqueue within
+--     RETRIGGER_COOLDOWN_S of its previous trigger.
+--   * Watchdog: if `dialogue_closed` is not received within WATCHDOG_S of
+--     opening a sequence, we force-close so the dialogue queue cannot get
+--     stuck if the GUI script crashes or a script is hot-reloaded mid-line.
+--   * Leaving the room closes the open dialogue and drops queued ones: a
+--     conversation belongs to the room its NPC or trigger is in.
+
+local _ok_debug, Debug = pcall(require, "developer.config.debug_config")
+if not _ok_debug or type(Debug) ~= "table" then
+    Debug = { global = {}, gameplay = {} }
+end
+
+local function log(...)
+    if (Debug.global and Debug.global.enable)
+        or (Debug.gameplay and Debug.gameplay.npcs)
+        or (Debug.gameplay and Debug.gameplay.interaction) then
+        print("[DIALOGUE_MANAGER]", ...)
+    end
+end
+
+local C = require "mvtk.core.constants"
+local GUI_URL = C.url("DIALOGUE_GUI")
+local _ok_registry, DialogueRegistry = pcall(require, "mvtk.dialogue.dialogue_registry")
+if not _ok_registry then DialogueRegistry = nil end
+
+-- Tunables (kept local; not exposed via config until a creator asks for it).
+local WATCHDOG_S = 10.0          -- max time to wait for dialogue_closed
+local RETRIGGER_COOLDOWN_S = 0.5 -- min time between same dialogue_id triggers
+
+local MSG_ROOM_EXIT = hash("mvtk_dialogue_room_exit")
+
+local queue = {}
+local active = false
+local active_started_at = 0
+local active_dialogue_id = nil
+local active_npc_id = nil
+-- Room-exit callbacks run in the room manager's context; they message this
+-- script instead of touching its state. Registered once per Lua state.
+local self_url = nil
+local room_exit_registered = false
+local now_s = 0
+-- dialogue_id -> last-triggered timestamp (script-local seconds)
+local last_trigger_at = {}
+
+local function end_npc_dialogue(npc_id)
+    if not npc_id then return end
+    local ok, Npcs = pcall(require, "mvtk.npcs.npc_manager")
+    if ok and Npcs and Npcs.end_dialogue then
+        pcall(Npcs.end_dialogue, npc_id)
+    end
+end
+
+-- Lightweight runtime sequence shape check. The registry already validates
+-- at registration time, but a stripped distribution may bypass that path.
+local function sequence_is_valid(sequence)
+    if type(sequence) ~= "table" or #sequence == 0 then return false end
+    for _, line in ipairs(sequence) do
+        if type(line) ~= "table" then return false end
+        if line.text == nil and line.choices == nil then return false end
+    end
+    return true
+end
+
+local function dialogue_is_valid(dialogue_id)
+    if not DialogueRegistry or not DialogueRegistry.get then return true end
+    local sequence = DialogueRegistry.get(dialogue_id)
+    return sequence_is_valid(sequence)
+end
+
+local function start_next()
+    if active then
+        log("start_next: already active, skipping")
+        return
+    end
+    local next_entry = table.remove(queue, 1)
+    if not next_entry then
+        log("start_next: queue empty")
+        return
+    end
+
+    if not dialogue_is_valid(next_entry.dialogue_id) then
+        log(string.format("start_next: rejecting malformed sequence '%s'",
+            tostring(next_entry.dialogue_id)))
+        end_npc_dialogue(next_entry.npc_id)
+        -- Try the next queued entry instead of stalling.
+        return start_next()
+    end
+
+    active = true
+    active_started_at = now_s
+    active_dialogue_id = next_entry.dialogue_id
+    active_npc_id = next_entry.npc_id
+    log(string.format("start_next: posting open_dialogue id='%s' to GUI_URL='%s'",
+        tostring(next_entry.dialogue_id), tostring(GUI_URL)))
+    local ok, err = pcall(msg.post, GUI_URL, hash("open_dialogue"), {
+        id = next_entry.dialogue_id,
+        npc_id = next_entry.npc_id,
+        npc_name = next_entry.npc_name,
+    })
+    log(string.format("start_next: post result ok=%s err=%s", tostring(ok), tostring(err)))
+end
+
+local function enqueue(dialogue_id, npc_id, npc_name)
+    if not dialogue_id then return end
+
+    -- Retrigger cooldown: drop a duplicate that arrives within the window.
+    local last = last_trigger_at[dialogue_id]
+    if last and (now_s - last) < RETRIGGER_COOLDOWN_S then
+        log(string.format("enqueue: cooldown drop dialogue_id='%s'", tostring(dialogue_id)))
+        return
+    end
+    last_trigger_at[dialogue_id] = now_s
+
+    queue[#queue + 1] = {
+        dialogue_id = dialogue_id,
+        npc_id = npc_id,
+        npc_name = npc_name,
+    }
+    start_next()
+end
+
+local function force_close(reason)
+    log(string.format("force_close: reason=%s active_id='%s'",
+        tostring(reason), tostring(active_dialogue_id)))
+    active = false
+    active_dialogue_id = nil
+    active_npc_id = nil
+    -- Best-effort GUI close so it does not stay open after a watchdog trip.
+    pcall(msg.post, GUI_URL, hash("close_dialogue"), {})
+    start_next()
+end
+
+function init(self)
+    queue = {}
+    active = false
+    active_dialogue_id = nil
+    active_started_at = 0
+    now_s = 0
+    last_trigger_at = {}
+    active_npc_id = nil
+    self_url = msg.url()
+    if not room_exit_registered then
+        local ok, Rooms = pcall(require, "mvtk.map.streaming.room_manager")
+        if ok and type(Rooms) == "table" and Rooms.register_event then
+            room_exit_registered = true
+            Rooms.register_event("on_room_exit", function()
+                if self_url then pcall(msg.post, self_url, MSG_ROOM_EXIT) end
+            end)
+        end
+    end
+    log("Ready")
+end
+
+function update(self, dt)
+    now_s = now_s + (tonumber(dt) or 0)
+    if active and (now_s - active_started_at) >= WATCHDOG_S then
+        force_close("watchdog")
+    end
+end
+
+function on_message(self, message_id, message, sender)
+    if message_id == hash("start_dialogue") then
+        log(string.format("received start_dialogue: dialogue_id='%s' npc_id='%s' active=%s queue_len=%d",
+            tostring(message and message.dialogue_id), tostring(message and message.npc_id),
+            tostring(active), #queue))
+        enqueue(message and message.dialogue_id, message and message.npc_id, message and message.npc_name)
+        log(string.format("after enqueue: queue_len=%d active=%s", #queue, tostring(active)))
+    elseif message_id == hash("dialogue_closed") then
+        log(string.format("received dialogue_closed: npc_id='%s'", tostring(message and message.npc_id)))
+        active = false
+        active_dialogue_id = nil
+        active_npc_id = nil
+        end_npc_dialogue(message and message.npc_id)
+        start_next()
+    elseif message_id == MSG_ROOM_EXIT then
+        if active then
+            local npc_id = active_npc_id
+            queue = {}
+            force_close("room_exit")
+            end_npc_dialogue(npc_id)
+        end
+    else
+        log(string.format("unhandled message: %s", tostring(message_id)))
+    end
+end
+
+return {
+    enqueue = enqueue,
+}

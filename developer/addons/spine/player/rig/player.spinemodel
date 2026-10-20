@@ -1,0 +1,5 @@
+spine_scene: "/developer/addons/spine/player/rig/player.spinescene"
+default_animation: "Idle"
+skin: "BeardyBuck"
+material: "/developer/addons/spine/materials/spine.material"
+create_go_bones: true

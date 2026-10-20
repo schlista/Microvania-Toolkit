@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<template>
+ <object name="Lever" type="lever" width="32" height="32">
+  <properties>
+   <property name="target_ref" type="object" value="0"/>
+   <property name="lever_id" type="string" value=""/>
+   <property name="target_id" type="string" value=""/>
+   <property name="starts_on" type="bool" value="false"/>
+   <property name="switching" type="class" propertytype="lever_switching">
+    <properties>
+     <property name="toggle" type="bool" value="true"/>
+     <property name="cooldown" type="float" value="0.2"/>
+     <property name="reset_delay" type="float" value="0.0"/>
+    </properties>
+   </property>
+   <property name="messages" type="class" propertytype="lever_messages">
+    <properties>
+     <property name="message_on" type="string" value="activate"/>
+     <property name="message_off" type="string" value="deactivate"/>
+    </properties>
+   </property>
+   <property name="interaction" type="class" propertytype="lever_interaction">
+    <properties>
+     <property name="label_on" type="string" value="Switch On"/>
+     <property name="label_off" type="string" value="Switch Off"/>
+     <property name="range" type="int" value="96"/>
+    </properties>
+   </property>
+   <property name="conditions_and_flags" type="class" propertytype="lever_conditions_and_flags">
+    <properties>
+     <property name="set_flag_on" type="string" value=""/>
+     <property name="set_flag_off" type="string" value=""/>
+     <property name="requires_flag" type="string" value=""/>
+    </properties>
+   </property>
+   <property name="feedback" type="class" propertytype="lever_feedback">
+    <properties>
+     <property name="sound_on" propertytype="sound_effects" value="lever_on"/>
+     <property name="sound_off" propertytype="sound_effects" value="lever_off"/>
+     <property name="on_animation" type="string" value=""/>
+     <property name="off_animation" type="string" value=""/>
+    </properties>
+   </property>
+   <property name="art_item" type="string" value=""/>
+   <property name="art_feedback" type="class" propertytype="lever_art_feedback">
+    <properties>
+     <property name="consume_effect" type="string" propertytype="particle_effects" value="none"/>
+     <property name="interact_effect" type="string" propertytype="particle_effects" value="none"/>
+     <property name="effect_offset_x" type="float" value="0"/>
+     <property name="effect_offset_y" type="float" value="0"/>
+     <property name="effect_scale" type="float" value="1"/>
+     <property name="effect_cooldown" type="float" value="0"/>
+    </properties>
+   </property>
+   <property name="mvtk_template_version" type="string" value="2.7.0"/>
+  </properties>
+ </object>
+</template>

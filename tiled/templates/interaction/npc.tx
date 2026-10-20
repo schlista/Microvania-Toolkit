@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<template>
+ <object name="NPC" type="npc" width="32" height="32">
+  <properties>
+   <property name="npc_type" propertytype="npcs" value="villager_male"/>
+   <property name="npc_id" type="string" value=""/>
+   <property name="npc_name" type="string" value=""/>
+   <property name="appearance" type="class" propertytype="npc_appearance">
+    <properties>
+     <property name="facing" type="int" value="1"/>
+    </properties>
+   </property>
+   <property name="dialogue" type="class" propertytype="npc_dialogue">
+    <properties>
+     <property name="dialogue_id" type="string" value=""/>
+     <property name="dialogue_text" type="string" value=""/>
+     <property name="interaction_range" type="float" value="48"/>
+    </properties>
+   </property>
+   <property name="lifecycle" type="class" propertytype="npc_lifecycle">
+    <properties>
+     <property name="despawn_flag" type="string" value=""/>
+    </properties>
+   </property>
+   <property name="art_item" type="string" value=""/>
+   <property name="art_feedback" type="class" propertytype="npc_art_feedback">
+    <properties>
+     <property name="consume_effect" type="string" propertytype="particle_effects" value="none"/>
+     <property name="interact_effect" type="string" propertytype="particle_effects" value="none"/>
+     <property name="effect_offset_x" type="float" value="0"/>
+     <property name="effect_offset_y" type="float" value="0"/>
+     <property name="effect_scale" type="float" value="1"/>
+     <property name="effect_cooldown" type="float" value="0"/>
+    </properties>
+   </property>
+   <property name="mvtk_template_version" type="string" value="2.7.0"/>
+  </properties>
+ </object>
+</template>

@@ -1,0 +1,388 @@
+script: "/developer/ui/menus/pause_menu.gui_script"
+fonts {
+  name: "main"
+  font: "/builtins/fonts/default.font"
+}
+textures {
+  name: "input_icons"
+  texture: "/developer/assets/atlas/input_icons.atlas"
+}
+nodes {
+  position {
+    x: 960.0
+    y: 540.0
+  }
+  size {
+    x: 1920.0
+    y: 1080.0
+  }
+  color {
+    x: 0.0
+    y: 0.0
+    z: 0.0
+  }
+  type: TYPE_BOX
+  id: "overlay"
+  adjust_mode: ADJUST_MODE_FIT
+  inherit_alpha: true
+  alpha: 0.85
+  enabled: false
+}
+nodes {
+  position {
+    x: 960.0
+    y: 540.0
+  }
+  size {
+    x: 1.0
+    y: 1.0
+  }
+  type: TYPE_BOX
+  id: "menu_root"
+  alpha: 1.0
+}
+nodes {
+  position {
+    y: 260.0
+  }
+  scale {
+    x: 1.5
+    y: 1.5
+  }
+  color {
+    x: 0.95
+    y: 0.85
+    z: 0.30
+  }
+  type: TYPE_TEXT
+  text: "PAUSED"
+  font: "main"
+  id: "title"
+  outline {
+    x: 0.0
+    y: 0.0
+    z: 0.0
+  }
+  shadow {
+    x: 0.02
+    y: 0.02
+    z: 0.04
+  }
+  parent: "menu_root"
+  inherit_alpha: true
+  outline_alpha: 0.5
+  shadow_alpha: 0.3
+  enabled: false
+}
+nodes {
+  position {
+    y: 120.0
+  }
+  size {
+    x: 300.0
+    y: 40.0
+  }
+  color {
+    x: 0.14
+    y: 0.14
+    z: 0.18
+  }
+  type: TYPE_BOX
+  id: "btn_resume_bg"
+  parent: "menu_root"
+  inherit_alpha: true
+  enabled: false
+}
+nodes {
+  position {
+    y: 120.0
+  }
+  color {
+    x: 0.88
+    y: 0.88
+    z: 0.90
+  }
+  type: TYPE_TEXT
+  text: "Resume Game"
+  font: "main"
+  id: "btn_resume_text"
+  parent: "menu_root"
+  inherit_alpha: true
+  enabled: false
+}
+nodes {
+  position {
+    y: 70.0
+  }
+  size {
+    x: 300.0
+    y: 40.0
+  }
+  color {
+    x: 0.14
+    y: 0.14
+    z: 0.18
+  }
+  type: TYPE_BOX
+  id: "btn_inventory_bg"
+  parent: "menu_root"
+  inherit_alpha: true
+  enabled: false
+}
+nodes {
+  position {
+    y: 70.0
+  }
+  color {
+    x: 0.88
+    y: 0.88
+    z: 0.90
+  }
+  type: TYPE_TEXT
+  text: "Inventory"
+  font: "main"
+  id: "btn_inventory_text"
+  parent: "menu_root"
+  inherit_alpha: true
+  enabled: false
+}
+nodes {
+  position {
+    y: 20.0
+  }
+  size {
+    x: 300.0
+    y: 40.0
+  }
+  color {
+    x: 0.14
+    y: 0.14
+    z: 0.18
+  }
+  type: TYPE_BOX
+  id: "btn_map_bg"
+  parent: "menu_root"
+  inherit_alpha: true
+  enabled: false
+}
+nodes {
+  position {
+    y: 20.0
+  }
+  color {
+    x: 0.88
+    y: 0.88
+    z: 0.90
+  }
+  type: TYPE_TEXT
+  text: "World Map"
+  font: "main"
+  id: "btn_map_text"
+  parent: "menu_root"
+  inherit_alpha: true
+  enabled: false
+}
+nodes {
+  position {
+    y: -30.0
+  }
+  size {
+    x: 300.0
+    y: 40.0
+  }
+  color {
+    x: 0.14
+    y: 0.14
+    z: 0.18
+  }
+  type: TYPE_BOX
+  id: "btn_fast_travel_bg"
+  parent: "menu_root"
+  inherit_alpha: true
+  enabled: false
+}
+nodes {
+  position {
+    y: -30.0
+  }
+  color {
+    x: 0.88
+    y: 0.88
+    z: 0.90
+  }
+  type: TYPE_TEXT
+  text: "Fast Travel"
+  font: "main"
+  id: "btn_fast_travel_text"
+  parent: "menu_root"
+  inherit_alpha: true
+  enabled: false
+}
+nodes {
+  position {
+    y: -80.0
+  }
+  size {
+    x: 300.0
+    y: 40.0
+  }
+  color {
+    x: 0.14
+    y: 0.14
+    z: 0.18
+  }
+  type: TYPE_BOX
+  id: "btn_settings_bg"
+  parent: "menu_root"
+  inherit_alpha: true
+  enabled: false
+}
+nodes {
+  position {
+    y: -80.0
+  }
+  color {
+    x: 0.88
+    y: 0.88
+    z: 0.90
+  }
+  type: TYPE_TEXT
+  text: "Settings"
+  font: "main"
+  id: "btn_settings_text"
+  parent: "menu_root"
+  inherit_alpha: true
+  enabled: false
+}
+nodes {
+  position {
+    y: -130.0
+  }
+  size {
+    x: 300.0
+    y: 40.0
+  }
+  color {
+    x: 0.14
+    y: 0.14
+    z: 0.18
+  }
+  type: TYPE_BOX
+  id: "btn_quit_bg"
+  parent: "menu_root"
+  inherit_alpha: true
+  enabled: false
+}
+nodes {
+  position {
+    y: -130.0
+  }
+  color {
+    x: 0.88
+    y: 0.88
+    z: 0.90
+  }
+  type: TYPE_TEXT
+  text: "Quit to Menu"
+  font: "main"
+  id: "btn_quit_text"
+  parent: "menu_root"
+  inherit_alpha: true
+  enabled: false
+}
+nodes {
+  position {
+    y: -280.0
+  }
+  color {
+    x: 0.55
+    y: 0.55
+    z: 0.62
+  }
+  type: TYPE_TEXT
+  text: "Up/Down: Navigate  |  A: Select  |  B/Start: Resume"
+  font: "main"
+  id: "hint"
+  parent: "menu_root"
+  inherit_alpha: true
+  alpha: 0.85
+  enabled: false
+}
+nodes {
+  position {
+    x: -80.0
+    y: -320.0
+  }
+  size {
+    x: 48.0
+    y: 48.0
+  }
+  type: TYPE_BOX
+  texture: "input_icons/xbox_a"
+  id: "icon_confirm"
+  parent: "menu_root"
+  inherit_alpha: true
+  enabled: false
+}
+nodes {
+  position {
+    y: -320.0
+  }
+  size {
+    x: 48.0
+    y: 48.0
+  }
+  type: TYPE_BOX
+  texture: "input_icons/xbox_b"
+  id: "icon_back"
+  parent: "menu_root"
+  inherit_alpha: true
+  enabled: false
+}
+nodes {
+  position {
+    x: 80.0
+    y: -320.0
+  }
+  size {
+    x: 48.0
+    y: 48.0
+  }
+  type: TYPE_BOX
+  texture: "input_icons/xbox_menu"
+  id: "icon_start"
+  parent: "menu_root"
+  inherit_alpha: true
+  enabled: false
+}
+nodes {
+  size {
+    x: 10.0
+    y: 10.0
+  }
+  color {
+    z: 0.0
+  }
+  type: TYPE_BOX
+  id: "highlight_bg"
+  pivot: PIVOT_SW
+  inherit_alpha: true
+  alpha: 0.9
+  enabled: false
+}
+nodes {
+  color {
+    x: 0.0
+    y: 0.0
+    z: 0.0
+  }
+  type: TYPE_TEXT
+  text: "H"
+  font: "main"
+  id: "highlight_text"
+  pivot: PIVOT_SW
+  inherit_alpha: true
+  enabled: false
+}
+material: "/builtins/materials/gui.material"
+adjust_reference: ADJUST_REFERENCE_PARENT

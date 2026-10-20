@@ -1,0 +1,1058 @@
+--- Tiled Room Loader Script
+-- Drop this on a game object in your room collection to automatically:
+-- - Load Tiled map data
+-- - Setup parallax layers
+-- - Spawn objects from object layers
+-- - Integrate with camera system
+--
+-- Required properties:
+--   tiled_map_path: Path to exported Tiled .lua file
+--   room_id: Unique identifier for this room
+--
+-- @script tiled_room_loader
+
+local TiledParser = require "mvtk.tiled.tiled_parser"
+local ParallaxManager = require "mvtk.tiled.parallax_layer_manager"
+local ObjectSpawner = require "mvtk.tiled.object_spawner"
+local TilemapAnimator = require "mvtk.tiled.tilemap_animator"
+local DialogueRegistry = require "mvtk.dialogue.dialogue_registry"
+local C = require "mvtk.core.constants"
+local TiledRoomRegistry = require "mvtk.tiled.tiled_room_registry"
+local Util = require "mvtk.core.util"
+local StreamPaths = require "mvtk.rooms.stream_paths"
+local Debug = require "developer.config.debug_config"
+
+-- DEPRECATED: Room paths are now auto-discovered via TiledRoomRegistry
+-- The registry scans the configured tiled_maps_dir for exported .lua files
+-- No manual registration needed - just export from Tiled and it will be found
+local ROOM_MAP_PATHS = nil  -- Will be populated by get_room_map_paths()
+local STATIC_DIALOGUES = nil
+
+-- Script properties
+go.property("room_id", "")  -- Room identifier (text)
+go.property("auto_spawn_objects", true)  -- Automatically spawn objects on init
+go.property("auto_setup_parallax", true)  -- Automatically setup parallax layers
+go.property("parallax_enabled", true)  -- Enable/disable parallax system
+go.property("auto_tile_animations", true)  -- Animate painted tile cells using tilemap_animator
+go.property("enable_parallax_clipping", true)  -- Apply parallax_clip material to constrain backgrounds to room bounds
+-- Comma-separated Tiled object types to skip when those objects are already baked into the room collection.
+-- Format: "enemy,gate,checkpoint". Common types: spawn_point, boss, collectible, ability, enemy, gate,
+-- hazard, checkpoint, fast_travel, breakable_wall. See mvtk/tiled/tiled_properties_reference.lua for the full object type reference.
+go.property("skip_spawn_types", "")
+go.property("skip_spawn_spawn_point", false)
+go.property("skip_spawn_boss", false)
+go.property("skip_spawn_boss_phase", false)
+go.property("skip_spawn_boss_arena", false)
+go.property("skip_spawn_arena_lock", false)
+go.property("skip_spawn_arena_boundary", false)
+go.property("skip_spawn_boss_phase_trigger", false)
+go.property("skip_spawn_boss_weak_point", false)
+go.property("skip_spawn_enemy", false)
+go.property("skip_spawn_collectible", false)
+go.property("skip_spawn_chest", false)
+go.property("skip_spawn_ability", false)
+go.property("skip_spawn_lore_item", false)
+go.property("skip_spawn_npc", false)
+go.property("skip_spawn_dialogue_trigger", false)
+go.property("skip_spawn_save_point", false)
+go.property("skip_spawn_gate", false)
+go.property("skip_spawn_health_station", false)
+go.property("skip_spawn_energy_station", false)
+go.property("skip_spawn_map_station", false)
+go.property("skip_spawn_breakable_wall", false)
+go.property("skip_spawn_light_source", false)
+go.property("skip_spawn_torch_holder", false)
+go.property("skip_spawn_pushable_block", false)
+go.property("skip_spawn_pressure_plate", false)
+go.property("skip_spawn_sign", false)
+go.property("skip_spawn_lever", false)
+go.property("skip_spawn_hint_stone", false)
+go.property("skip_spawn_one_way_platform", false)
+go.property("skip_spawn_platform", false)
+go.property("skip_spawn_moving_platform", false)
+go.property("skip_spawn_elevator", false)
+go.property("skip_spawn_elevator_node", false)
+go.property("skip_spawn_crumble_platform", false)
+go.property("skip_spawn_bounce_pad", false)
+go.property("skip_spawn_conveyor", false)
+go.property("skip_spawn_ladder", false)
+go.property("skip_spawn_teleporter", false)
+go.property("skip_spawn_timed_door", false)
+go.property("skip_spawn_wall_jump_surface", false)
+go.property("skip_spawn_grapple_point", false)
+go.property("skip_spawn_grapple_surface", false)
+go.property("skip_spawn_grapple_box", false)
+go.property("skip_spawn_grapple_slope", false)
+go.property("skip_spawn_ambience_zone", false)
+go.property("skip_spawn_music_trigger", false)
+go.property("skip_spawn_particle_emitter", false)
+go.property("skip_spawn_screen_effect_zone", false)
+go.property("skip_spawn_hazard", false)
+go.property("skip_spawn_water_volume", false)
+go.property("skip_spawn_secret", false)
+go.property("skip_spawn_map_marker", false)
+go.property("skip_spawn_checkpoint", false)
+go.property("skip_spawn_fast_travel", false)
+go.property("skip_spawn_joint_platform", false)
+go.property("skip_spawn_rail_elevator", false)
+go.property("skip_spawn_collision_box", false)
+go.property("skip_spawn_locked_door", false)
+go.property("skip_spawn_end_game", false)
+go.property("skip_spawn_collision_slope", false)
+
+-- Retired object types: kept only so collections baked before v1 still build. Remove
+-- after every room is rebaked.
+go.property("skip_spawn_bank", false)
+go.property("skip_spawn_offering_altar", false)
+go.property("skip_spawn_shop", false)
+go.property("skip_spawn_shop_npc", false)
+go.property("skip_spawn_quest_trigger", false)
+go.property("skip_spawn_skill_trainer", false)
+go.property("skip_spawn_upgrade_station", false)
+go.property("skip_spawn_zip_line", false)
+go.property("skip_spawn_wind_current", false)
+go.property("skip_spawn_ice_floor", false)
+go.property("skip_spawn_pendulum_hazard", false)
+go.property("skip_spawn_warp_statue", false)
+go.property("skip_spawn_enemy_nest", false)
+go.property("skip_spawn_spawn_wave", false)
+go.property("skip_spawn_enemy_spawner", false)
+go.property("skip_spawn_turret_rotating", false)
+go.property("skip_spawn_arena_hazard_spawner", false)
+go.property("skip_spawn_background_interactable", false)
+go.property("skip_spawn_ambient_sound", false)
+go.property("skip_spawn_death_drop", false)
+go.property("skip_spawn_bloodstain", false)
+
+-- Per-room state (map data, room name, tile animator, parallax flag) lives on
+-- `self`. File-scope locals in a .script are shared by EVERY instance, and with
+-- room streaming two or three loaders are alive at once: a shared room_name made
+-- one room's final() clear another room's darkness and spawned objects.
+
+-- ParallaxManager is a single-room singleton, so exactly one loader owns it.
+-- Intentionally module-wide; only the owner may clear it in final().
+local parallax_owner = nil
+
+-- Streaming can create a room's next instance before the previous one's
+-- final() runs. Each init takes a new generation; only the latest generation
+-- may clear that room's shared registries (objects, dialogue). Intentionally
+-- module-wide, keyed by room id.
+local room_generation = {}
+local LIGHT_MANAGER_URL = msg.url("main:/light_manager#script")
+local DEFAULT_MAP_DARKNESS = tonumber((require("developer.config.resolved_config").visual or {}).default_room_darkness) or 0.0
+local MSG_CLEAR_COLOR = hash("clear_color")
+
+local background_layers_cache = {}
+
+local function make_color4(x, y, z, w)
+    if vmath and vmath.vector4 then
+        return vmath.vector4(x, y, z, w)
+    end
+    return {
+        x = x or 0,
+        y = y or 0,
+        z = z or 0,
+        w = w or 0,
+    }
+end
+
+local function copy_color4(color)
+    if color == nil then
+        return nil
+    end
+
+    local x = tonumber(color.x)
+    local y = tonumber(color.y)
+    local z = tonumber(color.z)
+    local w = tonumber(color.w)
+    if x == nil or y == nil or z == nil then
+        return nil
+    end
+
+    return make_color4(x, y, z, w or 1.0)
+end
+
+local function apply_map_background_color(room_id, map)
+    local custom = TiledParser.get_background_color(map)
+    local color = copy_color4(custom) or TiledParser.get_default_clear_color()
+    local ok, err = pcall(msg.post, "@render:", MSG_CLEAR_COLOR, { color = color })
+    if ok then
+        print(string.format("[TILED_ROOM] Applied background clear color for room '%s' (custom=%s)",
+            tostring(room_id), tostring(custom ~= nil)))
+    else
+        print(string.format("[TILED_ROOM] Failed to apply background clear color for room '%s': %s",
+            tostring(room_id), tostring(err)))
+    end
+end
+
+local function size_diag_enabled()
+    return (Debug.global and Debug.global.enable)
+        or (Debug.tiled and Debug.tiled.spawner)
+end
+
+local SKIP_SPAWN_ALIASES = {
+    spawn_point = { "player_spawn", "player_start", "respawn_point" },
+    collision_box = { "solid_box", "solid", "ground", "collision" },
+    collision_slope = { "solid_slope", "slope" },
+    lore_item = { "journal_entry", "note" },
+    health_station = { "healing_fountain" },
+    energy_station = { "mana_fountain" },
+    map_station = { "cartographer" },
+}
+
+local BOOLEAN_SKIP_SPAWN_TYPES = {
+    "spawn_point",
+    "boss",
+    "boss_phase",
+    "boss_arena",
+    "arena_lock",
+    "arena_boundary",
+    "boss_phase_trigger",
+    "boss_weak_point",
+    "enemy",
+    "collectible",
+    "chest",
+    "ability",
+    "lore_item",
+    "npc",
+    "dialogue_trigger",
+    "save_point",
+    "gate",
+    "health_station",
+    "energy_station",
+    "map_station",
+    "breakable_wall",
+    "light_source",
+    "torch_holder",
+    "pushable_block",
+    "pressure_plate",
+    "sign",
+    "lever",
+    "hint_stone",
+    "one_way_platform",
+    "platform",
+    "moving_platform",
+    "elevator",
+    "elevator_node",
+    "crumble_platform",
+    "bounce_pad",
+    "conveyor",
+    "ladder",
+    "teleporter",
+    "timed_door",
+    "wall_jump_surface",
+    "grapple_point",
+    "grapple_surface",
+    "grapple_box",
+    "grapple_slope",
+    "ambience_zone",
+    "music_trigger",
+    "particle_emitter",
+    "screen_effect_zone",
+    "hazard",
+    "water_volume",
+    "secret",
+    "map_marker",
+    "checkpoint",
+    "fast_travel",
+    "joint_platform",
+    "rail_elevator",
+    "collision_box",
+    "locked_door",
+    "end_game",
+    "collision_slope",
+}
+
+local function add_skip_type(set, obj_type)
+    if not obj_type or obj_type == "" then
+        return
+    end
+    set[obj_type] = true
+    local aliases = SKIP_SPAWN_ALIASES[obj_type]
+    if aliases then
+        for _, alias in ipairs(aliases) do
+            set[alias] = true
+        end
+    end
+end
+
+local function property_text(value)
+    return Util.hash_text(value, "")
+end
+
+local function parse_csv_to_set(value)
+    local set = {}
+    local text = property_text(value)
+    for token in text:gmatch("[^,]+") do
+        local obj_type = token:gsub("^%s+", ""):gsub("%s+$", "")
+        add_skip_type(set, obj_type)
+    end
+    return next(set) and set or nil
+end
+
+local function add_boolean_skip_flags(self, set)
+    for _, obj_type in ipairs(BOOLEAN_SKIP_SPAWN_TYPES) do
+        if Util.to_bool(self["skip_spawn_" .. obj_type], false) then
+            add_skip_type(set, obj_type)
+        end
+    end
+    return next(set) and set or nil
+end
+
+local function build_ignore_types(self)
+    if self._skip_set == nil then
+        local set = parse_csv_to_set(self.skip_spawn_types) or {}
+        self._skip_set = add_boolean_skip_flags(self, set) or false
+    end
+    return self._skip_set or nil
+end
+
+local function get_tiled_property(properties, key)
+    if type(properties) ~= "table" or key == nil then
+        return nil
+    end
+
+    local direct = properties[key]
+    if direct ~= nil then
+        return direct
+    end
+
+    for _, entry in ipairs(properties) do
+        if type(entry) == "table" and entry.name == key then
+            return entry.value
+        end
+    end
+
+    return nil
+end
+
+local function non_empty_text(value)
+    if value == nil then
+        return nil
+    end
+
+    local s = tostring(value)
+    s = s:gsub("^%s+", ""):gsub("%s+$", "")
+    if s == "" then
+        return nil
+    end
+    return s
+end
+
+local function resolve_tiled_npc_id(room_id, object)
+    local props = object and object.properties
+    local explicit = non_empty_text(get_tiled_property(props, "npc_id"))
+    if explicit then
+        return explicit
+    end
+    return string.format("%s_npc_%d", Util.room_key(room_id), tonumber(object and object.id) or 0)
+end
+
+local function resolve_inline_dialogue_id(room_id, object)
+    local props = object and object.properties
+    local explicit = non_empty_text(get_tiled_property(props, "dialogue_id"))
+    local text = non_empty_text(get_tiled_property(props, "dialogue_text"))
+
+    if STATIC_DIALOGUES == nil then
+        local ok, cfg = pcall(require, "developer.config.narrative.dialogues")
+        STATIC_DIALOGUES = (ok and type(cfg) == "table") and cfg or false
+    end
+
+    if explicit and (not text or (type(STATIC_DIALOGUES) == "table" and STATIC_DIALOGUES[explicit] ~= nil)) then
+        return explicit
+    end
+
+    if not text then
+        return nil
+    end
+
+    if get_tiled_property(props, "npc_id") ~= nil
+        or get_tiled_property(props, "npc_type") ~= nil
+        or get_tiled_property(props, "npc_name") ~= nil
+        or tostring(object and object.name or "") == "NPC" then
+        return resolve_tiled_npc_id(room_id, object) .. "_dialogue"
+    end
+
+    return string.format("%s_obj_%d_dialogue", Util.room_key(room_id), tonumber(object and object.id) or 0)
+end
+
+local function register_inline_dialogues_in_layers(layers, room_id)
+    if type(layers) ~= "table" then
+        return
+    end
+
+    for _, layer in ipairs(layers) do
+        if type(layer) == "table" then
+            if layer.type == "group" and type(layer.layers) == "table" then
+                register_inline_dialogues_in_layers(layer.layers, room_id)
+            elseif layer.type == "objectgroup" and type(layer.objects) == "table" then
+                for _, object in ipairs(layer.objects) do
+                    local props = object and object.properties
+                    local text = non_empty_text(get_tiled_property(props, "dialogue_text"))
+                    if text then
+                        local dialogue_id = resolve_inline_dialogue_id(room_id, object)
+                        local speaker = non_empty_text(get_tiled_property(props, "npc_name"))
+                            or non_empty_text(get_tiled_property(props, "speaker"))
+                            or non_empty_text(object and object.name)
+                            or "NPC"
+                        if dialogue_id then
+                            DialogueRegistry.register_text(dialogue_id, text, speaker, {
+                                room_id = room_id,
+                                source = "tiled",
+                            })
+                        end
+                    end
+                end
+            end
+        end
+    end
+end
+
+local function register_inline_dialogues(room_id, map)
+    if not room_id or room_id == "" then
+        return
+    end
+
+    DialogueRegistry.clear_room(room_id)
+    if map and type(map.layers) == "table" then
+        register_inline_dialogues_in_layers(map.layers, room_id)
+    end
+end
+
+local function resolve_map_darkness(map)
+    if type(map) ~= "table" then
+        return DEFAULT_MAP_DARKNESS
+    end
+    local props = map.properties
+    if type(props) ~= "table" then
+        return DEFAULT_MAP_DARKNESS
+    end
+
+    local keys = { "darkness", "base_darkness", "map_darkness", "ambient_darkness" }
+    for i = 1, #keys do
+        local raw = get_tiled_property(props, keys[i])
+        if raw ~= nil then
+            local level = tonumber(raw)
+            if level ~= nil then
+                return level
+            end
+        end
+    end
+
+    return DEFAULT_MAP_DARKNESS
+end
+
+local function apply_map_darkness(room_id, map)
+    if not room_id or room_id == "" then
+        return
+    end
+
+    local level = resolve_map_darkness(map)
+    pcall(msg.post, LIGHT_MANAGER_URL, hash("set_room_darkness"), {
+        room_id = room_id,
+        level = level,
+        -- The light manager ignores a later clear from any other instance.
+        owner = tostring(msg.url()),
+    })
+
+    print(string.format("[TILED_ROOM] Applied map darkness %.2f for room '%s'", level, tostring(room_id)))
+end
+
+local function resolve_map_room_zone(map)
+    if type(map) ~= "table" then
+        return nil
+    end
+    local props = map.properties
+    if type(props) ~= "table" then
+        return nil
+    end
+
+    local raw = get_tiled_property(props, "room_zone")
+    if raw ~= nil and tostring(raw) ~= "" then
+        return raw
+    end
+    return nil
+end
+
+local function apply_map_camera_zone(room_id, map)
+    if not room_id or room_id == "" then
+        return
+    end
+
+    local zone = resolve_map_room_zone(map)
+    if zone == nil then
+        return
+    end
+
+    pcall(msg.post, "main:/camera#script", hash("register_room_zone"), {
+        room_id = room_id,
+        zone = zone,
+    })
+    print(string.format("[TILED_ROOM] Applied map room_zone '%s' for room '%s'", tostring(zone), tostring(room_id)))
+end
+
+local function resolve_tilemap_url()
+    local go_names = { "level", "/level", "tilemap", "/tilemap" }
+    local comp_names = { "tilemap", "tm", "map" }
+
+    for _, go_name in ipairs(go_names) do
+        local ok_id, go_id = pcall(go.get_id, go_name)
+        if ok_id and go_id then
+            for _, comp_name in ipairs(comp_names) do
+                local tm_url = msg.url(nil, go_id, hash(comp_name))
+                local ok_bounds = pcall(tilemap.get_bounds, tm_url)
+                if ok_bounds then
+                    return tm_url
+                end
+            end
+        end
+    end
+
+    return nil
+end
+
+local function get_background_layers(room)
+    if not room or room == "" then
+        return nil
+    end
+    if background_layers_cache[room] ~= nil then
+        return background_layers_cache[room]
+    end
+
+    local path = StreamPaths.backgrounds_meta(room)
+    local ok, data = pcall(sys.load_resource, path)
+    if not ok or not data then
+        print(string.format("[TILED_ROOM] Background metadata unavailable for '%s': %s", tostring(path), tostring(data)))
+        background_layers_cache[room] = false
+        return nil
+    end
+
+    local loader = loadstring or load
+    if not loader then
+        print(string.format("[TILED_ROOM] Background metadata loader unavailable for '%s'", tostring(path)))
+        background_layers_cache[room] = false
+        return nil
+    end
+
+    local chunk, load_err = loader(data, "@" .. path)
+    if not chunk then
+        print(string.format("[TILED_ROOM] Failed to parse background metadata '%s': %s", tostring(path), tostring(load_err)))
+        background_layers_cache[room] = false
+        return nil
+    end
+
+    local ok_chunk, meta = pcall(chunk)
+    local layers = ok_chunk and type(meta) == "table" and type(meta.layers) == "table" and meta.layers or nil
+    if not layers then
+        print(string.format("[TILED_ROOM] Background metadata invalid for '%s'", tostring(path)))
+        background_layers_cache[room] = false
+        return nil
+    end
+
+    local summary = {}
+    for layer_name, layer_meta in pairs(layers) do
+        local count = type(layer_meta) == "table" and type(layer_meta.component_ids) == "table" and #layer_meta.component_ids or 0
+        summary[#summary + 1] = string.format("%s=%d", tostring(layer_name), count)
+    end
+    table.sort(summary)
+    print(string.format("[TILED_ROOM] Background metadata '%s': %s",
+        tostring(room), (#summary > 0) and table.concat(summary, ", ") or "none"))
+
+    background_layers_cache[room] = layers
+    return layers
+end
+
+--- Get room map paths (lazy load from registry)
+local function get_room_map_paths()
+    if not ROOM_MAP_PATHS then
+        ROOM_MAP_PATHS = TiledRoomRegistry.get_all_rooms()
+        -- Use next() to check if table is empty (# only counts array elements, not string keys)
+        if not ROOM_MAP_PATHS or next(ROOM_MAP_PATHS) == nil then
+            print("[TILED_ROOM] WARNING: Registry returned empty, trying lfs fallback...")
+            ROOM_MAP_PATHS = {}
+            local ok_lfs, lfs = pcall(require, "lfs")
+            if ok_lfs and lfs and lfs.dir then
+                local dir = StreamPaths.tiled_maps_fs_dir()
+                for file in lfs.dir(dir) do
+                    if file and file:match("%.lua$") then
+                        local base = file:gsub("%.lua$", "")
+                        ROOM_MAP_PATHS[base] = StreamPaths.tiled_map_module(base)
+                    end
+                end
+            end
+        else
+            -- Count how many rooms were found
+            local count = 0
+            for _ in pairs(ROOM_MAP_PATHS) do count = count + 1 end
+            print(string.format("[TILED_ROOM] Registry found %d rooms", count))
+        end
+    end
+    return ROOM_MAP_PATHS
+end
+
+--- Initialize parallax layers from Tiled map
+local function setup_parallax(self)
+    if not self.auto_setup_parallax or not self.parallax_enabled then
+        return
+    end
+
+    if not self.map_data then
+        print("[TILED_ROOM] No map data loaded for parallax setup")
+        return
+    end
+
+    -- Get camera URL
+    local camera_url = C.URL.CAMERA
+    if not camera_url or not go.exists(camera_url) then
+        print("[TILED_ROOM] Camera not found, waiting...")
+        -- Will retry when camera is ready
+        return
+    end
+
+    -- Another streamed room already owns the single-room ParallaxManager.
+    local owner_key = tostring(msg.url())
+    if parallax_owner and parallax_owner ~= owner_key then
+        return
+    end
+
+    -- Initialize parallax manager with camera
+    ParallaxManager.init(camera_url)
+
+    -- Map bounds (used for clipping and anchor)
+    local map_info = TiledParser.get_map_info(self.map_data)
+    local map_width, map_height = 0, 0
+    if map_info then
+        map_width = (map_info.width or 0) * (map_info.tilewidth or 0)
+        map_height = (map_info.height or 0) * (map_info.tileheight or 0)
+        -- Clip rect must be in world space since the shader compares
+        -- against world-space fragment positions.
+        local origin = go.get_world_position(".")
+        ParallaxManager.set_clip_rect({
+            min_x = origin.x, min_y = origin.y,
+            max_x = origin.x + map_width, max_y = origin.y + map_height,
+        })
+    end
+
+    -- Extract parallax layers from Tiled map
+    local parallax_layers = TiledParser.get_parallax_layers(self.map_data)
+
+    print(string.format("[TILED_ROOM] Found %d parallax layers", #parallax_layers))
+
+    -- Create each parallax layer
+    for i, layer in ipairs(parallax_layers) do
+        local sprite_url = nil
+
+        -- Only use backgrounds GO (tiled_loader has no parallax sprite components)
+        local bg_layers = get_background_layers(self.room_name)
+        local layer_meta = bg_layers and bg_layers[layer.name] or nil
+        local base_component_id = layer_meta and layer_meta.base_component_id or nil
+        local component_ids = layer_meta and layer_meta.component_ids or nil
+        if base_component_id and base_component_id ~= "" then
+            -- Register the existing sprite(s) with parallax manager
+            ParallaxManager.create_layer(layer, nil)
+            print(string.format("[TILED_ROOM] Layer '%s' repeat=(%s,%s) visual ids: %s | parallax base: %s",
+                tostring(layer.name),
+                tostring(layer.repeatx),
+                tostring(layer.repeaty),
+                (type(component_ids) == "table" and #component_ids > 0) and table.concat(component_ids, ", ") or "none",
+                tostring(base_component_id)))
+
+            -- Register all component sprites (base + repeat copies)
+            if type(component_ids) == "table" and #component_ids > 0 then
+                for _, comp_id in ipairs(component_ids) do
+                    sprite_url = msg.url(nil, self.room_name .. "_backgrounds", comp_id)
+                    ParallaxManager.register_sprite(layer.name, sprite_url)
+                end
+            else
+                sprite_url = msg.url(nil, self.room_name .. "_backgrounds", base_component_id)
+                ParallaxManager.register_sprite(layer.name, sprite_url)
+            end
+
+            print(string.format("[TILED_ROOM] Setup parallax layer '%s' with %d sprite(s) (factor: %.2f, clipping: %s)",
+                layer.name,
+                (type(component_ids) == "table") and #component_ids or 1,
+                layer.parallax_factor, tostring(self.enable_parallax_clipping)))
+        else
+            -- Create layer without sprite (can be added manually later)
+            ParallaxManager.create_layer(layer, nil)
+
+            print(string.format("[TILED_ROOM] Created parallax layer '%s' (no sprite component) (factor: %.2f)",
+                layer.name, layer.parallax_factor))
+        end
+    end
+
+    -- Set anchor from map bounds
+    if map_info then
+        local center = vmath.vector3(map_width / 2, map_height / 2, 0)
+        ParallaxManager.set_anchor(center)
+    end
+
+    self.parallax_initialized = true
+    parallax_owner = owner_key
+end
+
+--- Spawn objects from Tiled object layers
+local function spawn_objects(self)
+    if not self.auto_spawn_objects then
+        return
+    end
+
+    if not self.map_data then
+        print("[TILED_ROOM] No map data loaded for object spawning")
+        return
+    end
+
+    if not self.room_name then
+        print("[TILED_ROOM] No room name resolved")
+        return
+    end
+
+    -- Process all object layers
+    local ignore_types = build_ignore_types(self)
+
+    -- Always-on diagnostic so we can confirm this script is running for this room
+    -- and see which Tiled types are being suppressed at runtime.
+    do
+        local skip_list = {}
+        for k, _ in pairs(ignore_types or {}) do skip_list[#skip_list + 1] = tostring(k) end
+        table.sort(skip_list)
+        print(string.format(
+            "[TILED_ROOM_DIAG] room=%s spawn_objects entered ignore_count=%d ignore_types=[%s]",
+            tostring(self.room_name),
+            #skip_list,
+            table.concat(skip_list, ",")
+        ))
+    end
+
+    -- Diagnostic: when types are skipped at runtime they are expected to be baked into
+    -- the collection by the editor generators. Walk the Tiled map and list objects
+    -- whose type/name maps to a skipped type, so we can cross-check against the
+    -- collection's baked instances. Self-contained name matching - no dependency on
+    -- spawner internals so it will fire even if those modules fail to load.
+    if ignore_types and next(ignore_types) and self.map_data and type(self.map_data.layers) == "table" then
+        local function normalize(s)
+            if s == nil then return "" end
+            s = tostring(s):lower():gsub("%s+", "_"):gsub("[^%w_]", "")
+            return s
+        end
+        local skipped = {}
+        local function walk(layers)
+            for _, layer in ipairs(layers) do
+                if type(layer) == "table" then
+                    if layer.type == "group" and type(layer.layers) == "table" then
+                        walk(layer.layers)
+                    elseif layer.type == "objectgroup" and type(layer.objects) == "table" then
+                        for _, object in ipairs(layer.objects) do
+                            local t = normalize(object.type)
+                            if t == "" then t = normalize(object.name) end
+                            if t ~= "" and ignore_types[t] then
+                                skipped[#skipped + 1] = string.format(
+                                    "%s:id=%s:name=%s",
+                                    t, tostring(object.id), tostring(object.name)
+                                )
+                            end
+                        end
+                    end
+                end
+            end
+        end
+        walk(self.map_data.layers)
+        print(string.format(
+            "[TILED_ROOM_DIAG] room=%s tiled_objects_matching_skipped_types=%d %s",
+            tostring(self.room_name),
+            #skipped,
+            (#skipped > 0) and ("entries=[" .. table.concat(skipped, "; ") .. "]") or ""
+        ))
+    end
+
+    if size_diag_enabled() then
+        local ignore_count = 0
+        for _ in pairs(ignore_types or {}) do
+            ignore_count = ignore_count + 1
+        end
+        print(string.format(
+            "[TILED_ROOM] SIZE_DIAG room=%s auto_spawn_objects=%s skip_spawn_types=%s ignore_count=%d skip_spawn_teleporter=%s",
+            tostring(self.room_name),
+            tostring(self.auto_spawn_objects),
+            tostring(property_text(self.skip_spawn_types)),
+            ignore_count,
+            tostring(self.skip_spawn_teleporter)
+        ))
+    end
+
+    local spawned_count = ObjectSpawner.process_map(self.map_data, self.room_name, nil, {
+        ignore_types = ignore_types,
+    })
+
+    print(string.format("[TILED_ROOM] Spawned %d objects in room '%s'", spawned_count, self.room_name))
+end
+
+local function setup_tile_animations(self)
+    if not self.auto_tile_animations then
+        return
+    end
+    if not self.map_data then
+        return
+    end
+    if not self.room_name or self.room_name == "" then
+        return
+    end
+
+    local tilemap_url = resolve_tilemap_url()
+    if not tilemap_url then
+        print("[TILED_ROOM] WARNING: No tilemap URL found; tile animations disabled")
+        return
+    end
+
+    local layer_urls = {}
+    if not self.auto_setup_parallax then
+        local instances = require("mvtk.tiled.parallax_repeat").tile_instances(self.map_data, self.room_name)
+        for name, instance in pairs(instances) do
+            local id = go.get_id(instance)
+            if go.exists(id) then layer_urls[name] = msg.url(nil, id, "tilemap") end
+        end
+    end
+    self.tile_animator_state = TilemapAnimator.start({
+        room_id = self.room_name,
+        tilemap_url = tilemap_url,
+        layer_urls = layer_urls,
+        tiled_map = self.map_data,
+        use_config = true,
+        use_tiled_properties = true,
+    })
+end
+
+function init(self)
+    -- Validate room_id property
+    if not self.room_id or self.room_id == "" then
+        print("[TILED_ROOM] ERROR: room_id not set!")
+        return
+    end
+
+    do
+        local set = parse_csv_to_set(self.skip_spawn_types) or {}
+        self._skip_set = add_boolean_skip_flags(self, set) or false
+    end
+
+    -- Get auto-discovered room paths
+    local room_paths = get_room_map_paths()
+
+    -- Match the room_id text against discovered room names
+    for name, _ in pairs(room_paths) do
+        if self.room_id == name then
+            self.room_name = name
+            break
+        end
+    end
+
+    if not self.room_name then
+        -- Fallback: Try known room names when registry lookup fails
+        -- This handles cases where registry scanning fails
+        print("[TILED_ROOM] WARNING: Room not found in registry cache, trying direct load...")
+
+        -- Try to find room by directly loading known room names
+        local possible_names = {}
+
+        -- Add rooms from room_paths if any
+        for k in pairs(room_paths) do
+            table.insert(possible_names, k)
+        end
+
+        -- Try each name to find matching room text
+        for _, name in ipairs(possible_names) do
+            if self.room_id == name then
+                self.room_name = name
+                print("[TILED_ROOM] Found room via text match:", name)
+                break
+            end
+        end
+
+        -- Last resort: Try direct path construction for the room_id
+        -- Preserve the known-room fallback when the registry has no path
+        if not self.room_name then
+            -- Match the room_id property against the existing known-room list
+            local test_rooms = {
+                "crumple_spike", "tutorial", "main_hall", "entrance",
+                "boss_room", "secret_room", "checkpoint"
+            }
+            for _, test_name in ipairs(test_rooms) do
+                if self.room_id == test_name then
+                    self.room_name = test_name
+                    -- Use module path format (dots) not file path format (slashes)
+                    room_paths[test_name] = StreamPaths.tiled_map_module(test_name)
+                    print("[TILED_ROOM] Found room via fallback list:", test_name)
+                    break
+                end
+            end
+        end
+
+        if not self.room_name then
+            print("[TILED_ROOM] ERROR: Unknown room_id. Room not found in Tiled exports.")
+            print("[TILED_ROOM] Available rooms:", table.concat((function()
+                local t = {}
+                for k in pairs(room_paths) do t[#t+1] = k end
+                table.sort(t)
+                return t
+            end)(), ", "))
+            print("[TILED_ROOM] Tip: export your Tiled map as .lua to the configured tiled_maps_dir.")
+            return
+        end
+    end
+
+    -- Get map path from auto-discovered mapping
+    local map_path = room_paths[self.room_name]
+    if not map_path then
+        print("[TILED_ROOM] ERROR: No map path found for room:", self.room_name)
+        return
+    end
+
+    print(string.format("[TILED_ROOM] Loading room '%s' from '%s'", self.room_name, map_path))
+    room_generation[self.room_name] = (room_generation[self.room_name] or 0) + 1
+    self.room_generation = room_generation[self.room_name]
+
+    -- Load Tiled map data
+    local map, err = TiledParser.load(map_path)
+    if not map then
+        print("[TILED_ROOM] ERROR loading Tiled map:", err)
+        return
+    end
+
+    self.map_data = map
+
+    -- Debug print map structure
+    TiledParser.debug_print(self.map_data)
+
+    -- Apply map-level darkness custom property (if defined)
+    apply_map_background_color(self.room_name, self.map_data)
+    apply_map_darkness(self.room_name, self.map_data)
+    apply_map_camera_zone(self.room_name, self.map_data)
+    register_inline_dialogues(self.room_name, self.map_data)
+
+    -- Setup parallax layers
+    setup_parallax(self)
+
+    -- Spawn objects
+    spawn_objects(self)
+
+    -- Setup tile animations
+    setup_tile_animations(self)
+
+    print("[TILED_ROOM] Room loaded successfully:", self.room_name)
+end
+
+function update(self, dt)
+    -- Parallax repositions from the camera's CameraState publish hook
+    -- (registered by ParallaxManager.init); nothing per-frame here.
+
+    if self.tile_animator_state and self.tile_animator_state.running then
+        TilemapAnimator.update(self.tile_animator_state, dt)
+    end
+end
+
+function on_message(self, message_id, message, sender)
+    if message_id == hash("set_bounds") then
+        -- Update parallax anchor when room bounds change
+        if self.parallax_initialized then
+            ParallaxManager.set_anchor_from_bounds(message)
+        end
+
+    elseif message_id == hash("set_biome") then
+        -- Apply biome tint to parallax layers
+        if self.parallax_initialized and message.color then
+            ParallaxManager.set_biome_tint(message.color)
+        end
+
+    elseif message_id == hash("enable_parallax") then
+        self.parallax_enabled = true
+        ParallaxManager.set_enabled(true)
+
+    elseif message_id == hash("disable_parallax") then
+        self.parallax_enabled = false
+        ParallaxManager.set_enabled(false)
+
+    elseif message_id == hash("camera_ready") then
+        -- Camera is now available, setup parallax if not already done
+        if not self.parallax_initialized and self.auto_setup_parallax then
+            setup_parallax(self)
+        end
+
+    elseif message_id == hash("reload_objects") then
+        -- Clear and respawn all objects
+        if self.map_data and self.room_name then
+            ObjectSpawner.clear_room(self.room_name)
+            register_inline_dialogues(self.room_name, self.map_data)
+            spawn_objects(self)
+        end
+
+    elseif message_id == hash("reload_tile_animations") then
+        if self.tile_animator_state then
+            TilemapAnimator.stop(self.tile_animator_state)
+            self.tile_animator_state = nil
+        end
+        setup_tile_animations(self)
+
+    elseif message_id == hash("debug_info") then
+        -- Print debug information
+        local room_paths = get_room_map_paths()
+        print("[TILED_ROOM] Debug Info:")
+        print("  Room ID:", self.room_id)
+        print("  Room Name:", self.room_name)
+        print("  Map Path:", self.room_name and room_paths[self.room_name] or "unknown")
+        print("  Parallax Initialized:", self.parallax_initialized)
+        print("  Parallax Enabled:", self.parallax_enabled)
+        print("  Auto Tile Animations:", self.auto_tile_animations)
+
+        if self.map_data then
+            TiledParser.debug_print(self.map_data)
+        end
+
+        if self.parallax_initialized then
+            ParallaxManager.debug_print()
+        end
+
+        if self.tile_animator_state then
+            local stats = TilemapAnimator.get_stats(self.tile_animator_state)
+            print(string.format("  Tile Animations: running=%s candidate_defs=%d active_defs=%d animated_cells=%d",
+                tostring(stats.running), stats.candidate_defs, stats.active_defs, stats.animated_cells))
+        else
+            print("  Tile Animations: not initialized")
+        end
+
+        ObjectSpawner.debug_print_handlers()
+    end
+end
+
+function final(self)
+    if self.room_name and self.room_name ~= "" then
+        -- Clear cached map-darkness metadata for this room when its loader is
+        -- destroyed. The owner lets the light manager ignore a stale clear from
+        -- an older instance of a re-streamed room.
+        pcall(msg.post, LIGHT_MANAGER_URL, hash("set_room_darkness"), {
+            room_id = self.room_name,
+            level = nil,
+            owner = tostring(msg.url()),
+        })
+    end
+
+    -- Clean up objects when room unloads, unless a newer instance of the same
+    -- room has already initialised and owns its registries.
+    local latest = self.room_name and room_generation[self.room_name] == self.room_generation
+    if latest and self.map_data then
+        ObjectSpawner.clear_room(self.room_name)
+    end
+    if latest then
+        DialogueRegistry.clear_room(self.room_name)
+        room_generation[self.room_name] = nil
+    end
+
+    -- Clear parallax layers only if this instance owns the singleton.
+    if self.parallax_initialized and parallax_owner == tostring(msg.url()) then
+        ParallaxManager.clear_all()
+        parallax_owner = nil
+    end
+
+    if self.tile_animator_state then
+        TilemapAnimator.stop(self.tile_animator_state)
+        self.tile_animator_state = nil
+    end
+end

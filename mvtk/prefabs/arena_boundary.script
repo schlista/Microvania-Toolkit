@@ -1,0 +1,111 @@
+-- mvtk/prefabs/arena_boundary.script
+-- Invisible boundary that toggles based on arena/boss state.
+
+local PU = require "mvtk.prefabs.prefab_utils"
+local Util = require "mvtk.core.util"
+local TP = require "mvtk.core.tiled_props"
+local ToggleMessages = require "mvtk.prefabs.toggle_messages"
+local BossArenaOk, BossArena = pcall(require, "mvtk.bosses.boss_arena")
+
+local to_bool = TP.to_bool
+local parse_phase_set = TP.parse_phase_set
+
+go.property("arena_id", "")
+go.property("active_phases", "")
+go.property("enabled_when_locked", true)
+go.property("start_enabled", true)
+
+go.property("poll_interval", 0.25)
+
+local function resolve_arena_state(self)
+    if BossArenaOk and BossArena then
+        local active = BossArena.get_active_arena and BossArena.get_active_arena()
+        if active and active.id then
+            if self.arena_id_str == "" or active.id == self.arena_id_str then
+                local phase = BossArena.get_current_phase and BossArena.get_current_phase() or 0
+                local locked = BossArena.is_locked and BossArena.is_locked() or false
+                return true, phase, locked
+            end
+        end
+
+        -- Fallback: arena is registered but not the active one (e.g. arena_lock
+        -- was used for a non-boss encounter). get_arena returns its record.
+        if BossArena.get_arena and self.arena_id_str ~= "" then
+            local arena = BossArena.get_arena(self.arena_id_str)
+            if arena then
+                return arena.boss_active or arena.locked, arena.phase or 0, arena.locked == true
+            end
+        end
+    end
+
+    return false, 0, false
+end
+
+local function set_collision_enabled(self, enabled)
+    if self._enabled == enabled then
+        return
+    end
+    self._enabled = enabled
+    if enabled then
+        Util.post_component_enabled("#co", true)
+    else
+        Util.post_component_enabled("#co", false)
+    end
+end
+
+local function update_state(self)
+    if self.arena_id_str == "" then
+        set_collision_enabled(self, self.start_enabled ~= false)
+        return
+    end
+
+    local active, phase, locked = resolve_arena_state(self)
+    local enabled = active
+    if self.enabled_when_locked then
+        enabled = locked
+    end
+
+    if next(self.active_phase_set) then
+        enabled = enabled and (self.active_phase_set[phase] or false)
+    end
+
+    set_collision_enabled(self, enabled)
+end
+
+local function apply_props(self, props)
+    props = props or {}
+    if props.arena_id ~= nil then self.arena_id_str = tostring(props.arena_id) end
+    if props.active_phases ~= nil then self.active_phases_str = tostring(props.active_phases) end
+    if props.enabled_when_locked ~= nil then self.enabled_when_locked = to_bool(props.enabled_when_locked, self.enabled_when_locked) end
+    if props.start_enabled ~= nil then self.start_enabled = to_bool(props.start_enabled, self.start_enabled) end
+    if props.poll_interval ~= nil then self.poll_interval = tonumber(props.poll_interval) or self.poll_interval end
+    self.active_phase_set = parse_phase_set(self.active_phases_str or "")
+end
+
+function init(self)
+    self.arena_id_str = PU.normalize_hash_string(self.arena_id) or ""
+    self.active_phases_str = PU.normalize_hash_string(self.active_phases) or ""
+    self.active_phase_set = parse_phase_set(self.active_phases_str)
+    self._enabled = nil
+    self._poll_t = 0
+    update_state(self)
+end
+
+function update(self, dt)
+    self._poll_t = (self._poll_t or 0) - dt
+    if self._poll_t > 0 then
+        return
+    end
+    self._poll_t = tonumber(self.poll_interval) or 0.25
+    update_state(self)
+end
+
+function on_message(self, message_id, message, sender)
+    if message_id == hash("apply_tiled_props") and message and message.properties then
+        apply_props(self, message.properties)
+        update_state(self)
+        return
+    end
+    if ToggleMessages.handle(self, message_id, message, set_collision_enabled, { field = "_enabled", truthy = true }) then
+    end
+end

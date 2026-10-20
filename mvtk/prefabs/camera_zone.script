@@ -1,0 +1,155 @@
+-- mvtk/prefabs/camera_zone.script
+-- ============================================================================
+-- CAMERA ZONE
+-- ============================================================================
+-- Defines a region that modifies camera behaviour when the player is inside.
+-- Common uses: constrain camera in corridors, zoom in boss rooms, lock to
+-- a fixed point during a cutscene trigger, etc.
+--
+-- TILED PROPERTIES:
+--   zone_id          - Unique identifier for this zone
+--   camera_mode      - "follow" | "fixed" | "pan" | "bounds"
+--   zoom_level       - Camera zoom multiplier (1.0 = default)
+--   transition_speed - How fast the camera transitions to these settings
+--   bounds_padding   - Extra pixel padding inside the zone bounds
+--   lock_x           - Prevent horizontal camera movement
+--   lock_y           - Prevent vertical camera movement
+--   focus_x          - World X to focus on when lock_x=true (0 = use zone centre)
+--   focus_y          - World Y to focus on when lock_y=true (0 = use zone centre)
+--   parallax_override - Parallax speed override string (e.g. "0.5,0.3")
+--   smooth_follow    - Enable smooth-follow damping inside this zone
+--   deadzone_width   - Horizontal dead-zone width in pixels
+--   deadzone_height  - Vertical dead-zone height in pixels
+--   auto_fit         - Zoom out as needed to fit the complete zone
+--
+-- CONFIGURATION:
+--   All values come from Tiled properties. Do not hardcode here.
+-- ============================================================================
+
+go.property("zone_id", "")
+go.property("camera_mode", "follow")
+go.property("zoom_level", 1.0)
+go.property("transition_speed", 1.0)
+go.property("bounds_padding", 0)
+go.property("lock_x", false)
+go.property("lock_y", false)
+go.property("focus_x", 0)
+go.property("focus_y", 0)
+go.property("parallax_override", "")
+go.property("smooth_follow", true)
+go.property("deadzone_width", 0)
+go.property("deadzone_height", 0)
+go.property("auto_fit", false)
+go.property("room_id", "") -- injected by object_spawner at spawn time
+
+local CAMERA_URL = nil
+local Util = require "mvtk.core.util"
+local function get_camera_url()
+    if not CAMERA_URL then
+        CAMERA_URL = msg.url("main:/camera#camera")
+    end
+    return CAMERA_URL
+end
+
+local function normalize_string(value)
+    return Util.hash_text(value, "")
+end
+
+local function build_zone_settings(self)
+    return {
+        zone_id         = normalize_string(self.zone_id),
+        camera_mode     = normalize_string(self.camera_mode),
+        zoom_level      = tonumber(self.zoom_level) or 1.0,
+        transition_speed = tonumber(self.transition_speed) or 1.0,
+        bounds_padding  = tonumber(self.bounds_padding) or 0,
+        lock_x          = self.lock_x == true,
+        lock_y          = self.lock_y == true,
+        focus_x         = tonumber(self.focus_x) or 0,
+        focus_y         = tonumber(self.focus_y) or 0,
+        parallax_override = normalize_string(self.parallax_override),
+        smooth_follow   = self.smooth_follow ~= false,
+        deadzone_width  = tonumber(self.deadzone_width) or 0,
+        deadzone_height = tonumber(self.deadzone_height) or 0,
+        auto_fit        = self.auto_fit == true,
+        -- Position/size come from the GO and are set by the spawner
+        position        = go.get_world_position(),
+    }
+end
+
+local function to_bool(v, default)
+    if v == nil then return default end
+    if type(v) == "boolean" then return v end
+    if type(v) == "string" then
+        local s = v:lower()
+        if s == "true" or s == "1" or s == "yes" then return true end
+        if s == "false" or s == "0" or s == "no" then return false end
+    end
+    return default
+end
+
+local function apply_props(self, props)
+    props = props or {}
+    if props.zone_id ~= nil then self.zone_id = props.zone_id end
+    if props.camera_mode ~= nil then self.camera_mode = props.camera_mode end
+    if props.zoom_level ~= nil then self.zoom_level = tonumber(props.zoom_level) or self.zoom_level end
+    if props.transition_speed ~= nil then self.transition_speed = tonumber(props.transition_speed) or self.transition_speed end
+    if props.bounds_padding ~= nil then self.bounds_padding = tonumber(props.bounds_padding) or self.bounds_padding end
+    if props.lock_x ~= nil then self.lock_x = to_bool(props.lock_x, self.lock_x) end
+    if props.lock_y ~= nil then self.lock_y = to_bool(props.lock_y, self.lock_y) end
+    if props.focus_x ~= nil then self.focus_x = tonumber(props.focus_x) or self.focus_x end
+    if props.focus_y ~= nil then self.focus_y = tonumber(props.focus_y) or self.focus_y end
+    if props.parallax_override ~= nil then self.parallax_override = props.parallax_override end
+    if props.smooth_follow ~= nil then self.smooth_follow = to_bool(props.smooth_follow, self.smooth_follow) end
+    if props.deadzone_width ~= nil then self.deadzone_width = tonumber(props.deadzone_width) or self.deadzone_width end
+    if props.deadzone_height ~= nil then self.deadzone_height = tonumber(props.deadzone_height) or self.deadzone_height end
+    if props.auto_fit ~= nil then self.auto_fit = to_bool(props.auto_fit, self.auto_fit) end
+end
+
+function init(self)
+    self._player_inside = false
+    -- Register with the camera system if available
+    local ok, CameraZones = pcall(require, "mvtk.camera.camera_zones")
+    if ok and CameraZones and CameraZones.register then
+        CameraZones.register(normalize_string(self.zone_id), build_zone_settings(self))
+    end
+end
+
+function final(self)
+    -- If player is still inside when this zone is destroyed, restore defaults
+    if self._player_inside then
+        local cam = get_camera_url()
+        pcall(msg.post, cam, hash("restore_camera_defaults"), {
+            transition_speed = tonumber(self.transition_speed) or 1.0
+        })
+    end
+    -- Unregister from camera zone system
+    local ok, CameraZones = pcall(require, "mvtk.camera.camera_zones")
+    if ok and CameraZones and CameraZones.unregister then
+        CameraZones.unregister(normalize_string(self.zone_id))
+    end
+end
+
+function on_message(self, message_id, message, sender)
+    if message_id == hash("trigger_response") then
+        local other_group = message.other_group or message.group
+        if other_group ~= hash("player") then return end
+
+        if message.enter then
+            self._player_inside = true
+            -- Push zone settings to the camera
+            local cam = get_camera_url()
+            pcall(msg.post, cam, hash("enter_camera_zone"), build_zone_settings(self))
+        else
+            self._player_inside = false
+            -- Restore previous camera settings
+            local cam = get_camera_url()
+            pcall(msg.post, cam, hash("exit_camera_zone"), {
+                zone_id = normalize_string(self.zone_id),
+                transition_speed = tonumber(self.transition_speed) or 1.0,
+            })
+        end
+
+    elseif message_id == hash("apply_tiled_props") and message and message.properties then
+        apply_props(self, message.properties)
+    end
+end

@@ -1,0 +1,1667 @@
+-- mvtk/developer/rooms/stream_manager.script
+-- ============================================================================
+-- Room Streaming Manager
+-- ============================================================================
+-- Central coordinator for asynchronous room loading/unloading system.
+-- Manages collection proxies, minimap integration, door detection, and Tiled
+-- map loading for the Metroidvania world streaming system.
+--
+-- Key Responsibilities:
+-- - Initialize room layout from layout_io (world map structure)
+-- - Load/unload rooms dynamically via RoomManager (collection proxies)
+-- - Extract and track door positions from tilemaps for minimap display
+-- - Integrate Tiled map data for parallax layers and decorations
+-- - Track explored rooms and update minimap view center
+-- - Handle player position updates and room transitions
+--
+-- Architecture:
+--   Layout Data → RoomManager → Collection Proxies → Loaded Rooms
+--   Loaded Rooms → Door Scanner → Minimap Module → GUI Display
+--   Room Events → Tiled Adapter → Auto-load/unload Tiled maps
+--
+-- Usage:
+--   This script is attached to a game object in main.collection and runs
+--   automatically. Other systems interact via messages:
+--   - msg.post(C.URL.ROOM_MANAGER, C.MSG.ROOM_LOAD, {room = "room_01"})
+--   - msg.post(C.URL.ROOM_MANAGER, "player_ready", {url = player_url})
+
+-- ============================================================================
+-- DEPENDENCIES
+-- ============================================================================
+
+local RoomManager = require("mvtk.map.streaming.room_manager")      -- Core room loading/unloading
+local ElevatorManager = require("mvtk.elevators.elevator_manager") -- Persistent cross-room elevators
+local Config = require("developer.config.resolved_config")                   -- Game configuration
+local Debug = require("developer.config.debug_config")              -- Debug settings
+local Pause = require("mvtk.core.pause")                            -- Pause state
+local Discovery = require "mvtk.map.discovery"
+local CameraDiscovery = require "mvtk.map.camera_discovery"
+local LayoutIO = require("mvtk.rooms.layout_io")                    -- World layout data
+local C = require("mvtk.core.constants")                            -- Constants (URLs, messages)
+local StreamS = require("developer.config.stream_settings")         -- Streaming config (tile size, door layers)
+local LockCfg = require("developer.config.locked_door_settings")    -- Locked door blocker/editor config
+local TileCfg = require("developer.config.tile_settings")           -- Tile size (source of truth)
+local MinimapCfg = require("developer.config.minimap_settings")     -- Minimap display settings
+local HasMarkerCfg, MarkerCfg = pcall(require, "developer.config.map_markers")  -- Custom map markers (optional)
+local DoorRows = require("mvtk.rooms.door_rows")                    -- Runtime door-cell markers
+local GateMarkers = require("mvtk.map.minimap.gate_markers")        -- Energy gate markers
+local TiledAdapter = require("mvtk.rooms.tiled_room_adapter")       -- Tiled map integration
+local AuthoredObjectProps = require "mvtk.tiled.authored_object_props"
+local StreamPaths = require("mvtk.rooms.stream_paths")              -- Tiled/generated room resource paths
+local SurfaceClassifier = require "mvtk.core.surface_classifier"
+local Util = require("mvtk.core.util")
+local FrameWatch = require "mvtk.core.frame_watch"
+
+local function project_tile_width()
+    local w = tonumber(TileCfg and (TileCfg.width or TileCfg.tile_width or TileCfg.size))
+    return (w and w > 0) and w or 128
+end
+
+local function project_tile_height()
+    local h = tonumber(TileCfg and (TileCfg.height or TileCfg.tile_height or TileCfg.size))
+    return (h and h > 0) and h or project_tile_width()
+end
+
+-- ============================================================================
+-- DEBUG LOGGING
+-- ============================================================================
+
+-- Conditional logging based on debug configuration (only prints if enabled)
+local function stream_log(...)
+    if Debug.global.enable or Debug.rooms.stream_manager then
+        print(...)
+    end
+end
+
+-- Elevator markers live in streamed room collections, but route geometry and
+-- the cabin itself are world-owned. Resolve the generated Tiled index only
+-- after RoomManager has rebuilt final room positions from connected doors.
+local function initialize_authored_elevators()
+    local ok, result = ElevatorManager.initialize_from_generated(nil, {
+        room_provider = RoomManager,
+    })
+    local Report = require("mvtk.elevators.elevator_report")
+    if not ok then
+        -- Initialization failures invalidate a world traversal route and must
+        -- remain visible even when optional room-stream debug logging is off.
+        -- Every diagnostic and per-elevator error is printed (a cabin spawn
+        -- failure used to collapse into one generic line), and debug builds
+        -- also show them on screen.
+        local lines = Report.failure_lines(result)
+        for _, line in ipairs(lines) do
+            print("[STREAM_MANAGER][ERROR] Elevator initialization failed: " .. line)
+        end
+        Report.show_dev_error(lines, "Elevator initialization failed")
+    end
+    for _, line in ipairs(Report.status_lines(ElevatorManager.get_all())) do
+        stream_log("[STREAM_MANAGER] Elevator " .. line)
+    end
+    return ok, result
+end
+
+local function door_log(...)
+    if Debug.global.enable or Debug.rooms.door_debug then
+        print(...)
+    end
+end
+
+local function minimap_log(...)
+    if Debug.global.enable or Debug.minimap.info then
+        print(...)
+    end
+end
+
+local function view_log(...)
+    if Debug.global.enable or Debug.minimap.view then
+        print(...)
+    end
+end
+
+-- Runtime boss/encounter room locks (temporary door blockers)
+local LOCKED_ROOM_BLOCKERS = {}
+
+local OutlineReader = require("mvtk.editor.room_outline")    -- Extract room shapes from tilemap
+local DoorExtractor = require("mvtk.editor.room_doors")      -- Extract door positions from tilemap
+local DoorLockGeometry = require("mvtk.rooms.door_lock_geometry") -- Tile-sized lock blockers per door run
+
+-- ============================================================================
+-- GLOBAL STATE
+-- ============================================================================
+
+-- Global bounds and door data for all loaded rooms
+-- Structure: { [room_id] = { min_x, max_x, min_y, max_y, segments, doors, fill_rects } }
+-- Used by minimap system to display room shapes and door positions
+local bounds_by_id = {}
+local static_room_scan_cache = {}
+local ready_job_queue = {}
+local ready_job_keys = {}
+
+local function ready_job_key(room_id, kind, generation)
+    return table.concat({ tostring(room_id), tostring(kind), tostring(generation or 0) }, ":")
+end
+
+local function enqueue_ready_job(room_id, kind, generation, run)
+    local key = ready_job_key(room_id, kind, generation)
+    if ready_job_keys[key] then
+        return
+    end
+    ready_job_keys[key] = true
+    ready_job_queue[#ready_job_queue + 1] = {
+        key = key,
+        room_id = room_id,
+        kind = kind,
+        generation = generation,
+        run = run,
+    }
+end
+
+local function process_one_ready_job()
+    if #ready_job_queue == 0 then
+        return
+    end
+    local job = table.remove(ready_job_queue, 1)
+    ready_job_keys[job.key] = nil
+    local room = RoomManager.get_loaded_room and RoomManager.get_loaded_room(job.room_id)
+    if not room or (job.generation and room.generation ~= job.generation) then
+        return
+    end
+    local ok, err = pcall(job.run)
+    if not ok then
+        stream_log(string.format("[STREAM_MANAGER] ready job failed room=%s kind=%s: %s",
+            tostring(job.room_id), tostring(job.kind), tostring(err)))
+    end
+end
+
+-- ============================================================================
+-- ROOM ID NORMALIZATION
+-- ============================================================================
+
+-- Normalize room ID to consistent format
+-- id: Room identifier (can be path, collection name, or short name)
+-- Returns: Normalized room ID (e.g., "room_01") or nil if invalid
+--
+-- Strips common prefixes and suffixes:
+-- - Leading "/" and "developer/rooms/" prefix
+-- - ".collection" suffix
+local function normalize_room_id(id)
+    if not id then return nil end
+    local rid = Util.normalize_room_id(id)
+    if rid == "" then return nil end
+    return rid
+end
+
+local normalize_text_id = Util.normalize_hash_string
+
+local TiledRoomRegistry = nil
+local function get_tiled_room_registry()
+    if TiledRoomRegistry == nil then
+        local ok, mod = pcall(require, "mvtk.tiled.tiled_room_registry")
+        TiledRoomRegistry = ok and mod or false
+    end
+    if TiledRoomRegistry == false then
+        return nil
+    end
+    return TiledRoomRegistry
+end
+
+-- Look up room bounds by ID (with normalization)
+-- room_id: Room identifier
+-- Returns: Room bounds table or nil if not found
+local function lookup_room_bounds(room_id)
+    local key = normalize_room_id(room_id)
+    if not key then return nil end
+    return bounds_by_id[key]
+end
+
+-- ============================================================================
+-- DOOR SIDE UTILITIES
+-- ============================================================================
+
+-- Normalize door side to standard direction (left, right, top, bottom)
+-- side: Side string (can be "left", "L", "west", "W", etc.)
+-- Returns: Normalized side ("left", "right", "top", or "bottom") or nil
+--
+-- Accepts multiple formats: cardinal (N/S/E/W), directional (left/right/top/bottom), single letter
+local function normalize_side(side)
+    if not side then return nil end
+    local s = tostring(side):lower()
+    if s == "left" or s == "l" or s == "west" or s == "w" then return "left" end
+    if s == "right" or s == "r" or s == "east" or s == "e" then return "right" end
+    if s == "top" or s == "t" or s == "north" or s == "n" then return "top" end
+    if s == "bottom" or s == "b" or s == "south" or s == "s" then return "bottom" end
+    return nil
+end
+
+-- Get opposite side for door pairing between rooms
+-- side: Side ("left", "right", "top", "bottom")
+-- Returns: Opposite side (left↔right, top↔bottom)
+local function opposite_side(side)
+    if side == "left" then return "right" end
+    if side == "right" then return "left" end
+    if side == "top" then return "bottom" end
+    if side == "bottom" then return "top" end
+    return side  -- Return unchanged if not recognized
+end
+
+-- Automatically determine which side of room a door is on
+-- room_bounds: Room bounds table {min_x, max_x, min_y, max_y}
+-- cx, cy: Door center position (world coordinates)
+-- side_hint: Optional explicit side override
+-- Returns: Side ("left", "right", "top", "bottom") based on closest room edge
+--
+-- If side_hint is provided and valid, uses that.
+-- Otherwise calculates distance to all 4 edges and picks closest.
+local function resolve_door_side(room_bounds, cx, cy, side_hint)
+    -- Use hint if provided
+    local normalized = normalize_side(side_hint)
+    if normalized then return normalized end
+
+    -- Auto-detect based on proximity to room edges
+    if not (room_bounds and cx and cy) then return nil end
+
+    local distances = {
+        left   = math.abs(cx - (room_bounds.min_x or cx)),
+        right  = math.abs(cx - (room_bounds.max_x or cx)),
+        bottom = math.abs(cy - (room_bounds.min_y or cy)),
+        top    = math.abs(cy - (room_bounds.max_y or cy)),
+    }
+
+    -- Find closest edge
+    local best_side, best_dist = nil, math.huge
+    for side, dist in pairs(distances) do
+        if dist < best_dist then
+            best_side = side
+            best_dist = dist
+        end
+    end
+    return best_side
+end
+
+-- ============================================================================
+-- LIFECYCLE FUNCTIONS
+-- ============================================================================
+
+-- Initialize room streaming system
+-- self: Script instance
+--
+-- Performs complex initialization:
+-- 1. Publishes C.URL.ROOM_MANAGER for other systems to message
+-- 2. Loads world layout from LayoutIO (room positions, connections)
+-- 3. Initializes RoomManager with layout data
+-- 4. Loads checkpoint room (or first room if no checkpoint)
+-- 5. Sets up minimap adapter (MINIMAP_MODULE global)
+-- 6. Extracts room outlines and door positions from tilemaps
+-- 7. Registers event handlers for room load/unload (Tiled integration)
+function init(self)
+    stream_log("[STREAM_MANAGER] Initializing room streaming system...")
+    LOCKED_ROOM_BLOCKERS = {}
+    ready_job_queue = {}
+    ready_job_keys = {}
+    self._minimap_update_accumulator = 0
+
+    -- Publish this script's URL so other systems can send room load messages
+    C.URL = C.URL or {}
+    C.URL.ROOM_MANAGER = msg.url(nil, go.get_id(), hash("script"))
+
+    -- Load world layout data and initialize room manager
+    local layout_data = (LayoutIO and LayoutIO.load and LayoutIO.load({ runtime_preferred = true })) or nil
+    if layout_data then
+        -- Initialize room manager with layout (defines room positions and connections)
+        RoomManager.init(layout_data)
+        initialize_authored_elevators()
+        
+        -- ====================================================================
+        -- CHECKPOINT-BASED INITIAL ROOM SELECTION
+        -- ====================================================================
+        -- Try to load checkpoint data to determine starting room
+        -- This ensures player starts in the room where they last saved
+        local start_room_id = nil
+        local checkpoint_pos = nil
+        
+        local ok_cp, Checkpoint = pcall(require, "mvtk.core.checkpoint")
+        stream_log("[STREAM_MANAGER] ========== STARTUP ROOM SELECTION ==========")
+        stream_log(string.format("[STREAM_MANAGER] Checkpoint module loaded: %s", tostring(ok_cp)))
+        if ok_cp and Checkpoint then
+            -- Try to load saved checkpoint data
+            local slot = nil
+            local ok_last, last = pcall(Checkpoint.last_slot)
+            stream_log(string.format("[STREAM_MANAGER] last_slot() returned: ok=%s, slot=%s", tostring(ok_last), tostring(last)))
+            if ok_last and last then slot = last end
+            if not slot then slot = 1 end
+            
+            stream_log(string.format("[STREAM_MANAGER] Attempting to load checkpoint from slot %s", tostring(slot)))
+            
+            local load_ok, load_err = pcall(Checkpoint.load, slot)
+            stream_log(string.format("[STREAM_MANAGER] Checkpoint.load result: ok=%s", tostring(load_ok)))
+            
+            if load_ok then
+                stream_log(string.format("[STREAM_MANAGER] Checkpoint.data exists: %s", tostring(Checkpoint.data ~= nil)))
+                if Checkpoint.data then
+                    stream_log(string.format("[STREAM_MANAGER] Checkpoint.data.checkpoint exists: %s", tostring(Checkpoint.data.checkpoint ~= nil)))
+                    if Checkpoint.data.checkpoint then
+                        stream_log(string.format("[STREAM_MANAGER] checkpoint.x=%s, checkpoint.y=%s, checkpoint.room_id=%s",
+                            tostring(Checkpoint.data.checkpoint.x),
+                            tostring(Checkpoint.data.checkpoint.y),
+                            tostring(Checkpoint.data.checkpoint.room_id)))
+                    end
+                end
+            end
+            
+            if load_ok and Checkpoint.data and Checkpoint.data.checkpoint then
+                checkpoint_pos = Checkpoint.data.checkpoint
+                stream_log(string.format("[STREAM_MANAGER] Found saved checkpoint at (%.1f, %.1f)",
+                    checkpoint_pos.x or 0, checkpoint_pos.y or 0))
+                stream_log(string.format("[STREAM_MANAGER] Checkpoint room_id field: '%s'", tostring(checkpoint_pos.room_id)))
+                
+                -- First, try to use saved room_id if available (most reliable)
+                if checkpoint_pos.room_id then
+                    start_room_id = Util.normalize_room_id(checkpoint_pos.room_id)
+                    stream_log(string.format("[STREAM_MANAGER] Using saved room_id from checkpoint: '%s'", start_room_id))
+                else
+                    stream_log("[STREAM_MANAGER] No room_id in checkpoint, searching by position...")
+                    -- Fallback: Find which room contains this checkpoint position
+                    -- Use rebuilt positions from RoomManager (after geometry alignment)
+                    -- so checkpoint world coordinates match actual room placement.
+                    if layout_data.rooms then
+                        for _, room in ipairs(layout_data.rooms) do
+                            local rid = Util.normalize_room_id(room.id)
+                            local rebuilt = RoomManager.get_room_data(rid)
+                            local rdata = rebuilt or room
+                            if rdata and rdata.x and rdata.y then
+                                local rx = (rdata.x or 0) + (rdata.ox or 0)
+                                local ry = (rdata.y or 0) + (rdata.oy or 0)
+                                local rw = rdata.w or 0
+                                local rh = rdata.h or 0
+                                if checkpoint_pos.x >= rx and checkpoint_pos.x <= rx + rw and
+                                   checkpoint_pos.y >= ry and checkpoint_pos.y <= ry + rh then
+                                    start_room_id = rid
+                                    stream_log(string.format("[STREAM_MANAGER] ✅ Checkpoint position is in room '%s'", start_room_id))
+                                    break
+                                end
+                            end
+                        end
+                    end
+                end
+                
+                if not start_room_id then
+                    stream_log("[STREAM_MANAGER] Checkpoint position not found in any room bounds")
+                end
+            else
+                stream_log("[STREAM_MANAGER] No saved checkpoint found, using default start room")
+            end
+        end
+
+        -- Fall back to Tiled starting room, then Config.player.spawn_room, then first layout room.
+        -- This ensures new-game spawns load the correct room even before a checkpoint exists.
+        if not start_room_id then
+            -- 1) Ask the Tiled registry which room has a player_start object or is_starting_room property
+            local ok_reg, TiledRegistry = pcall(require, "mvtk.tiled.tiled_room_registry")
+            if ok_reg and TiledRegistry and TiledRegistry.get_starting_room then
+                local sr = TiledRegistry.get_starting_room(layout_data)
+                if sr then
+                    start_room_id = Util.normalize_room_id(sr)
+                    stream_log(string.format("[STREAM_MANAGER] Using Tiled starting room: '%s'", start_room_id))
+                end
+            end
+        end
+
+        if not start_room_id then
+            -- 2) Fall back to Config.player.spawn_room (must actually exist in the layout)
+            local config_room = Config and Config.player and Config.player.spawn_room
+            if config_room then
+                local candidate = Util.normalize_room_id(config_room)
+                if layout_data.rooms then
+                    for _, room in ipairs(layout_data.rooms) do
+                        local rid = Util.normalize_room_id(room.id)
+                        if rid == candidate then
+                            start_room_id = candidate
+                            stream_log(string.format("[STREAM_MANAGER] Using configured spawn_room: '%s'", start_room_id))
+                            break
+                        end
+                    end
+                end
+            end
+        end
+
+        if not start_room_id then
+            -- 3) Last resort: first room in layout array
+            local first = layout_data.rooms and layout_data.rooms[1]
+            if first and first.id then
+                start_room_id = Util.normalize_room_id(first.id)
+                stream_log(string.format("[STREAM_MANAGER] Using first room in layout: '%s'", start_room_id))
+            end
+        end
+        
+        stream_log(string.format("[STREAM_MANAGER] ========== FINAL START ROOM: '%s' ==========", tostring(start_room_id)))
+        
+        -- Load the determined start room
+        if start_room_id then
+            RoomManager.handle_room_load_message(start_room_id)
+            stream_log(string.format("[STREAM_MANAGER] Initialized with layout; loaded start room '%s'", start_room_id))
+        else
+            -- Fallback: Create default 2-room layout if layout has no rooms
+            local a = "developer/rooms/room_01"
+            local b = "developer/rooms/room_02"
+            local ld = { version = 0x6, rooms = {
+                { id = a, x = 0,    y = 0,   w = 1024, h = 512, ox = 0, oy = 0, neighbors = { { id = b, side = "E" } } },
+                { id = b, x = 1024, y = 0,   w = 1024, h = 512, ox = 0, oy = 0, neighbors = { { id = a, side = "W" } } },
+            } }
+            stream_log("[STREAM_MANAGER] Layout empty; installing fallback 2-room layout (room_01 <-> room_02)")
+            RoomManager.init(ld)
+            initialize_authored_elevators()
+            RoomManager.handle_room_load_message("room_01")
+        end
+
+        -- ========================================================================
+        -- MINIMAP ADAPTER SETUP
+        -- ========================================================================
+        -- Creates global MINIMAP_MODULE for GUI access
+        -- Handles room bounds, door positions, player tracking, custom markers
+        local function setup_minimap_adapter(ld)
+            if not (ld and ld.rooms) then return end
+            local origin_shift = ld.origin_shift or {}
+            local origin_shift_x = tonumber(origin_shift.x) or 0
+            local origin_shift_y = tonumber(origin_shift.y) or 0
+            local CUSTOM_MARKER_LIMIT = (MinimapCfg.custom_markers and MinimapCfg.custom_markers.max_count) or 20
+            local v3 = vmath.vector3
+            local room_biome_by_id = {}
+
+            local function lookup_registry_biome(room_id)
+                if not room_id then return nil end
+                local registry = get_tiled_room_registry()
+                if not (registry and registry.get_room_metadata) then return nil end
+                local meta = registry.get_room_metadata(room_id)
+                if type(meta) ~= "table" then return nil end
+                return normalize_text_id(meta.biome or meta.area or meta.region)
+            end
+
+            local function read_layout_room_biome(room_record, room_id)
+                local biome = lookup_registry_biome(room_id)
+                if biome then
+                    return biome
+                end
+
+                local tags = room_record and room_record.tags
+                if type(tags) == "table" then
+                    local tagged_biome = normalize_text_id(tags.biome or tags.area or tags.region)
+                    if tagged_biome then
+                        return tagged_biome
+                    end
+                end
+                return nil
+            end
+
+            -- Precompute room bounds and outlines from layout
+            bounds_by_id = {}  -- Use global bounds_by_id
+            local world_bb = nil
+            local function add_bounds(b)
+                if not b then return end
+                if not world_bb then
+                    world_bb = { min_x=b.min_x, max_x=b.max_x, min_y=b.min_y, max_y=b.max_y }
+                else
+                    world_bb.min_x = math.min(world_bb.min_x, b.min_x)
+                    world_bb.max_x = math.max(world_bb.max_x, b.max_x)
+                    world_bb.min_y = math.min(world_bb.min_y, b.min_y)
+                    world_bb.max_y = math.max(world_bb.max_y, b.max_y)
+                end
+            end
+            local default_center = nil
+            for _, r in ipairs(ld.rooms) do
+                local id = Util.normalize_room_id(r.id)
+                if id ~= "" then
+                    -- Use rebuilt positions from RoomManager (after door-geometry alignment)
+                    -- so the minimap matches the actual game world placement.
+                    local rebuilt = RoomManager.get_room_data(id)
+                    local x = tonumber((rebuilt and rebuilt.x) or r.x) or 0
+                    local y = tonumber((rebuilt and rebuilt.y) or r.y) or 0
+                    local w = tonumber((rebuilt and rebuilt.w) or r.w) or 0
+                    local h = tonumber((rebuilt and rebuilt.h) or r.h) or 0
+                    local ox = tonumber((rebuilt and rebuilt.ox) or r.ox) or 0
+                    local oy = tonumber((rebuilt and rebuilt.oy) or r.oy) or 0
+                    local b = {
+                        min_x = x + ox,
+                        max_x = x + ox + w,
+                        min_y = y + oy,
+                        max_y = y + oy + h,
+                    }
+                    b.doors = {}
+                    if not default_center then
+                        default_center = { x = (b.min_x + b.max_x) * 0.5, y = (b.min_y + b.max_y) * 0.5 }
+                    end
+                    bounds_by_id[id] = b
+                    add_bounds(b)
+                    local biome = read_layout_room_biome(r, id)
+                    if biome then
+                        room_biome_by_id[id] = biome
+                    end
+                end
+            end
+
+            -- Per-room positioning: no shifts needed (sprite uses layout positions directly)
+
+            local MINI = {
+                explored = Discovery.explored,
+                center_id = nil,
+                player = v3(0,0,0),
+                _doors = {}, -- optional cache per room id
+                view_center_world = nil,
+                pending_view_center_world = nil,
+                markers = {},
+                world_markers = {},
+                _marker_version = 0,
+                _world_marker_version = 0,
+                _marker_registry = Discovery.markers,
+                _runtime_marker_ids = {},
+                _marker_counter = 0,
+                origin_shift = { x = origin_shift_x, y = origin_shift_y },
+                room_biomes = room_biome_by_id,
+            }
+            local function normalize_marker_id(id)
+                if id == nil then return nil end
+                local s = tostring(id)
+                if s == "" then return nil end
+                return s
+            end
+            local function normalize_marker_bool(value, default)
+                if value == nil then return default end
+                if value == true or value == false then return value end
+                if type(value) == "number" then return value ~= 0 end
+                if type(value) == "string" then
+                    local lower = value:lower()
+                    if lower == "true" or lower == "1" or lower == "yes" then return true end
+                    if lower == "false" or lower == "0" or lower == "no" then return false end
+                end
+                return default
+            end
+            local function rebuild_marker_lists()
+                MINI.markers = {}
+                MINI.world_markers = {}
+                for _, marker in pairs(MINI._marker_registry or {}) do
+                    if marker.discovered then
+                        if marker.show_on_minimap then
+                            MINI.markers[#MINI.markers + 1] = marker
+                        end
+                        if marker.show_on_world_map then
+                            MINI.world_markers[#MINI.world_markers + 1] = marker
+                        end
+                    end
+                end
+                MINI._marker_version = (MINI._marker_version or 0) + 1
+                MINI._world_marker_version = (MINI._world_marker_version or 0) + 1
+            end
+            local function register_marker(entry)
+                if not entry then return nil, "no_entry" end
+                local id = normalize_marker_id(entry.id) or normalize_marker_id(entry.marker_id)
+                if not id then return nil, "no_id" end
+                local pos = entry.position or entry.pos or entry
+                local x = tonumber(entry.x or (pos and pos.x)) or 0
+                local y = tonumber(entry.y or (pos and pos.y)) or 0
+                local marker = {
+                    id = id,
+                    x = x,
+                    y = y,
+                    label = entry.label or entry.marker_label or entry.name or "",
+                    marker_type = entry.marker_type or entry.type or entry.marker_icon_type,
+                    marker_icon = entry.marker_icon or entry.icon,
+                    facing = entry.facing,
+                    room_id = entry.room_id,
+                    source = entry.source or "runtime",
+                    created = entry.created or (os.time and os.time() or 0),
+                    show_on_minimap = normalize_marker_bool(entry.show_on_minimap, true),
+                    show_on_world_map = normalize_marker_bool(entry.show_on_world_map, false),
+                    visible_from_start = normalize_marker_bool(entry.visible_from_start, false),
+                    discovery_radius = tonumber(entry.discovery_radius) or 0,
+                    discovered = normalize_marker_bool(entry.discovered, false),
+                }
+                if marker.visible_from_start then
+                    marker.discovered = true
+                end
+                local existing = MINI._marker_registry[id]
+                if existing and existing.discovered then marker.discovered = true end
+                MINI._marker_registry[id] = marker
+                rebuild_marker_lists()
+                return marker
+            end
+            local function apply_config_markers()
+                if not (HasMarkerCfg and MarkerCfg) then return end
+                for room_id, list in pairs(MarkerCfg) do
+                    if type(list) == "table" then
+                        for idx, m in ipairs(list) do
+                            register_marker({
+                                id = string.format("config_%s_%d", tostring(room_id), idx),
+                                x = m.x or 0,
+                                y = m.y or 0,
+                                label = m.label,
+                                room_id = room_id,
+                                source = "config",
+                                show_on_minimap = true,
+                                show_on_world_map = normalize_marker_bool(m.show_on_world_map, false),
+                                visible_from_start = normalize_marker_bool(m.visible_from_start, true),
+                                discovery_radius = tonumber(m.discovery_radius) or 0,
+                                discovered = true,
+                            })
+                        end
+                    end
+                end
+            end
+            local function normalize_xy(x, y)
+                if type(x) == "table" then
+                    local t = x
+                    local vx = tonumber(t.x) or tonumber(t[1])
+                    local vy = tonumber(t.y) or tonumber(t[2])
+                    return vx, vy
+                end
+                return tonumber(x), tonumber(y)
+            end
+
+            function MINI.set_view_center_world(x, y)
+                local wx, wy = normalize_xy(x, y)
+                if not (wx and wy) then return end
+                MINI.view_center_world = MINI.view_center_world or {}
+                MINI.view_center_world.x = wx
+                MINI.view_center_world.y = wy
+            end
+
+            function MINI.request_view_center_world(x, y)
+                local wx, wy = normalize_xy(x, y)
+                if not (wx and wy) then return end
+                MINI.pending_view_center_world = { x = wx, y = wy }
+            end
+
+            function MINI.consume_view_center_world()
+                local c = MINI.pending_view_center_world
+                MINI.pending_view_center_world = nil
+                if c then
+                    MINI.set_view_center_world(c.x, c.y)
+                    return { x = c.x, y = c.y }
+                end
+            end
+
+            function MINI.get_view_center_world()
+                local c = MINI.view_center_world
+                if c then
+                    return { x = c.x, y = c.y }
+                end
+            end
+
+            local function room_center_world(id)
+                local b = lookup_room_bounds(id)
+                if not b then return nil end
+                return (b.min_x + b.max_x) * 0.5, (b.min_y + b.max_y) * 0.5
+            end
+
+            local function resolve_room_biome(room_id)
+                local key = normalize_room_id(room_id)
+                if not key then return nil end
+                local biome = room_biome_by_id[key]
+                if biome then
+                    return biome
+                end
+
+                biome = lookup_registry_biome(key)
+                if biome then
+                    room_biome_by_id[key] = biome
+                    return biome
+                end
+
+                local room_data = RoomManager.get_room_data and RoomManager.get_room_data(key) or nil
+                if room_data and type(room_data.tags) == "table" then
+                    biome = normalize_text_id(room_data.tags.biome or room_data.tags.area or room_data.tags.region)
+                    if biome then
+                        room_biome_by_id[key] = biome
+                        return biome
+                    end
+                end
+
+                return nil
+            end
+
+            function MINI.get_room_biome(room_id)
+                return resolve_room_biome(room_id or MINI.center_id)
+            end
+
+            Discovery.set_rooms(bounds_by_id)
+            local room_list = {}
+            for id, b in pairs(bounds_by_id) do room_list[#room_list + 1] = { id = id, r = b } end
+            table.sort(room_list, function(a, b) return a.id < b.id end)
+            local snapshot = { rooms = room_list, rooms_by_id = bounds_by_id, world_bb = world_bb,
+                cfg = { size_px = { w = 260, h = 150 } }, origin_shift = MINI.origin_shift }
+            function MINI.snapshot()
+                if MINI._discovery_restore_revision ~= Discovery.restore_revision() then
+                    rebuild_marker_lists()
+                    MINI._discovery_restore_revision = Discovery.restore_revision()
+                end
+                local player = MINI.player or v3(0,0,0)
+                local center = RoomManager.get_current_room and RoomManager.get_current_room() or MINI.center_id
+                local gate_markers = GateMarkers.collect_gate_markers()
+                local gate_version = GateMarkers.get_marker_version()
+
+                snapshot.player, snapshot.center_id = player, center
+                snapshot.view_center = MINI.view_center_world
+                snapshot.explored, snapshot.discovery_version = Discovery.explored, Discovery.revision()
+                snapshot.markers, snapshot.marker_version = MINI.markers, MINI._marker_version
+                snapshot.world_markers, snapshot.world_marker_version = MINI.world_markers, MINI._world_marker_version
+                snapshot.gate_markers, snapshot.gate_marker_version = gate_markers, gate_version
+                return snapshot
+            end
+            function MINI.set_player_pos(p)
+                if not p then return end
+                local x = p.x or 0
+                local y = p.y or 0
+                if not MINI._log_count or MINI._log_count < 5 then
+                    minimap_log(string.format("[MINIMAP_DBG] player_pos: %.1f, %.1f", x, y))
+                    MINI._log_count = (MINI._log_count or 0) + 1
+                end
+                MINI.player = v3(x, y, 0)
+                local room = RoomManager.get_current_room and RoomManager.get_current_room() or MINI.center_id
+                if room then Discovery.visit(room, MINI.player) end
+                if not MINI.view_center_world then
+                    MINI.set_view_center_world(x, y)
+                end
+            end
+
+            if default_center then
+                MINI.set_view_center_world(default_center.x, default_center.y)
+                MINI.request_view_center_world(default_center.x, default_center.y)
+            elseif world_bb then
+                local def_x = (world_bb.min_x + world_bb.max_x) * 0.5
+                local def_y = (world_bb.min_y + world_bb.max_y) * 0.5
+                MINI.set_view_center_world(def_x, def_y)
+                MINI.request_view_center_world(def_x, def_y)
+            end
+            apply_config_markers()
+
+            -- Scan tilemap door layers for a loaded room and cache door markers (with locked flag)
+            local function first_tilemap(created)
+                if type(created) ~= "table" then return nil, nil end
+                local level_id = hash("level")
+                local function is_level_root(go_url)
+                    if not (go_url and go.exists(go_url)) then return false end
+                    local ok, id = pcall(go.get_id, go_url)
+                    if ok and id == level_id then
+                        return true
+                    end
+                    local ok_url, u = pcall(msg.url, go_url)
+                    if ok_url and u and u.path then
+                        local path = tostring(u.path)
+                        if path:find("/level") then return true end
+                    end
+                    return false
+                end
+                local function resolve_tilemap(go_url)
+                    if not (go_url and go.exists(go_url)) then return nil, nil end
+                    local u = msg.url(go_url)
+                    for _, comp in ipairs({ "tilemap", "tm", "map" }) do
+                        local tm = msg.url(u.socket, u.path, hash(comp))
+                        local ok = pcall(tilemap.get_bounds, tm)
+                        if ok then
+                            local pos = go.get_world_position(go_url)
+                            return tm, pos
+                        end
+                    end
+                    return nil, nil
+                end
+                local fallback_tm, fallback_pos, fallback_go = nil, nil, nil
+                for _, go_url in pairs(created) do
+                    local tm, pos = resolve_tilemap(go_url)
+                    if tm then
+                        if is_level_root(go_url) then
+                            return tm, pos
+                        end
+                        if not fallback_tm then
+                            fallback_tm, fallback_pos, fallback_go = tm, pos, go_url
+                        end
+                    end
+                end
+                if fallback_tm then
+                    return fallback_tm, fallback_pos
+                end
+                return nil, nil
+            end
+            local function copy_marker_list(source)
+                local copy = {}
+                for i, marker in ipairs(source or {}) do
+                    copy[i] = {
+                        x = marker.x,
+                        y = marker.y,
+                        locked = marker.locked and true or false,
+                        side = marker.side,
+                        span = marker.span,
+                    }
+                end
+                return copy
+            end
+            local function scan_doors_for_room(room_id)
+                if not room_id then return end
+                local room_key = normalize_room_id(room_id)
+                if not room_key then return end
+                local cached = static_room_scan_cache[room_key]
+                local cached_bounds = lookup_room_bounds(room_key)
+                if cached and cached.door_scan_complete and cached_bounds then
+                    cached_bounds.doors = copy_marker_list(cached.doors)
+                    cached_bounds.doors_runtime = copy_marker_list(cached.doors_runtime)
+                    return
+                end
+                local created = RoomManager.get_loaded_room_created and RoomManager.get_loaded_room_created(room_key)
+                local tm, tm_pos, okb, min_tx, min_ty, w, h
+                local tw = project_tile_width()
+                local th = project_tile_height()
+                if created then
+                    tm, tm_pos = first_tilemap(created)
+                    if tm and tm_pos then
+                        okb, min_tx, min_ty, w, h = pcall(tilemap.get_bounds, tm)
+                    end
+                end
+                local function layer_hash(name) return (name and name ~= "") and hash(name) or nil end
+                local layers = {
+                    { side = "left",   lh = layer_hash(StreamS.doors and StreamS.doors.layer_left) },
+                    { side = "right",  lh = layer_hash(StreamS.doors and StreamS.doors.layer_right) },
+                    { side = "top",    lh = layer_hash(StreamS.doors and StreamS.doors.layer_top) },
+                    { side = "bottom", lh = layer_hash(StreamS.doors and StreamS.doors.layer_bottom) },
+                }
+                bounds_by_id[room_key] = bounds_by_id[room_key] or { doors = {} }
+                bounds_by_id[room_key].doors = {}
+                bounds_by_id[room_key].doors_runtime = {}
+                local count, locked_count = 0, 0
+                local room_bounds = bounds_by_id[room_key]
+                local door_list = room_bounds.doors
+                local runtime_list = room_bounds.doors_runtime
+                local base_x = room_bounds and room_bounds.min_x or 0
+                local base_y = room_bounds and room_bounds.min_y or 0
+                local function add_marker_to(list, cx, cy, locked, side_hint, span)
+                    local resolved_side = resolve_door_side(room_bounds, cx, cy, side_hint)
+                    -- span: door-run length in px (file scan); runtime markers are one tile.
+                    local entry = { x = cx, y = cy, locked = locked and true or false, side = resolved_side, span = span }
+                    local dup = false
+                    for _, e in ipairs(list) do
+                        local dx, dy = e.x - entry.x, e.y - entry.y
+                        if (dx*dx + dy*dy) <= 1.0 then
+                            dup = true
+                            if not e.side and entry.side then
+                                e.side = entry.side
+                            end
+                            if not e.span and entry.span then
+                                e.span = entry.span
+                            end
+                            if entry.locked and not e.locked then e.locked = true end
+                            break
+                        end
+                    end
+                    if not dup then
+                        list[#list+1] = entry
+                        return true
+                    end
+                    return false
+                end
+                local function add_marker(cx, cy, locked, side_hint, is_runtime, span)
+                    local added = add_marker_to(door_list, cx, cy, locked, side_hint, span)
+                    if added then
+                        count = count + 1
+                        if locked then locked_count = locked_count + 1 end
+                    end
+                    if is_runtime then
+                        add_marker_to(runtime_list, cx, cy, locked, side_hint, span)
+                    end
+                end
+
+                -- Layers that exist in this tilemap, from the Create Rooms
+                -- manifest (Defold has no tilemap.get_layers). Unknown room =>
+                -- empty set: the runtime scan is skipped and the file-based
+                -- door scan below still provides markers.
+                local tm_layer_set = {}
+                if tm then
+                    local ok_tl, TilemapLayers = pcall(require, "mvtk.rooms.tilemap_layers")
+                    local _, lookup = nil, nil
+                    if ok_tl and TilemapLayers then
+                        TilemapLayers.register(tm, room_key)
+                        _, lookup = TilemapLayers.for_room(room_key)
+                    end
+                    tm_layer_set = lookup or {}
+                end
+
+                local door_found_via_runtime = false
+                if okb and w and h and w > 0 and h > 0 and tm then
+                    for _, L in ipairs(layers) do
+                        if L.lh then
+                            -- Check if layer exists before scanning (use get_layers set to avoid GAMESYS errors)
+                            local layer_exists = tm_layer_set[L.lh]
+                            if layer_exists then
+                                local ok_rows, rows = pcall(tilemap.get_tiles, tm, L.lh)
+                                if ok_rows then
+                                    for _, marker in ipairs(DoorRows.markers(rows, min_tx, min_ty, w, h, tm_pos, tw, th)) do
+                                        local tx, ty, cx, cy = marker.tx, marker.ty, marker.x, marker.y
+                                        if Debug.global.enable or Debug.rooms.stream_manager or Debug.rooms.door_debug then
+                                            stream_log(string.format("[DOOR_DEBUG] %s side=%s tile=(%d,%d) min=(%d,%d) tm_pos=(%.1f,%.1f) tw=%d th=%d -> world=(%.1f,%.1f)",
+                                                room_id, L.side or "?", tx, ty, min_tx, min_ty, tm_pos.x, tm_pos.y, tw, th, cx, cy))
+                                        end
+
+                                        add_marker(cx, cy, false, L.side, true)
+                                        door_found_via_runtime = true
+                                    end
+                                end
+                            end
+                        end
+                    end
+                end
+                cached = cached or {}
+                if not cached.file_door_scan_complete then
+                    local tilemap_path = StreamPaths.tiled_tilemap(room_id)
+                    local ok_shape, shape = pcall(OutlineReader.read_shape, tilemap_path, false)
+                    if ok_shape and shape then
+                        local ok_doors, doors = pcall(DoorExtractor.from_tilemap_file, tilemap_path, shape)
+                        cached.file_doors = ok_doors and type(doors) == "table" and doors or {}
+                    else
+                        cached.file_doors = {}
+                    end
+                    cached.file_door_scan_complete = true
+                end
+                if type(cached.file_doors) == "table" then
+                    local doors = cached.file_doors
+                    if #doors > 0 then
+                        local before = #door_list
+                        for _, d in ipairs(doors) do
+                            add_marker(base_x + (d.cx or 0), base_y + (d.cy or 0), false, d.side, false, d.len_px)
+                        end
+                        local added = #door_list - before
+                        minimap_log(string.format("[MINIMAP_DBG] fallback door scan %s -> +%d markers (total=%d)", tostring(room_id), added, #door_list))
+                    end
+                end
+                minimap_log(string.format("[MINIMAP_DBG] doors %s -> %d found (%d locked) bounds(min_tx=%d,min_ty=%d w=%d h=%d) tw=%d th=%d basis=%s", tostring(room_id), #door_list, locked_count, min_tx or -1, min_ty or -1, w or -1, h or -1, tw, th, door_found_via_runtime and "runtime" or "mixed"))
+
+                -- DEBUG: Print all door positions for this room
+                if Debug.global.enable or Debug.rooms.stream_manager or Debug.rooms.door_debug then
+                    for i, door in ipairs(door_list) do
+                        stream_log(string.format("[DOOR_LIST_DEBUG] %s door[%d]: (%.1f, %.1f) locked=%s side=%s", room_id, i, door.x or 0, door.y or 0, tostring(door.locked), tostring(door.side)))
+                    end
+                end
+                cached.door_scan_complete = true
+                cached.doors = copy_marker_list(door_list)
+                cached.doors_runtime = copy_marker_list(runtime_list)
+                static_room_scan_cache[room_key] = cached
+            end
+            local function enqueue_room_ready_jobs(id)
+                local key = normalize_room_id(id)
+                if not key then return end
+                local room = RoomManager.get_loaded_room and RoomManager.get_loaded_room(key)
+                local generation = room and room.generation or nil
+                enqueue_ready_job(key, "tiled", generation, function()
+                    if TiledAdapter.has_tiled_map(key) then
+                        stream_log(string.format("[STREAM_MANAGER] Auto-loading Tiled data for room: %s", key))
+                        local room_url = msg.url("main", "/" .. key, nil)
+                        TiledAdapter.load_room(key, room_url, {
+                            spawn_objects = false,
+                        })
+                    end
+                end)
+                enqueue_ready_job(key, "doors", generation, function()
+                    scan_doors_for_room(key)
+                end)
+            end
+            -- Mark explored and keep center in sync
+            if RoomManager.register_event then
+                RoomManager.register_event('on_room_enter', function(id)
+                    local key = normalize_room_id(id) or id
+                    MINI.center_id = key
+                    if key then
+                        Discovery.visit(key)
+                        local cx, cy = room_center_world(key)
+                        if cx and cy then
+                            MINI.request_view_center_world(cx, cy)
+                        end
+                    end
+                end)
+                RoomManager.register_event('on_room_ready', function(id)
+                    enqueue_room_ready_jobs(id)
+                end)
+                RoomManager.register_event('on_room_unloaded', function(id)
+                    -- AUTO-CLEANUP TILED DATA
+                    if id and TiledAdapter.is_loaded(id) then
+                        stream_log(string.format("[STREAM_MANAGER] Auto-unloading Tiled data for room: %s", id))
+                        TiledAdapter.unload_room(id)
+                    end
+
+                    local room_key = normalize_room_id(id)
+                    if room_key then
+                        AuthoredObjectProps.clear(room_key)
+                    end
+                end)
+            end
+            -- Initial scan for already loaded rooms so doors show immediately
+            for _, r in ipairs(ld.rooms or {}) do
+                local rid = Util.normalize_room_id(r.id)
+                if RoomManager.is_room_loaded and RoomManager.is_room_loaded(rid) then
+                    enqueue_room_ready_jobs(rid)
+                end
+            end
+
+            function MINI.register_marker(entry)
+                return register_marker(entry)
+            end
+
+            function MINI.unregister_marker(marker_id)
+                local id = normalize_marker_id(marker_id)
+                if not id then return false end
+                if MINI._marker_registry and MINI._marker_registry[id] then
+                    MINI._marker_registry[id] = nil
+                    rebuild_marker_lists()
+                    return true
+                end
+                return false
+            end
+
+            function MINI.add_marker(pos, opts)
+                if not pos then return nil, "no_position" end
+                MINI._marker_counter = (MINI._marker_counter or 0) + 1
+                local id = normalize_marker_id(opts and opts.id) or string.format("runtime_%d_%d",
+                    MINI._marker_counter, os.time and os.time() or 0)
+                local entry = {
+                    id = id,
+                    position = pos,
+                    label = opts and opts.label or nil,
+                    source = opts and opts.source or "runtime",
+                    show_on_minimap = normalize_marker_bool(opts and opts.show_on_minimap, true),
+                    show_on_world_map = normalize_marker_bool(opts and opts.show_on_world_map, false),
+                    visible_from_start = true,
+                    discovered = true,
+                }
+                local marker = register_marker(entry)
+                if marker then
+                    MINI._runtime_marker_ids = MINI._runtime_marker_ids or {}
+                    table.insert(MINI._runtime_marker_ids, id)
+                    local limit = math.max(1, CUSTOM_MARKER_LIMIT or 20)
+                    while #MINI._runtime_marker_ids > limit do
+                        local remove_id = table.remove(MINI._runtime_marker_ids, 1)
+                        if remove_id then
+                            MINI._marker_registry[remove_id] = nil
+                        end
+                    end
+                    rebuild_marker_lists()
+                end
+                return marker
+            end
+
+            function MINI.clear_markers()
+                for id in pairs(MINI._marker_registry) do MINI._marker_registry[id] = nil end
+                MINI._runtime_marker_ids = {}
+                rebuild_marker_lists()
+            end
+
+            function MINI.marker_version()
+                return MINI._marker_version or 0
+            end
+
+            function MINI.world_marker_version()
+                return MINI._world_marker_version or 0
+            end
+
+            function MINI.update_marker_discovery(player_pos, player_room)
+                if not player_pos or not MINI._marker_registry then return end
+                local changed = false
+                local room_norm = normalize_room_id(player_room)
+                for _, marker in pairs(MINI._marker_registry) do
+                    if not marker.discovered then
+                        if marker.visible_from_start then
+                            marker.discovered = true
+                            changed = true
+                        elseif marker.discovery_radius and marker.discovery_radius > 0 then
+                            local dx = player_pos.x - marker.x
+                            local dy = player_pos.y - marker.y
+                            if (dx * dx + dy * dy) <= (marker.discovery_radius * marker.discovery_radius) then
+                                marker.discovered = true
+                                changed = true
+                            end
+                        else
+                            local marker_room = normalize_room_id(marker.room_id)
+                            if marker_room and room_norm and marker_room == room_norm then
+                                marker.discovered = true
+                                changed = true
+                            end
+                        end
+                    end
+                end
+                if changed then
+                    rebuild_marker_lists()
+                end
+            end
+
+            local function dist_sq_to_bounds(px, py, b)
+                local cx = math.max(b.min_x or px, math.min(px, b.max_x or px))
+                local cy = math.max(b.min_y or py, math.min(py, b.max_y or py))
+                local dx = px - cx
+                local dy = py - cy
+                return (dx * dx + dy * dy)
+            end
+
+            function MINI.reveal_rooms_near(pos, radius)
+                if not pos then return 0 end
+                local r = tonumber(radius) or 0
+                if r <= 0 then return 0 end
+                local px = pos.x or pos[1] or 0
+                local py = pos.y or pos[2] or 0
+                local r2 = r * r
+                local revealed = 0
+                for id, b in pairs(bounds_by_id) do
+                    if b and b.min_x then
+                        if dist_sq_to_bounds(px, py, b) <= r2 then
+                            if Discovery.reveal_room(id) then
+                                revealed = revealed + 1
+                            end
+                        end
+                    end
+                end
+                return revealed
+            end
+
+            function MINI.reveal_rooms_by_biome(biome_id)
+                local wanted = normalize_text_id(biome_id)
+                if not wanted then return 0 end
+                local revealed = 0
+                for id, _ in pairs(bounds_by_id) do
+                    local room_biome = resolve_room_biome(id)
+                    if room_biome and room_biome == wanted then
+                        if Discovery.reveal_room(id) then
+                            revealed = revealed + 1
+                        end
+                    end
+                end
+                return revealed
+            end
+
+            function MINI.reveal_all_rooms()
+                local revealed = 0
+                for id, _ in pairs(bounds_by_id) do
+                    if Discovery.reveal_room(id) then
+                        revealed = revealed + 1
+                    end
+                end
+                return revealed
+            end
+
+            -- Expose globally for the GUI script
+            _G.MINIMAP_MODULE = MINI
+        end
+        setup_minimap_adapter(layout_data)
+        stream_log("[STREAM_MANAGER] Room streaming system initialized with layout data")
+    else
+        -- No layout at all; bootstrap a fallback 2-room layout for quick testing
+        local a = (Config and Config.player and Config.player.spawn_room) or "developer/rooms/room_01"
+        local b = "developer/rooms/room_02"
+        local ld = { version = 0x6, rooms = {
+            { id = a, x = 0,    y = 0,   w = 1024, h = 512, ox = 0, oy = 0, neighbors = { { id = b, side = "E" } } },
+            { id = b, x = 1024, y = 0,   w = 1024, h = 512, ox = 0, oy = 0, neighbors = { { id = a, side = "W" } } },
+        } }
+        stream_log("[STREAM_MANAGER] No layout; installing fallback 2-room layout (demo <-> demo2)")
+        RoomManager.init(ld)
+        initialize_authored_elevators()
+        RoomManager.handle_room_load_message(Util.normalize_room_id(a))
+    end
+
+    -- Subscribe after layout/bounds setup. The camera publishes its final view
+    -- in late_update; discovery follows that view even if the player is still.
+    CameraDiscovery.start(RoomManager)
+
+    -- Debug output if enabled
+    if Config and Config.debug and Config.debug.prints then
+        stream_log("[STREAM_MANAGER] Stream manager script initialized at", go.get_id() or "<?>")
+    end
+end
+
+-- Update room streaming system each frame
+-- self: Script instance
+-- dt: Delta time in seconds
+--
+-- Updates:
+-- 1. RoomManager (handles async proxy loading/unloading)
+-- 2. Ready-job queue (staggered per-room post-load work)
+-- 3. Minimap player position tracking
+function update(self, dt)
+    -- Drain resource completions even while a menu is open. A requested
+    -- arrival must not deadlock behind script-level menu pause.
+    RoomManager.update(dt)
+    -- Skip update if game is paused
+    if Pause and Pause.get and Pause.get() then
+        return
+    end
+
+    -- Update room streaming system (processes async proxy operations)
+    process_one_ready_job()
+
+    -- Tiled parallax repositions from the camera's CameraState publish hook
+    -- (inside camera late_update), not from here: this script updates before
+    -- the camera and would only see last frame's view.
+
+    -- Update minimap with current player position
+    self._minimap_update_accumulator = (self._minimap_update_accumulator or 0) + dt
+    if self._minimap_update_accumulator >= 0.1 then
+        self._minimap_update_accumulator = self._minimap_update_accumulator % 0.1
+        local MINI = rawget(_G, 'MINIMAP_MODULE')
+        if MINI and MINI.set_player_pos and C and C.URL and C.URL.PLAYER and go.exists(C.URL.PLAYER) then
+            local p = go.get_world_position(C.URL.PLAYER)
+            MINI.set_player_pos(p)
+        end
+    end
+    FrameWatch.update(dt)
+end
+
+-- ============================================================================
+-- MINIMAP DATA ACCESSORS
+-- ============================================================================
+
+-- Get door data for a specific room
+-- room_id: Room identifier
+-- Returns: Array of door tables {x, y, locked, side} or nil if room not found
+--
+-- Used by minimap to display door icons
+local function get_door_data(room_id)
+    if not room_id then return nil end
+    local room_bounds = lookup_room_bounds(room_id)
+    return room_bounds and room_bounds.doors or nil
+end
+
+local function normalize_lock_room_id(room_id)
+    if not room_id then return nil end
+    local key = normalize_room_id(room_id) or tostring(room_id)
+    if key:sub(1, 6) == "arena_" then
+        key = key:sub(7)
+    end
+    return key
+end
+
+local function lock_room_doors(room_id, source)
+    local key = normalize_lock_room_id(room_id)
+    if not key or key == "" then
+        stream_log(string.format("[STREAM_MANAGER] lock_room: invalid room_id (%s)", tostring(room_id)))
+        return false
+    end
+    if LOCKED_ROOM_BLOCKERS[key] then
+        stream_log(string.format("[STREAM_MANAGER] lock_room: %s already locked (source=%s)", key, tostring(source)))
+        return true
+    end
+
+    local room_bounds = lookup_room_bounds(key)
+    local doors = room_bounds and room_bounds.doors_runtime
+    if not doors or #doors == 0 then
+        doors = room_bounds and room_bounds.doors
+    end
+    if not doors or #doors == 0 then
+        stream_log(string.format("[STREAM_MANAGER] lock_room: no door data for %s (source=%s)", key, tostring(source)))
+        return false
+    end
+
+    if LockCfg and LockCfg.debug and LockCfg.debug.prints then
+        for i, d in ipairs(doors) do
+            print(string.format("[STREAM_MANAGER][LOCK_DEBUG] %s door[%d] side=%s pos=(%.1f,%.1f)",
+                key, i, tostring(d.side), d.x or 0, d.y or 0))
+        end
+    end
+
+    local factory_path = LockCfg and LockCfg.factories and LockCfg.factories.blocker
+    if not factory_path or factory_path == "" then
+        stream_log(string.format("[STREAM_MANAGER] lock_room: blocker factory missing (room=%s)", key))
+        return false
+    end
+
+    local tw = project_tile_width()
+    local th = project_tile_height()
+
+    local base_w = (LockCfg.runtime_lock and LockCfg.runtime_lock.base_px) or 128
+    local base_h = (LockCfg.runtime_lock and LockCfg.runtime_lock.base_px) or 128
+
+    local factory_url = msg.url(factory_path)
+    local blockers = {}
+    local spawned_count = 0
+
+    if LockCfg and LockCfg.debug and LockCfg.debug.prints then
+        print(string.format("[STREAM_MANAGER][LOCK_DEBUG] tile_size=(%d,%d) base_px=(%d,%d)",
+            tonumber(tw) or 0, tonumber(th) or 0, tonumber(base_w) or 0, tonumber(base_h) or 0))
+    end
+
+    local function spawn_blocker_at(cx, cy, width_px, height_px, tag)
+        local sx = (base_w > 0) and (width_px / base_w) or 1.0
+        local sy = (base_h > 0) and (height_px / base_h) or 1.0
+        local door_id = string.format("arena_lock:%s:%s", key, tostring(tag))
+        local pos = vmath.vector3(cx, cy, 0)
+        local ok, res = pcall(factory.create, factory_url, pos, nil, {
+            door_id = door_id,
+            auto_delete_when_open = 0,
+            scale_x = sx,
+            scale_y = sy,
+        }, 1.0)
+        if ok and res then
+            blockers[#blockers + 1] = res
+            spawned_count = spawned_count + 1
+        else
+            stream_log(string.format("[STREAM_MANAGER] lock_room: blocker spawn failed for %s tag=%s: %s", key, tostring(tag), tostring(res)))
+        end
+    end
+
+    -- One tile-sized blocker per door tile. File-scanned markers are one per
+    -- door RUN (centre + span); a single blocker there left the floor tile of
+    -- a 3-tile door open and the player walked out of boss fights.
+    for _, rect in ipairs(DoorLockGeometry.blocker_rects(doors, tw, th)) do
+        spawn_blocker_at(rect.x, rect.y, rect.w, rect.h, rect.tag)
+    end
+
+    if #blockers > 0 then
+        LOCKED_ROOM_BLOCKERS[key] = blockers
+        stream_log(string.format("[STREAM_MANAGER] lock_room: %s locked (%d blockers, source=%s)", key, #blockers, tostring(source)))
+        return true
+    end
+
+    stream_log(string.format("[STREAM_MANAGER] lock_room: no blockers spawned for %s", key))
+    return false
+end
+
+local function unlock_room_doors(room_id, source)
+    local key = normalize_lock_room_id(room_id)
+    if not key or key == "" then
+        stream_log(string.format("[STREAM_MANAGER] unlock_room: invalid room_id (%s)", tostring(room_id)))
+        return false
+    end
+    local blockers = LOCKED_ROOM_BLOCKERS[key]
+    if not blockers then
+        stream_log(string.format("[STREAM_MANAGER] unlock_room: %s not locked (source=%s)", key, tostring(source)))
+        return false
+    end
+
+    for _, url in ipairs(blockers) do
+        if url and go.exists(url) then
+            go.delete(url)
+        end
+    end
+    LOCKED_ROOM_BLOCKERS[key] = nil
+    stream_log(string.format("[STREAM_MANAGER] unlock_room: %s unlocked (source=%s)", key, tostring(source)))
+    return true
+end
+
+local function unlock_all_rooms(source)
+    local total = 0
+    for key, blockers in pairs(LOCKED_ROOM_BLOCKERS) do
+        for _, url in ipairs(blockers) do
+            if url and go.exists(url) then
+                go.delete(url)
+            end
+        end
+        LOCKED_ROOM_BLOCKERS[key] = nil
+        total = total + 1
+    end
+    stream_log(string.format("[STREAM_MANAGER] unlock_all_rooms: cleared %d rooms (source=%s)", total, tostring(source)))
+    return total > 0
+end
+
+-- Get room bounds data for minimap
+-- room_id: Room identifier
+-- Returns: Bounds table {min_x, max_x, min_y, max_y, segments, doors} or nil
+local function get_room_bounds(room_id)
+    if not room_id then return nil end
+    return lookup_room_bounds(room_id)
+end
+
+-- Find the room that contains a world position
+-- pos: vector3 with x/y in world space
+-- Returns: Normalized room id or nil
+local function find_room_for_position(pos)
+    if not pos then return nil end
+    local px = pos.x or 0
+    local py = pos.y or 0
+    for id, b in pairs(bounds_by_id) do
+        if b and b.min_x and b.max_x and b.min_y and b.max_y then
+            if px >= b.min_x and px <= b.max_x and py >= b.min_y and py <= b.max_y then
+                return id
+            end
+        end
+    end
+end
+
+-- Get matched door pairs between two connected rooms
+-- room_a_id, room_b_id: Room identifiers
+-- Returns: Array of door pair tables or nil if rooms aren't neighbors
+--
+-- Each pair: { side, from, to, seam, offset }
+-- Used by minimap to draw connections between rooms at door positions
+local function get_door_pairs_between_rooms(room_a_id, room_b_id)
+    local aid = normalize_room_id(room_a_id)
+    local bid = normalize_room_id(room_b_id)
+    if not (aid and bid) then return nil end
+    if aid == bid then return nil end
+
+    local function collect_doors(room_id, side)
+        local bounds = lookup_room_bounds(room_id)
+        if not bounds then return {}, bounds end
+        local list = bounds.doors or {}
+        local out = {}
+        for _, door in ipairs(list) do
+            if door and door.x and door.y then
+                local resolved_side = resolve_door_side(bounds, door.x, door.y, door.side)
+                if resolved_side then
+                    door.side = door.side or resolved_side
+                end
+                if not side or resolved_side == side then
+                    out[#out+1] = door
+                end
+            end
+        end
+        return out, bounds
+    end
+
+    local function copy_door(src)
+        if not src then return nil end
+        return {
+            x = src.x,
+            y = src.y,
+            locked = src.locked and true or false,
+            side = src.side and normalize_side(src.side) or nil,
+        }
+    end
+
+    local function seam_midpoint(bounds_a, bounds_b, side, da, db)
+        if not (bounds_a and bounds_b and da and db) then return nil end
+        if side == "left" then
+            return { x = (bounds_a.min_x + bounds_b.max_x) * 0.5, y = (da.y + db.y) * 0.5 }
+        elseif side == "right" then
+            return { x = (bounds_a.max_x + bounds_b.min_x) * 0.5, y = (da.y + db.y) * 0.5 }
+        elseif side == "top" then
+            return { x = (da.x + db.x) * 0.5, y = (bounds_a.max_y + bounds_b.min_y) * 0.5 }
+        elseif side == "bottom" then
+            return { x = (da.x + db.x) * 0.5, y = (bounds_a.min_y + bounds_b.max_y) * 0.5 }
+        end
+        return nil
+    end
+
+    local function pair_for_side(side)
+        local normalized_side = normalize_side(side)
+        if not normalized_side then return {} end
+        local opposite = opposite_side(normalized_side)
+        local doors_a, bounds_a = collect_doors(aid, normalized_side)
+        local doors_b, bounds_b = collect_doors(bid, opposite)
+        if #doors_a == 0 or #doors_b == 0 then return {} end
+        table.sort(doors_a, function(a, b)
+            if normalized_side == "left" or normalized_side == "right" then
+                return (a.y or 0) < (b.y or 0)
+            end
+            return (a.x or 0) < (b.x or 0)
+        end)
+        table.sort(doors_b, function(a, b)
+            if normalized_side == "left" or normalized_side == "right" then
+                return (a.y or 0) < (b.y or 0)
+            end
+            return (a.x or 0) < (b.x or 0)
+        end)
+        local used_b = {}
+        local axis = (normalized_side == "left" or normalized_side == "right") and "y" or "x"
+        local results = {}
+        for _, da in ipairs(doors_a) do
+            local best_idx, best_dist = nil, math.huge
+            for idx, db in ipairs(doors_b) do
+                if not used_b[idx] then
+                    local dist = math.abs((da[axis] or 0) - (db[axis] or 0))
+                    if dist < best_dist then
+                        best_dist = dist
+                        best_idx = idx
+                    end
+                end
+            end
+            if best_idx then
+                used_b[best_idx] = true
+                local db = doors_b[best_idx]
+                results[#results+1] = {
+                    side = normalized_side,
+                    from = copy_door(da),
+                    to = copy_door(db),
+                    seam = seam_midpoint(bounds_a, bounds_b, normalized_side, da, db),
+                    offset = best_dist,
+                }
+            end
+        end
+        return results
+    end
+
+    local neighbors = RoomManager.get_room_neighbors and RoomManager.get_room_neighbors(aid) or {}
+    local pairs = {}
+    for _, edge in ipairs(neighbors) do
+        local neighbor_id = normalize_room_id(edge and (edge.id or edge.room or edge.neighbor))
+        if neighbor_id == bid then
+            local side = normalize_side(edge and edge.side)
+            if side then
+                local subset = pair_for_side(side)
+                for _, rec in ipairs(subset) do
+                    pairs[#pairs+1] = rec
+                end
+            end
+        end
+    end
+    if #pairs == 0 then return nil end
+    return pairs
+end
+
+-- ============================================================================
+-- MESSAGE HANDLERS
+-- ============================================================================
+
+-- Handle incoming messages from other systems
+-- self: Script instance
+-- message_id: Hashed message name
+-- message: Message data table
+-- sender: URL of sender
+--
+-- Handles:
+-- - "get_door_data" - Minimap requests for door positions
+-- - "player_ready" - Player initialization, store player URL
+-- - C.MSG.ROOM_LOAD / "mvtk_room_load" - Request to load a room
+-- - "spawn_position" - Override spawn position (future use)
+function on_message(self, message_id, message, sender)
+    local C = require("mvtk.core.constants")
+
+    -- Minimap requests door data for display
+    if message_id == hash("get_door_data") then
+        local room_id = message and message.room_id
+        local doors = get_door_data(room_id)
+        local door_count = doors and #doors or 0
+        stream_log(string.format("[STREAM_MANAGER] Door data request for %s: found %d doors", tostring(room_id), door_count))
+        if door_count > 0 then
+            stream_log(string.format("[STREAM_MANAGER] First door: (%.1f,%.1f)", doors[1].x, doors[1].y))
+        end
+        msg.post(sender, "door_data_response", { room_id = room_id, doors = doors })
+        return
+    end
+
+    if message_id == hash("lock_room") then
+        local room_id = message and (message.room_id or message.arena_id or message.id)
+        lock_room_doors(room_id, message and message.source)
+        return
+    elseif message_id == hash("unlock_room") then
+        local room_id = message and (message.room_id or message.arena_id or message.id)
+        unlock_room_doors(room_id, message and message.source)
+        return
+    elseif message_id == hash("unlock_all_rooms") then
+        unlock_all_rooms(message and message.source)
+        return
+    end
+
+    -- Player spawner notifies us when player is ready
+    if message_id == hash("player_ready") then
+        local url = message and message.url
+        if url then
+            stream_log("[STREAM_MANAGER] Player ready message received")
+            C.URL = C.URL or {}
+            C.URL.PLAYER = url  -- Store for room manager and minimap
+            if RoomManager and RoomManager.set_player_url then
+                RoomManager.set_player_url(url)  -- Enable proximity-based room loading
+            end
+        end
+        return
+
+    -- Player respawn/reset: reload streaming around current position
+    elseif message_id == hash("player_respawn") then
+        local player_url = C and C.URL and C.URL.PLAYER
+        local pos = player_url and go.exists(player_url) and go.get_world_position(player_url) or nil
+        local target_room = find_room_for_position(pos)
+        if not target_room then
+            target_room = Config and Config.player and Config.player.spawn_room
+            if target_room then
+                target_room = Util.normalize_room_id(target_room)
+            end
+        end
+        if target_room then
+            stream_log(string.format("[STREAM_MANAGER] Respawn -> reload room '%s'", target_room))
+            -- Drop any streamed Tiled assets before reloading rooms
+            TiledAdapter.clear_all()
+            -- Reload target room and re-arm streaming
+            RoomManager.handle_room_load_message(target_room)
+            -- Recenter minimap view on the respawn position if available
+            local MINI = rawget(_G, 'MINIMAP_MODULE')
+            if MINI and MINI.request_view_center_world and pos then
+                MINI.request_view_center_world(pos.x, pos.y)
+            end
+        else
+            stream_log("[STREAM_MANAGER] Respawn received but no room match; skipping reload")
+        end
+        return
+
+    -- Room load request (triggers async collection proxy load)
+    elseif message_id == (C and C.MSG and C.MSG.ROOM_LOAD or hash("mvtk_room_load")) then
+        local room_spec = message and (message.room or message.room_id)
+        if room_spec then
+            local room_id = Util.normalize_room_id(room_spec)
+            stream_log(string.format("[STREAM_MANAGER] Room load request: %s", room_id))
+            RoomManager.handle_room_load_message(room_id)  -- Async load
+        end
+
+    -- Spawn position override (for respawn, checkpoints, etc.)
+    elseif message_id == hash("spawn_position") then
+        local pos = message and (message.pos or message.position)
+        if pos then
+            stream_log(string.format("[STREAM_MANAGER] Spawn position received: (%.1f, %.1f)", pos.x, pos.y))
+            -- Could be used to override spawn position in rooms (future feature)
+        end
+    
+    end
+end
+
+-- Handle input events (currently unused)
+-- self: Script instance
+-- action_id: Input action hash
+-- action: Action data table
+--
+-- Reserved for future debug controls (room switching, streaming debug info, etc.)
+function on_input(self, action_id, action)
+    -- Debug controls could be added here
+    -- For example, manual room switching, streaming debug visualization, etc.
+end
+
+-- Clean up room streaming system on shutdown
+-- self: Script instance
+--
+-- Unloads all rooms and cleans up Tiled adapter resources
+function final(self)
+    stream_log("[STREAM_MANAGER] Cleaning up room streaming system...")
+    CameraDiscovery.stop()
+
+    -- Unload all Tiled map data
+    TiledAdapter.clear_all()
+
+    -- Cleanup room manager (unload all collection proxies)
+    RoomManager.final()
+end
+ 
+ 

@@ -1,0 +1,138 @@
+-- mvtk/prefabs/bounce_pad.script
+-- Spring pad that bounces the player upward.
+
+local C = require "mvtk.core.constants"
+local PU = require "mvtk.prefabs.prefab_utils"
+local Debug = require "developer.config.debug_config"
+local Util = require "mvtk.core.util"
+
+go.property("bounce_speed", 900)
+go.property("cooldown", 0.2)
+go.property("require_interact", false)
+go.property("label", "")
+go.property("sound_id", "")
+go.property("range", 80)
+go.property("show_sprite", true) -- false when the Tiled layer owns the visible art
+
+local DEFAULT_LABEL = "Bounce"
+
+local function size_diag_enabled()
+    return (Debug.global and Debug.global.enable)
+        or (Debug.tiled and Debug.tiled.spawner)
+end
+
+local function try_get_component_property(url, property)
+    local ok, value = pcall(go.get, url, property)
+    if ok then
+        return value
+    end
+    return nil
+end
+
+local function fmt_vec3(v)
+    if type(v) ~= "userdata" or v.x == nil or v.y == nil or v.z == nil then
+        return "nil"
+    end
+    return string.format("(%.3f, %.3f, %.3f)", v.x, v.y, v.z)
+end
+
+local function log_size_diag()
+    if not size_diag_enabled() then
+        return
+    end
+
+    local pos = go.get_world_position()
+    local scale = go.get_scale()
+    local sprite_scale = try_get_component_property("#sprite", "scale")
+    local sprite_size = try_get_component_property("#sprite", "size")
+
+    print(string.format(
+        "[BOUNCE_PAD] SIZE_DIAG id=%s pos=%s root_scale=%s sprite_scale=%s sprite_size=%s",
+        tostring(go.get_id()),
+        fmt_vec3(pos),
+        fmt_vec3(scale),
+        fmt_vec3(sprite_scale),
+        fmt_vec3(sprite_size)
+    ))
+
+    if scale and math.abs(scale.x - scale.y) > 0.001 then
+        print(string.format(
+            "[BOUNCE_PAD] SIZE_WARNING non-uniform root scale x=%.3f y=%.3f; Defold trigger collision will follow the smallest axis. Use a room-local generated prototype for exact Tiled bounds.",
+            scale.x,
+            scale.y
+        ))
+    end
+end
+
+local function get_player_url()
+    return C.URL.PLAYER
+end
+
+local function bounce(self, actor_url)
+    if self._cooldown_t and self._cooldown_t > 0 then
+        print(string.format("[BOUNCE_PAD] bounce BLOCKED by cooldown (%.3f remaining)", self._cooldown_t))
+        return
+    end
+    self._cooldown_t = tonumber(self.cooldown) or 0
+    local url = actor_url or get_player_url()
+    print(string.format("[BOUNCE_PAD] BOUNCING actor=%s speed=%.0f cooldown=%.2f",
+        tostring(url), tonumber(self.bounce_speed) or 900, self._cooldown_t))
+    if url and go.exists(url) then
+        pcall(msg.post, url, hash("mvtk_bounce"), { speed = tonumber(self.bounce_speed) or 900 })
+    else
+        print(string.format("[BOUNCE_PAD] WARNING: actor does not exist: %s", tostring(url)))
+    end
+    PU.play_sound(self.sound_id)
+end
+
+function init(self)
+    if not self.show_sprite then
+        Util.set_component_enabled("#sprite", false)
+    end
+    self._cooldown_t = 0
+    self._inside = false
+    local pos = go.get_world_position()
+    print(string.format("[BOUNCE_PAD] init id=%s pos=(%.0f,%.0f) bounce_speed=%.0f cooldown=%.2f require_interact=%s",
+        tostring(go.get_id()), pos.x, pos.y, self.bounce_speed, self.cooldown, tostring(self.require_interact)))
+    log_size_diag()
+    if self.require_interact then
+        local label = PU.normalize_hash_string(self.label) or DEFAULT_LABEL
+        PU.register_interaction(label, self.range or 80, 4)
+    end
+end
+
+function final(self)
+    PU.unregister_interaction()
+end
+
+function update(self, dt)
+    if self._cooldown_t and self._cooldown_t > 0 then
+        self._cooldown_t = math.max(0, self._cooldown_t - dt)
+    end
+end
+
+function on_message(self, message_id, message, sender)
+    if message_id == hash("trigger_response") then
+        local other_group = message.other_group or message.group
+        local is_player = other_group == hash("player")
+        local enter = message.enter
+        print(string.format("[BOUNCE_PAD] trigger_response other_group=%s is_player=%s enter=%s other_id=%s inside=%s",
+            tostring(other_group), tostring(is_player), tostring(enter),
+            tostring(message.other_id), tostring(self._inside)))
+        if is_player then
+            if enter then
+                self._inside = true
+                if not self.require_interact then
+                    bounce(self, message.other_id or message.other_url or sender)
+                end
+            else
+                self._inside = false
+                -- Reset cooldown on exit so the pad is always ready for the next landing
+                self._cooldown_t = 0
+                print("[BOUNCE_PAD] player LEFT trigger zone (cooldown reset)")
+            end
+        end
+    elseif message_id == hash("mvtk_interact") then
+        bounce(self, message and message.actor or get_player_url())
+    end
+end

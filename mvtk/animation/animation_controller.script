@@ -1,0 +1,628 @@
+-- animation/animation_controller.script
+-- Unified animation controller for sprite flipbooks and Spine
+
+local Names = require "mvtk.animation.names"
+local Config = require "developer.config.resolved_config"
+local Debug = require "developer.config.debug_config"
+local Util = require "mvtk.core.util"
+local AnimIndex = require "mvtk.core.anim_index"
+local FX = Util.require_module("mvtk.fx.fx")
+-- Make Spine API optional to satisfy static checks and allow sprite-only projects
+-- Defold/LuaJIT uses _G; avoid referencing _ENV to keep linters quiet
+local SPINE = rawget(_G, "spine")
+local DEATH_HASH = Names.canon("death")
+
+go.property("use_spine", 0)                       -- 0 = sprite, 1 = spine
+go.property("sprite_id", msg.url("#sprite"))      -- sprite component url
+go.property("spine_id",  msg.url("#spine"))       -- spine component url
+go.property("default_state", "idle")
+-- The bake sets this for atlas-backed generated prefabs. An empty value keeps
+-- custom/unbaked art on the legacy permissive path until Create Rooms runs.
+go.property("sprite_atlas", "")
+go.property("flip_by_scale", 0)           -- 1 to flip by negative x scale; default uses sprite.hflip
+go.property("spine_blend", 0.08)          -- default spine blend duration
+go.property("auto_resolve_player_type", 0)        -- 1 = use Config.player.player_type
+-- With auto_resolve_player_type = 1, init disables the visual this GO does not
+-- use. A dedicated GO that has only one visual (player_spine.go has no sprite)
+-- sets this false: messaging an absent component logs an engine error.
+go.property("disable_unused_visual", true)
+-- Player collections resolve their Spine visual from a sibling GO during
+-- init. Deferring avoids depending on component init order.
+go.property("defer_initial_play", 0)
+
+local MSG_ANIM_DONE = hash("anim.done")
+local MSG_ANIM_MISSING = hash("anim.missing")
+local MSG_SET_STATE = hash("anim.set_state")
+local MSG_PLAY_ONCE = hash("anim.play_once")
+local MSG_SET_FACING= hash("anim.set_facing")
+local MSG_FLASH     = hash("anim.flash")
+local MSG_CONFIGURE_VISUAL = hash("anim.configure_visual")
+
+local H_ANIM_DONE_SPRITE = hash("animation_done")
+local H_ANIM_DONE_SPINE  = hash("spine_animation_done")
+
+-- Native sprite-vertex crash diagnostics are intentionally available only
+-- while the master debug switch is on. With release/debug-off configuration
+-- this resolves to nil once at module load and every toggle is inert.
+local ENEMY_CRASH_DEBUG = Debug.global and Debug.global.enable and Debug.enemy_crash or nil
+local function enemy_crash_enabled(flag)
+  return ENEMY_CRASH_DEBUG and ENEMY_CRASH_DEBUG[flag] == true
+end
+
+local function h(str) return (type(str) == "string") and hash(str) or str end
+
+local function copy_message(message)
+  local result = {}
+  if type(message) == "table" then
+    for key, value in pairs(message) do result[key] = value end
+  end
+  return result
+end
+
+local function to_state_hash(s)
+  return Names.canon(s)
+end
+
+local play  -- forward declaration; defined after spine_play
+
+local function is_spine(self) return (self.use_spine or 0) ~= 0 end
+
+local function configured_player_uses_spine()
+  local player_type = Config
+    and Config.player
+    and Config.player.player_type
+    or "sprite"
+  return tostring(player_type):lower() ~= "sprite"
+end
+
+local function fetch_spine_rot(self)
+  local spine_url = self.spine_id or msg.url("#spine")
+  local ok, rot = pcall(go.get_rotation, spine_url)
+  if not ok then
+    if Debug.animation.flip or Debug.global.enable then
+      print(string.format("[ANIM_FLIP] get_rotation failed: %s", tostring(rot)))
+    end
+    return go.get_rotation()
+  end
+  return rot
+end
+
+local function apply_spine_rot(self, rot)
+  local spine_url = self.spine_id or msg.url("#spine")
+  local ok, err = pcall(go.set_rotation, rot, spine_url)
+  if not ok then
+    if Debug.animation.flip or Debug.global.enable then
+      print(string.format("[ANIM_FLIP] set_rotation failed: %s", tostring(err)))
+    end
+    go.set_rotation(rot)
+  end
+end
+
+local function set_flip(self, dir)
+  local facing = (dir and dir < 0) and -1 or 1
+  self.facing = facing
+
+  if is_spine(self) then
+    local target_y = (facing < 0) and math.pi or 0
+    local rot = fetch_spine_rot(self)
+    local ok_euler, current_euler = pcall(vmath.quat_to_euler, rot)
+    if not ok_euler or type(current_euler) ~= "userdata" then
+      if Debug.animation.flip or Debug.global.enable then
+        print(string.format("[FLIP] quat_to_euler failed for %s (type=%s)", tostring(rot), type(current_euler)))
+      end
+      apply_spine_rot(self, vmath.quat_rotation_y(target_y))
+      return
+    end
+    if math.abs(current_euler.y - target_y) > 0.01 then
+      apply_spine_rot(self, vmath.quat_rotation_y(target_y))
+    end
+    return
+  end
+
+  if (self.flip_by_scale or 0) ~= 0 then
+    local s = go.get_scale()
+    local sx = math.abs(s.x)
+    if sx <= 0 or sx ~= sx then sx = 1.0 end
+    local sy = math.abs(s.y)
+    if sy <= 0 or sy ~= sy then sy = 1.0 end
+    local sz = math.abs(s.z)
+    if sz <= 0 or sz ~= sz then sz = 1.0 end
+
+    local target = (facing < 0) and -sx or sx
+
+    if math.abs(target) > 0 and sy > 0 and sz > 0 and s.x ~= target then
+      go.set_scale(vmath.vector3(target, sy, sz))
+    end
+  end
+
+  if not enemy_crash_enabled("disable_hflip") then
+    pcall(sprite.set_hflip, self.sprite_id, facing < 0)
+  end
+end
+
+local function same_state(a, b)
+  if not a or not b then return false end
+  return a == b
+end
+
+local function normalize_track(track, is_overlay)
+  local t = tonumber(track)
+  if not t then
+    -- Spine extension uses 1-based track numbering:
+    -- track 1 = base, track 2+ = overlays.
+    t = is_overlay and 2 or 1
+  end
+  if is_overlay and t <= 1 then
+    t = 2
+  end
+  return t
+end
+
+local function set_track_state(self, track, state_hash)
+  self._track_state = self._track_state or {}
+  self._track_state[track] = state_hash
+end
+
+local function set_track_once(self, track, is_once)
+  self._track_once = self._track_once or {}
+  self._track_once[track] = is_once and true or false
+end
+
+local function set_track_auto_fallback(self, track, enabled)
+  self._track_auto_fallback = self._track_auto_fallback or {}
+  self._track_auto_fallback[track] = enabled and true or false
+end
+
+local function next_track_generation(self, track)
+  self._track_generation = self._track_generation or {}
+  self._animation_generation = (self._animation_generation or 0) + 1
+  local generation = self._animation_generation
+  self._track_generation[track] = generation
+  return generation
+end
+
+-- Player-rig specific animation name map. Loaded lazily from
+-- developer/config/player_spine_map.lua and applied ONLY when this
+-- controller is attached to the player (auto_resolve_player_type = 1).
+-- Other rigs (bosses, enemies) do their own resolution upstream — this map
+-- must not remap their animations, since e.g. boss "dash" != player "air_dash".
+local PLAYER_SPINE_MAP = nil  -- { [hash(key)] = hash(value), ... } once built
+local function get_player_spine_map()
+  if PLAYER_SPINE_MAP ~= nil then return PLAYER_SPINE_MAP end
+  PLAYER_SPINE_MAP = {}
+  local raw = Util.require_config("developer.config.player_spine_map", {})
+  if type(raw) == "table" then
+    for k, v in pairs(raw) do
+      if type(k) == "string" and type(v) == "string" and v ~= "" then
+        PLAYER_SPINE_MAP[hash(k)] = hash(v)
+      end
+    end
+  end
+  return PLAYER_SPINE_MAP
+end
+
+local function is_player_controller(self)
+  return (tonumber(self.auto_resolve_player_type) or 0) ~= 0
+end
+
+local function spine_play(self, state_hash, opts, generation)
+  local playback
+  if opts and opts.loop ~= nil then
+    playback = opts.loop and go.PLAYBACK_LOOP_FORWARD or go.PLAYBACK_ONCE_FORWARD
+  else
+    local overlay = opts and opts.overlay
+    local should_loop = (not overlay) and Names.is_loop(state_hash)
+    playback = should_loop and go.PLAYBACK_LOOP_FORWARD or go.PLAYBACK_ONCE_FORWARD
+  end
+  local blend = (opts and opts.blend ~= nil) and opts.blend or (self.spine_blend or 0.08)
+  if blend < 0 then blend = 0 end
+
+  -- Map game animation names to Spine animation names. Only applied for the
+  -- player controller (auto_resolve_player_type = 1) — bosses and other rigs
+  -- resolve their own names upstream and must pass through unchanged.
+  local spine_anim_hash = state_hash
+  if is_player_controller(self) then
+    local mapped = get_player_spine_map()[state_hash]
+    if mapped then spine_anim_hash = mapped end
+  end
+
+  if SPINE and SPINE.play_anim then
+    local options = { blend_duration = blend }
+    if opts then
+      if opts.track ~= nil then options.track = opts.track end
+      if opts.offset ~= nil then options.offset = opts.offset end
+      if opts.playback_rate ~= nil then options.playback_rate = opts.playback_rate end
+      if opts.mix_blend ~= nil then options.mix_blend = opts.mix_blend end
+    end
+    -- Use a callback function for reliable completion notification.
+    -- The Spine extension's DDF message path (spine_animation_done) does not
+    -- reliably fire for one-shot animations on the base track.  Using a
+    -- callback ensures we always receive the completion event.
+    local function spine_cb(cb_self, message_id, message, cb_sender)
+      if message_id == hash("spine_animation_done") then
+        local done_track = tonumber(message and message.track) or 1
+        -- A replaced Spine animation can still deliver its callback after a
+        -- newer request has claimed the same track. Never let that stale
+        -- completion clear or replace the newer animation.
+        if generation ~= nil
+          and self._track_generation
+          and self._track_generation[done_track] ~= generation then
+          return
+        end
+        local done_state = self._track_state and self._track_state[done_track] or nil
+        local done_once = self._track_once and self._track_once[done_track]
+        local auto_fallback = self._track_auto_fallback and self._track_auto_fallback[done_track]
+        if not done_state and message then
+          done_state = message.animation_id
+        end
+        if not done_state then done_state = self.current_state end
+        local is_overlay_done = done_track > 1
+        local is_death = self.current_state and self.current_state == DEATH_HASH
+        local will_fallback = (not is_overlay_done) and (not is_death) and done_once and auto_fallback
+        -- Forward anim.done to the game object
+        local target = go.get_id()
+        msg.post(target, MSG_ANIM_DONE, {
+          state = done_state,
+          track = done_track,
+          fallback = will_fallback and true or false,
+        })
+        -- Clear track state
+        if self._track_state then self._track_state[done_track] = nil end
+        if self._track_once then self._track_once[done_track] = nil end
+        if self._track_auto_fallback then self._track_auto_fallback[done_track] = nil end
+        if self._track_generation then self._track_generation[done_track] = nil end
+        -- Cancel completed overlay tracks so they stop displaying their
+        -- last frame and the base track (walk/idle) shows through.
+        if is_overlay_done and SPINE and SPINE.cancel then
+          pcall(SPINE.cancel, self.spine_id, { track = done_track })
+        end
+        -- State-driven one-shots hold their final frame until the state machine
+        -- requests the next state. Explicit play-once requests return to idle.
+        if will_fallback then
+          self.current_state = nil  -- force re-play
+          play(self, to_state_hash(self.default_state or "idle"), { force = true })
+        end
+      end
+    end
+    return pcall(SPINE.play_anim, self.spine_id, spine_anim_hash, playback, options, spine_cb)
+  end
+
+  return false
+end
+
+local EMPTY_HASH = hash("")
+
+local function sprite_play(self, state_hash, is_initial, playback_rate)
+  -- Sprite flipbooks take FPS + loop/once from the atlas definition
+  if not state_hash or state_hash == EMPTY_HASH then return false end
+  -- Preserve the one init flipbook so this flag isolates runtime state swaps.
+  -- Returning success prevents the normal missing-animation fallback from
+  -- issuing another play_flipbook call during the diagnostic run.
+  if not is_initial and enemy_crash_enabled("disable_state_swaps") then
+    return true
+  end
+  -- play_flipbook logs a GAMESYS error for a missing animation without
+  -- throwing, so pcall alone cannot tell us whether it worked. Only suppress a
+  -- play when the baked manifest positively knows this atlas lacks the id.
+  if AnimIndex.has(self.sprite_atlas, state_hash) == false then
+    return false
+  end
+  local ok = pcall(sprite.play_flipbook, self.sprite_id, state_hash, nil,
+    { playback_rate = playback_rate or 1 })
+  if not ok then return false end
+  return true
+end
+
+play = function(self, state_hash, opts)
+  if not state_hash or state_hash == EMPTY_HASH then
+    return
+  end
+
+  local overlay = opts and opts.overlay
+  local track = opts and opts.track
+  -- Spine uses 1-based tracks: track 1 = base, track 2+ = overlays
+  local is_overlay = overlay or ((tonumber(track) or 1) > 1)
+  local track_index = normalize_track(track, is_overlay)
+
+  if not is_overlay and same_state(self.current_state, state_hash) and not (opts and opts.force) then
+    -- Updating the rate preserves the cursor; replaying here would keep
+    -- acceleration stuck on the first animation frame. Spine index 1 changes
+    -- only locomotion's base track, leaving attack overlays at authored speed.
+    if opts and opts.playback_rate ~= nil and self._playback_rate ~= opts.playback_rate then
+      if is_spine(self) then
+        go.set(self.spine_id, "playback_rate", opts.playback_rate, { index = 1 })
+      else
+        go.set(self.sprite_id, "playback_rate", opts.playback_rate)
+      end
+      self._playback_rate = opts.playback_rate
+    end
+    -- A player action may start a one-shot immediately, then its state
+    -- machine adopts that same clip on the next update. Transfer completion
+    -- ownership without restarting the flipbook or introducing an idle seam.
+    if opts and opts.auto_fallback ~= nil then
+      set_track_auto_fallback(self, track_index, opts.auto_fallback == true)
+    end
+    return
+  end
+
+  local track_once
+  if opts and opts.loop ~= nil then
+    track_once = not opts.loop
+  else
+    track_once = Names.is_once(state_hash)
+  end
+
+  -- Debug disabled
+
+  if not is_overlay then
+    self.current_state = state_hash
+    self._playback_rate = (opts and opts.playback_rate) or 1
+  end
+  set_track_state(self, track_index, state_hash)
+  set_track_once(self, track_index, track_once)
+  set_track_auto_fallback(self, track_index, opts and opts.auto_fallback == true)
+  local generation = next_track_generation(self, track_index)
+  local ok
+  if is_spine(self) then
+    ok = spine_play(self, state_hash, opts, generation)
+  else
+    ok = sprite_play(self, state_hash, opts and opts.initial, opts and opts.playback_rate)
+  end
+  if not ok and is_player_controller(self) then
+    msg.post(go.get_id(), MSG_ANIM_MISSING, {
+      state = state_hash,
+      requested_state = (opts and opts.requested_state) or state_hash,
+      use_spine = is_spine(self),
+    })
+  end
+  if not ok and not is_overlay then
+    local fallback = to_state_hash(self.default_state or "idle")
+    if fallback and fallback ~= EMPTY_HASH and fallback ~= state_hash then
+      self.current_state = fallback
+      self._playback_rate = 1
+      set_track_state(self, track_index, fallback)
+      set_track_once(self, track_index, false)
+      set_track_auto_fallback(self, track_index, false)
+      if is_spine(self) then
+        pcall(spine_play, self, fallback, { force = true, loop = true })
+      else
+        pcall(sprite_play, self, fallback, opts and opts.initial)
+      end
+      if track_once then
+        msg.post(go.get_id(), MSG_ANIM_DONE, {
+          state = state_hash,
+          track = track_index,
+          fallback = true,
+          missing = true,
+        })
+      end
+    end
+  end
+  -- Event-driven FX hooks for common one-shots
+  if not is_overlay then
+    if FX and not enemy_crash_enabled("disable_combat_fx") then
+      if state_hash == Names.canon("land") then pcall(FX.on_land, { pos = go.get_position() }) end
+      if state_hash == Names.canon("dash") then pcall(FX.on_dash, { pos = go.get_position() }) end
+    end
+  end
+end
+
+function init(self)
+  self.sprite_id = h(self.sprite_id or "#sprite")
+  self.spine_id  = h(self.spine_id or  "#spine")
+  if (tonumber(self.auto_resolve_player_type) or 0) ~= 0 then
+    self.use_spine = configured_player_uses_spine() and 1 or 0
+  end
+
+  -- On dual-component GOs (auto_resolve_player_type=1), disable the unused visual
+  -- so both don't render simultaneously. Skip on dedicated GOs where only one exists.
+  if (tonumber(self.auto_resolve_player_type) or 0) ~= 0 and self.disable_unused_visual then
+    if is_spine(self) then
+      Util.post_component_enabled(self.sprite_id, false)
+    else
+      Util.post_component_enabled(self.spine_id, false)
+    end
+  end
+
+  self.facing = 1
+  self.current_state = nil
+  self._track_state = {}
+  self._track_once = {}
+  self._track_auto_fallback = {}
+  self._track_generation = {}
+  self._animation_generation = 0
+  local initial_state = to_state_hash(self.default_state or "idle")
+  local initial_opts = { force = true, initial = true }
+  self._initial_play_deferred = (tonumber(self.defer_initial_play) or 0) ~= 0
+  if self._initial_play_deferred then
+    -- player_visual_mode posts anim.configure_visual after every component
+    -- has initialized, carrying the prefix-safe sibling component URL.
+    self._initial_play_deferred = true
+  elseif not is_spine(self) and enemy_crash_enabled("defer_first_flipbook") then
+    timer.delay(0, false, function()
+      play(self, initial_state, initial_opts)
+    end)
+  else
+    play(self, initial_state, initial_opts)
+  end
+end
+
+local dispatch_message
+
+function on_message(self, message_id, message, sender)
+  -- Player visual configuration is delivered after component init because
+  -- Defold does not guarantee component init order. Preserve any init-time
+  -- player requests until the sibling Spine URL has been installed.
+  if self._initial_play_deferred then
+    if message_id == MSG_SET_STATE or message_id == MSG_PLAY_ONCE then
+      self._pending_initial_animation = {
+        message_id = message_id,
+        message = copy_message(message),
+      }
+      return
+    elseif message_id == MSG_SET_FACING then
+      self._pending_initial_facing = (message and message.dir) or 1
+      return
+    end
+  end
+
+  if message_id == MSG_SET_STATE or message_id == MSG_PLAY_ONCE then
+    local st = to_state_hash(message and message.state)
+    if message_id == MSG_PLAY_ONCE then
+      local opts = {
+        force = true,
+        loop = false,
+        blend = message and message.blend,
+        track = message and message.track,
+        mix_blend = message and message.mix_blend,
+        playback_rate = message and message.playback_rate,
+        offset = message and message.offset,
+        overlay = message and message.overlay,
+        requested_state = message and message.requested_state,
+        auto_fallback = true,
+      }
+      play(self, st, opts)
+    else
+      play(self, st, {
+        force = (message and message.force) or false,
+        loop = message and message.loop,
+        blend = message and message.blend,
+        requested_state = message and message.requested_state,
+        playback_rate = message and message.playback_rate,
+        -- Preserve the public controller's legacy SET_STATE fallback unless
+        -- the caller identifies itself as a continuously managed state
+        -- machine. The player does so to avoid an idle frame/glide when a
+        -- one-shot state (for example jump) completes before state changes.
+        auto_fallback = not (message and message.state_managed == true),
+      })
+    end
+  elseif message_id == MSG_CONFIGURE_VISUAL then
+    if message then
+      local replay_default = self._initial_play_deferred
+        or message.replay_default == true
+        or message.replay_default == 1
+      if message.use_spine ~= nil then
+        self.use_spine = (tonumber(message.use_spine) or 0) ~= 0 and 1 or 0
+      end
+      if message.sprite_id ~= nil then
+        self.sprite_id = h(message.sprite_id)
+      end
+      if message.sprite_atlas ~= nil then
+        self.sprite_atlas = message.sprite_atlas
+      end
+      if message.spine_id ~= nil then
+        self.spine_id = h(message.spine_id)
+      end
+      if message.default_state ~= nil then
+        self.default_state = message.default_state
+      end
+      if replay_default then
+        local pending_animation = self._pending_initial_animation
+        local pending_facing = self._pending_initial_facing
+        self._pending_initial_animation = nil
+        self._pending_initial_facing = nil
+        self._initial_play_deferred = false
+        self.current_state = nil
+        self._track_state = {}
+        self._track_once = {}
+        self._track_auto_fallback = {}
+        self._track_generation = {}
+        if pending_facing ~= nil then
+          set_flip(self, pending_facing)
+        end
+        if pending_animation then
+          dispatch_message(self, pending_animation.message_id, pending_animation.message, sender)
+        else
+          play(self, to_state_hash(self.default_state or "idle"), {
+            force = true,
+            initial = true,
+          })
+        end
+      end
+    end
+  elseif message_id == MSG_SET_FACING then
+    -- Debug disabled
+    set_flip(self, (message and message.dir) or 1)
+  elseif message_id == MSG_FLASH then
+    -- Flash the character a colour then return to white.
+    -- message fields: color (vector4, default white), duration (seconds, default 0.12)
+    local color = (message and message.color) or vmath.vector4(1, 1, 1, 1)
+    local dur = (message and message.duration) or 0.12
+    local white = vmath.vector4(1, 1, 1, 1)
+    local target_url = is_spine(self) and self.spine_id or self.sprite_id
+    -- Cancel any in-flight tint animation so flashes don't fight each other
+    pcall(go.cancel_animations, target_url, "tint")
+    -- Snap to flash colour, then ease back to white
+    pcall(go.set, target_url, "tint", color)
+    if not enemy_crash_enabled("disable_tint_animate") then
+      pcall(go.animate, target_url, "tint", go.PLAYBACK_ONCE_FORWARD, white, go.EASING_OUTCUBIC, dur)
+    end
+  elseif message_id == H_ANIM_DONE_SPRITE or message_id == H_ANIM_DONE_SPINE then
+    -- spine_play() registers a callback that posts MSG_ANIM_DONE itself, so
+    -- the DDF spine_animation_done message would otherwise fire a duplicate
+    -- completion event (causing double anim.done on the boss, racing
+    -- intro->idle transitions and double go.delete on death). Skip the DDF
+    -- path entirely when spine is the active visual; sprite stays handled.
+    if message_id == H_ANIM_DONE_SPINE and is_spine(self) then
+      return
+    end
+    local done_track = tonumber(message and message.track) or 1
+    local done_state = self._track_state and self._track_state[done_track] or nil
+    local reported_state = message and (message.id or message.animation_id or message.state)
+    if type(reported_state) == "string" then
+      reported_state = to_state_hash(reported_state)
+    end
+    -- A sprite completion is queued as a message. If another flipbook took
+    -- ownership of the base track before delivery, ignore the old completion.
+    if done_state and reported_state and done_state ~= reported_state then
+      return
+    end
+    if not done_state and message then
+      done_state = message.state or message.animation_id or message.id
+      if type(done_state) == "string" then
+        done_state = to_state_hash(done_state)
+      end
+    end
+    if not done_state then
+      done_state = self.current_state
+    end
+    local done_once = self._track_once and self._track_once[done_track]
+    local auto_fallback = self._track_auto_fallback and self._track_auto_fallback[done_track]
+    -- Spine uses 1-based tracks: 1=base, 2+=overlay.
+    local is_overlay_done = done_track > 1
+
+    -- State-driven one-shots hold their final frame. Only explicit
+    -- anim.play_once requests are allowed to replace themselves with idle.
+    local is_death = self.current_state and self.current_state == DEATH_HASH
+    local will_fallback = (not is_overlay_done) and (not is_death) and done_once and auto_fallback
+
+    -- Forward anim.done to the whole game object so other scripts (player, AI) can react
+    local target = go.get_id()
+    local done_message = {
+      state = done_state,
+      track = done_track,
+      fallback = will_fallback and true or false,
+    }
+    msg.post(target, MSG_ANIM_DONE, done_message)
+    if sender and sender ~= target then
+      msg.post(sender, MSG_ANIM_DONE, done_message)
+    end
+    if self._track_state then
+      self._track_state[done_track] = nil
+    end
+    if self._track_once then
+      self._track_once[done_track] = nil
+    end
+    if self._track_auto_fallback then
+      self._track_auto_fallback[done_track] = nil
+    end
+    if self._track_generation then
+      self._track_generation[done_track] = nil
+    end
+    if will_fallback then
+      play(self, to_state_hash(self.default_state or "idle"), { force = true })
+    end
+  end
+end
+
+dispatch_message = on_message

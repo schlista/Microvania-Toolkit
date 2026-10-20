@@ -1,0 +1,100 @@
+local Proxy = require "mvtk.prefabs.tiled_proxy_util"
+local Util = require "mvtk.core.util"
+
+local BASE_MARKER_WIDTH = 128
+local BASE_MARKER_HEIGHT = 128
+
+go.property("registration_id", "")
+go.property("arena_id", "")
+go.property("boss_id", "")
+go.property("boss_type", "")
+go.property("boss_preset", "")
+go.property("encounter_id", "")
+go.property("lock_on_enter", true)
+go.property("unlock_on_clear", true)
+go.property("zone_width", 512)
+go.property("zone_height", 384)
+go.property("room_id", "")
+go.property("hide_in_game", true)
+
+local function resolve_zone_dimensions(self)
+    local scale = go.get_scale()
+    local scale_x = math.abs(tonumber(scale.x) or 1)
+    local scale_y = math.abs(tonumber(scale.y) or 1)
+
+    local width_from_scale = scale_x * BASE_MARKER_WIDTH
+    local height_from_scale = scale_y * BASE_MARKER_HEIGHT
+    local width_from_props = Proxy.number(self.zone_width, 512)
+    local height_from_props = Proxy.number(self.zone_height, 384)
+
+    local width = width_from_props
+    local height = height_from_props
+
+    if math.abs(scale_x - 1) > 0.001 or math.abs(width_from_scale - width_from_props) < 0.001 then
+        width = width_from_scale
+    end
+    if math.abs(scale_y - 1) > 0.001 or math.abs(height_from_scale - height_from_props) < 0.001 then
+        height = height_from_scale
+    end
+
+    return width, height
+end
+
+local function build_properties(self, room_id)
+    local zone_width, zone_height = resolve_zone_dimensions(self)
+    local props = {
+        arena_id = Proxy.plain(self.arena_id, ""),
+        boss_id = Proxy.plain(self.boss_id, ""),
+        boss_type = Proxy.plain(self.boss_type, ""),
+        boss_preset = Proxy.plain(self.boss_preset, ""),
+        encounter_id = Proxy.plain(self.encounter_id, ""),
+        lock_on_enter = Proxy.bool(self.lock_on_enter, true),
+        unlock_on_clear = Proxy.bool(self.unlock_on_clear, true),
+        zone_width = zone_width,
+        zone_height = zone_height,
+    }
+    if props.arena_id == "" then
+        props.arena_id = room_id ~= "" and ("arena_" .. room_id) or Proxy.registration_id(self, "arena_lock")
+    end
+    return props
+end
+
+function init(self)
+    if self.hide_in_game then
+        -- Recorded so a room hide/show keeps the editor marker hidden.
+        Util.set_component_enabled("#sprite", false)
+        pcall(Util.post_component_enabled, "#co", false)
+    end
+
+    local room_id = Proxy.room_id(self)
+    local props = build_properties(self, room_id)
+    if props.boss_preset == "" then
+        props.boss_preset = props.boss_type
+    end
+    props.boss_type = props.boss_preset ~= "" and props.boss_preset or props.boss_type
+
+    -- Sized Tiled rectangles are baked as centered game objects, while the
+    -- runtime overlap helper expects a lower-left zone origin.
+    local center = Proxy.world_position()
+    local zone_position = vmath.vector3(
+        center.x - props.zone_width * 0.5,
+        center.y - props.zone_height * 0.5,
+        center.z)
+
+    Proxy.post_to_main("register_arena_lock", {
+        id = Proxy.registration_id(self, props.arena_id),
+        arena_id = props.arena_id,
+        position = zone_position,
+        width = props.zone_width,
+        height = props.zone_height,
+        room_id = room_id,
+        lock_on_enter = props.lock_on_enter,
+        unlock_on_clear = props.unlock_on_clear,
+        encounter_id = props.encounter_id,
+        boss_id = props.boss_id,
+        boss_preset = props.boss_preset,
+        boss_type = props.boss_type,
+        is_boss_arena = false,
+        properties = props,
+    })
+end

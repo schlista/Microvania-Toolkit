@@ -1,0 +1,4 @@
+animations { id: "idle" images { image: "/developer/assets/atlas/collectibles/stamina_vessel.png" } playback: PLAYBACK_NONE fps: 1 }
+margin: 2
+extrude_borders: 0
+inner_padding: 0

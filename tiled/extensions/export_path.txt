@@ -1,0 +1,10 @@
+# MV Toolkit — Tiled export path (a fallback; usually leave it as it is)
+#
+# Tiled exports go to the toolkit whose MVTK.tiled-project is open, so this
+# file is only read when no toolkit project is open in Tiled.
+#
+# The optional INSTALL.bat / INSTALL.sh (and tools/set_tiled_export_path.*)
+# write this toolkit's ABSOLUTE path, with forward slashes, on the first
+# non-comment line below. Example:
+#
+#   C:/Users/you/Documents/Microvania_Toolkit

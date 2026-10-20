@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<template>
+ <object name="Boss Arena" type="boss_arena" width="512" height="384">
+  <properties>
+   <property name="boss_ref" type="object" value="0"/>
+   <property name="boss_type" propertytype="bosses" value="default_boss"/>
+   <property name="arena_id" type="string" value=""/>
+   <property name="boss_id" type="string" value=""/>
+   <property name="encounter" type="class" propertytype="boss_arena_encounter">
+    <properties>
+     <property name="phases" type="int" value="1"/>
+     <property name="lock_on_enter" type="bool" value="true"/>
+     <property name="unlock_on_clear" type="bool" value="true"/>
+     <property name="charge_edge_padding" type="float" value="-1"/>
+    </properties>
+   </property>
+   <property name="camera" type="class" propertytype="boss_arena_camera">
+    <properties>
+     <property name="camera_lock" type="bool" value="false"/>
+     <property name="camera_priority" type="int" value="10"/>
+    </properties>
+   </property>
+   <property name="music" type="class" propertytype="boss_arena_music">
+    <properties>
+     <property name="battle_music" propertytype="boss_music_tracks" value="none"/>
+     <property name="victory_music" propertytype="boss_music_tracks" value="none"/>
+    </properties>
+   </property>
+   <property name="mvtk_template_version" type="string" value="2.7.0"/>
+  </properties>
+ </object>
+</template>

@@ -1,0 +1,31 @@
+{
+  "name": "Mannequin",
+  "generator": "developer/tools/generate_player_model_pack.py",
+  "baseline_bottom_margin": 32,
+  "keep_geometry": true,
+  "animations": {
+    "jump": {
+      "indices": [
+        0,
+        1,
+        2
+      ]
+    },
+    "fall": {
+      "source": "jump",
+      "indices": [
+        3,
+        4,
+        5
+      ],
+      "fps": 10,
+      "playback": "loop"
+    },
+    "land": {
+      "fps": 18
+    },
+    "ledge_grab_climb": {
+      "fps": 13
+    }
+  }
+}

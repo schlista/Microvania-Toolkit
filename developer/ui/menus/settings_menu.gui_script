@@ -1,0 +1,1154 @@
+local Viewport = require "mvtk.ui.viewport"
+-- developer/ui/menus/settings_menu.gui_script
+-- Comprehensive settings menu with Audio, Graphics, and Controls tabs
+
+local Settings = require("mvtk.core.settings")
+local Pause = require("mvtk.core.pause")
+local InputCtl = require("mvtk.rooms.input_controller")
+
+local TABS = { "audio", "graphics", "controls" }
+local SLIDER_WIDTH = 200
+local SELECTED_BG_COLOR = vmath.vector4(0.12, 0.25, 0.50, 1)  -- Blue highlight for selected buttons
+local NORMAL_BG_COLOR = vmath.vector4(0.22, 0.22, 0.28, 1)    -- Dark slate for normal buttons
+local PICK_MODE = gui.PICK_MODE_BOX or gui.PICK_MODE_PASS_THROUGH or 1
+local POINTER_ACTIONS = {
+    [hash("touch")] = true,
+    [hash("click")] = true,
+    [hash("mouse_button_1")] = true,
+}
+
+-- Forward declarations
+local update_audio_ui
+local update_graphics_ui
+local update_controls_ui
+
+local ICON_THEME_NAMES = {
+    xbox = "Xbox",
+    playstation = "PlayStation",
+    switch = "Switch",
+}
+
+local function n(id)
+    local ok, node = pcall(gui.get_node, id)
+    return ok and node or nil
+end
+
+local function make_pickable(...)
+    for _, node in ipairs({...}) do
+        if node then
+            if gui.set_pick_mode then
+                gui.set_pick_mode(node, PICK_MODE)
+            elseif gui.set_node_pickable then
+                -- Support older engine builds where set_pick_mode is unavailable
+                gui.set_node_pickable(node, true)
+            end
+        end
+    end
+end
+
+local function is_pointer_action(action_id)
+    return POINTER_ACTIONS[action_id] == true
+end
+
+local function get_pointer_xy(action)
+    if not action then return nil, nil end
+    -- Defold's pick coordinates deliberately differ from raw screen pixels.
+    return action.x, action.y
+end
+
+local function update_selection_highlight(self)
+    -- Highlight the selected item based on current tab
+    if self.current_tab == "audio" then
+        -- Call update_audio_ui which now handles highlighting
+        update_audio_ui(self)
+
+    elseif self.current_tab == "graphics" then
+        -- Call update_graphics_ui which now handles highlighting
+        update_graphics_ui(self)
+
+    elseif self.current_tab == "controls" then
+        -- Update controls UI to show selection
+        update_controls_ui(self)
+    end
+end
+
+local function show_menu(self, data)
+    if self.visible then return end
+    self.visible = true
+    self.return_target = data and data.return_to or nil
+
+    -- Show backdrop first
+    if self.backdrop then
+        gui.set_enabled(self.backdrop, true)
+        gui.set_color(self.backdrop, vmath.vector4(0, 0, 0, 0))
+        gui.animate(self.backdrop, gui.PROP_COLOR, vmath.vector4(0, 0, 0, 0.92), gui.EASING_LINEAR, 0.2)
+    end
+
+    if self.root then
+        -- Center root to screen in case resolution differs
+        gui.set_pivot(self.root, gui.PIVOT_CENTER)
+        local w, h = Viewport.design_size()
+        gui.set_position(self.root, vmath.vector3(w * 0.5, h * 0.5, 0))
+        gui.set_enabled(self.root, true)
+        gui.animate(self.root, gui.PROP_COLOR, vmath.vector4(0.08, 0.08, 0.12, 1), gui.EASING_LINEAR, 0.2)
+    end
+
+    -- Update selection highlight when menu opens
+    update_selection_highlight(self)
+
+    -- Pause the game
+    if Pause and Pause.set then
+        Pause.set(true)
+    end
+
+    msg.post(".", "acquire_input_focus")
+end
+
+local function hide_menu(self, keep_pause)
+    if not self.visible then return end
+    self.visible = false
+    local target = self.return_target
+
+    -- Hide backdrop
+    if self.backdrop then
+        gui.animate(self.backdrop, gui.PROP_COLOR, vmath.vector4(0, 0, 0, 0), gui.EASING_LINEAR, 0.2, 0, function()
+            gui.set_enabled(self.backdrop, false)
+        end)
+    end
+
+    if self.root then
+        gui.animate(self.root, gui.PROP_COLOR, vmath.vector4(0.08, 0.08, 0.12, 0), gui.EASING_LINEAR, 0.2, 0, function()
+            gui.set_enabled(self.root, false)
+        end)
+    end
+
+    -- Unpause the game
+    if not keep_pause and Pause and Pause.set then
+        Pause.set(false)
+    end
+
+    msg.post(".", "release_input_focus")
+    if target then
+        pcall(msg.post, target, hash("settings_closed"))
+    end
+    self.return_target = nil
+end
+
+update_audio_ui = function(self)
+    -- Update master volume slider
+    local master = Settings.get_master_volume()
+    local music = Settings.get_music_volume()
+    local sfx = Settings.get_sfx_volume()
+    local muted = Settings.is_muted()
+
+    if self.audio.master_fg then
+        gui.set_size(self.audio.master_fg, vmath.vector3(SLIDER_WIDTH * master, 12, 0))
+    end
+    if self.audio.master_val then
+        gui.set_text(self.audio.master_val, string.format("%d%%", math.floor(master * 100)))
+    end
+
+    if self.audio.music_fg then
+        gui.set_size(self.audio.music_fg, vmath.vector3(SLIDER_WIDTH * music, 12, 0))
+    end
+    if self.audio.music_val then
+        gui.set_text(self.audio.music_val, string.format("%d%%", math.floor(music * 100)))
+    end
+
+    if self.audio.sfx_fg then
+        gui.set_size(self.audio.sfx_fg, vmath.vector3(SLIDER_WIDTH * sfx, 12, 0))
+    end
+    if self.audio.sfx_val then
+        gui.set_text(self.audio.sfx_val, string.format("%d%%", math.floor(sfx * 100)))
+    end
+
+    -- Update mute button
+    if self.audio.btn_mute_label then
+        gui.set_text(self.audio.btn_mute_label, muted and "UNMUTE" or "MUTE")
+    end
+    if self.audio.btn_mute then
+        local color = muted and vmath.vector4(0.90, 0.25, 0.20, 1) or NORMAL_BG_COLOR
+        gui.set_color(self.audio.btn_mute, color)
+    end
+
+    -- Scale selected item to show selection (no highlight bars)
+    local selected_item = self.audio_items and self.audio_items[self.selected_item] or nil
+    local SELECTED_SCALE = vmath.vector3(1.15, 1.15, 1)
+    local NORMAL_SCALE = vmath.vector3(1, 1, 1)
+
+    -- Reset all items to normal scale and color
+    if self.audio.master_bg then gui.set_scale(self.audio.master_bg, NORMAL_SCALE) end
+    if self.audio.music_bg then gui.set_scale(self.audio.music_bg, NORMAL_SCALE) end
+    if self.audio.sfx_bg then gui.set_scale(self.audio.sfx_bg, NORMAL_SCALE) end
+    if self.audio.btn_mute then gui.set_scale(self.audio.btn_mute, NORMAL_SCALE) end
+    if self.audio.btn_reset then
+        gui.set_scale(self.audio.btn_reset, NORMAL_SCALE)
+        gui.set_color(self.audio.btn_reset, NORMAL_BG_COLOR)
+    end
+    if self.btn_back then
+        gui.set_scale(self.btn_back, NORMAL_SCALE)
+        gui.set_color(self.btn_back, NORMAL_BG_COLOR)
+    end
+
+    -- Scale up and color the selected item
+    if selected_item == "master" and self.audio.master_bg then
+        gui.set_scale(self.audio.master_bg, SELECTED_SCALE)
+    elseif selected_item == "music" and self.audio.music_bg then
+        gui.set_scale(self.audio.music_bg, SELECTED_SCALE)
+    elseif selected_item == "sfx" and self.audio.sfx_bg then
+        gui.set_scale(self.audio.sfx_bg, SELECTED_SCALE)
+    elseif selected_item == "mute" and self.audio.btn_mute then
+        gui.set_scale(self.audio.btn_mute, SELECTED_SCALE)
+        if not muted then gui.set_color(self.audio.btn_mute, SELECTED_BG_COLOR) end
+    elseif selected_item == "reset" and self.audio.btn_reset then
+        gui.set_scale(self.audio.btn_reset, SELECTED_SCALE)
+        gui.set_color(self.audio.btn_reset, SELECTED_BG_COLOR)
+    elseif selected_item == "back" and self.btn_back then
+        gui.set_scale(self.btn_back, SELECTED_SCALE)
+        gui.set_color(self.btn_back, SELECTED_BG_COLOR)
+    end
+end
+
+update_graphics_ui = function(self)
+    local window_mode = Settings.get_window_mode()
+    local vsync = Settings.get_vsync()
+    local show_fps = Settings.get_show_fps()
+
+    -- Display window mode with proper capitalization
+    local mode_text = ""
+    if window_mode == "windowed" then
+        mode_text = "Windowed"
+    elseif window_mode == "fullscreen_windowed" then
+        mode_text = "Fullscreen Windowed"
+    elseif window_mode == "fullscreen" then
+        mode_text = "Fullscreen"
+    end
+
+    if self.graphics.btn_window_mode_label then
+        gui.set_text(self.graphics.btn_window_mode_label, "Window Mode: " .. mode_text)
+    end
+    if self.graphics.btn_window_mode then
+        gui.set_color(self.graphics.btn_window_mode, NORMAL_BG_COLOR)
+    end
+
+    if self.graphics.btn_vsync_label then
+        gui.set_text(self.graphics.btn_vsync_label, vsync and "VSync: ON" or "VSync: OFF")
+    end
+    if self.graphics.btn_vsync then
+        gui.set_color(self.graphics.btn_vsync, NORMAL_BG_COLOR)
+    end
+
+    if self.graphics.btn_show_fps_label then
+        gui.set_text(self.graphics.btn_show_fps_label, show_fps and "Show FPS: ON" or "Show FPS: OFF")
+    end
+    if self.graphics.btn_show_fps then
+        gui.set_color(self.graphics.btn_show_fps, NORMAL_BG_COLOR)
+    end
+
+    -- Scale selected item to show selection (no highlight bars)
+    local selected_item = self.graphics_items and self.graphics_items[self.selected_item] or nil
+    local SELECTED_SCALE = vmath.vector3(1.15, 1.15, 1)
+    local NORMAL_SCALE = vmath.vector3(1, 1, 1)
+
+    -- Reset all items to normal scale
+    if self.graphics.btn_window_mode then gui.set_scale(self.graphics.btn_window_mode, NORMAL_SCALE) end
+    if self.graphics.btn_vsync then gui.set_scale(self.graphics.btn_vsync, NORMAL_SCALE) end
+    if self.graphics.btn_show_fps then gui.set_scale(self.graphics.btn_show_fps, NORMAL_SCALE) end
+    if self.graphics.btn_reset then
+        gui.set_scale(self.graphics.btn_reset, NORMAL_SCALE)
+        gui.set_color(self.graphics.btn_reset, NORMAL_BG_COLOR)
+    end
+    if self.btn_back then
+        gui.set_scale(self.btn_back, NORMAL_SCALE)
+        gui.set_color(self.btn_back, NORMAL_BG_COLOR)
+    end
+
+    -- Scale up and color the selected item
+    if selected_item == "window_mode" and self.graphics.btn_window_mode then
+        gui.set_scale(self.graphics.btn_window_mode, SELECTED_SCALE)
+        gui.set_color(self.graphics.btn_window_mode, SELECTED_BG_COLOR)
+    elseif selected_item == "vsync" and self.graphics.btn_vsync then
+        gui.set_scale(self.graphics.btn_vsync, SELECTED_SCALE)
+        gui.set_color(self.graphics.btn_vsync, SELECTED_BG_COLOR)
+    elseif selected_item == "show_fps" and self.graphics.btn_show_fps then
+        gui.set_scale(self.graphics.btn_show_fps, SELECTED_SCALE)
+        gui.set_color(self.graphics.btn_show_fps, SELECTED_BG_COLOR)
+    elseif selected_item == "reset" and self.graphics.btn_reset then
+        gui.set_scale(self.graphics.btn_reset, SELECTED_SCALE)
+        gui.set_color(self.graphics.btn_reset, SELECTED_BG_COLOR)
+    elseif selected_item == "back" and self.btn_back then
+        gui.set_scale(self.btn_back, SELECTED_SCALE)
+        gui.set_color(self.btn_back, SELECTED_BG_COLOR)
+    end
+end
+
+update_controls_ui = function(self)
+    if not self.control_bindings then return end
+
+    local bindings = Settings.get_control_bindings()
+    local selected_action = self.controls_items and self.controls_items[self.selected_item] or nil
+    local SELECTED_SCALE = vmath.vector3(1.15, 1.15, 1)
+    local NORMAL_SCALE = vmath.vector3(1, 1, 1)
+
+    -- Reset all controls to normal scale and bg first
+    for _, action_data in ipairs(self.control_bindings) do
+        if action_data.label_node then gui.set_scale(action_data.label_node, NORMAL_SCALE) end
+        if action_data.value_node then gui.set_scale(action_data.value_node, NORMAL_SCALE) end
+        if action_data.bg_node then
+            gui.set_color(action_data.bg_node, vmath.vector4(0.2, 0.2, 0.2, 0))
+            gui.set_scale(action_data.bg_node, NORMAL_SCALE)
+        end
+    end
+    if self.controls.btn_reset then
+        gui.set_scale(self.controls.btn_reset, NORMAL_SCALE)
+        gui.set_color(self.controls.btn_reset, NORMAL_BG_COLOR)
+    end
+    if self.btn_back then
+        gui.set_scale(self.btn_back, NORMAL_SCALE)
+        gui.set_color(self.btn_back, NORMAL_BG_COLOR)
+    end
+
+    for _, action_data in ipairs(self.control_bindings) do
+        local action_name = action_data.action
+        local binding = bindings[action_name]
+        local is_selected = (selected_action == action_name)
+
+        local button_name = "<NEEDS ASSIGNMENT>"
+        if binding then
+            button_name = binding:gsub("_", " "):upper()
+        end
+
+        if action_data.label_node then
+            local label_text = action_data.display_name .. ":"
+            gui.set_text(action_data.label_node, label_text)
+
+            local label_color = vmath.vector4(0.78, 0.78, 0.82, 1)
+            if is_selected then
+                label_color = vmath.vector4(1, 1, 1, 1)  -- White when selected
+                gui.set_scale(action_data.label_node, SELECTED_SCALE)
+            elseif not binding then
+                label_color = vmath.vector4(0.8, 0.2, 0.2, 1)  -- Red for unassigned
+            end
+            gui.set_color(action_data.label_node, label_color)
+        end
+
+        if action_data.value_node then
+            local value_text = button_name
+            if self.capturing_input and is_selected then
+                value_text = "PRESS BUTTON..."
+            end
+            gui.set_text(action_data.value_node, value_text)
+
+            local value_color = vmath.vector4(0.78, 0.78, 0.82, 1)
+            if self.capturing_input and is_selected then
+                value_color = vmath.vector4(0.5, 0.85, 1.0, 1)  -- Bright blue when capturing
+                gui.set_scale(action_data.value_node, SELECTED_SCALE)
+            elseif is_selected then
+                value_color = vmath.vector4(1, 1, 1, 1)  -- White when selected
+                gui.set_scale(action_data.value_node, SELECTED_SCALE)
+            elseif not binding then
+                value_color = vmath.vector4(0.8, 0.2, 0.2, 1)  -- Red for unassigned
+            end
+            gui.set_color(action_data.value_node, value_color)
+        end
+
+        -- Highlight background bar when selected
+        if action_data.bg_node and is_selected then
+            gui.set_color(action_data.bg_node, vmath.vector4(0.1, 0.3, 0.6, 0.5))
+            gui.set_scale(action_data.bg_node, vmath.vector3(1.02, 1.1, 1))
+        end
+    end
+
+    -- Handle reset button
+    if selected_action == "reset" and self.controls.btn_reset then
+        gui.set_scale(self.controls.btn_reset, SELECTED_SCALE)
+        gui.set_color(self.controls.btn_reset, SELECTED_BG_COLOR)
+    end
+
+    -- Icon theme row
+    if self.icon_theme_row then
+        local theme = Settings.get_icon_theme()
+        gui.set_text(self.icon_theme_row.value, ICON_THEME_NAMES[theme] or theme)
+        local selected = (selected_action == "icon_theme")
+        gui.set_color(self.icon_theme_row.label, selected and vmath.vector4(1, 1, 1, 1) or vmath.vector4(0.8, 0.8, 0.8, 1))
+        gui.set_color(self.icon_theme_row.value, selected and vmath.vector4(1, 1, 1, 1) or vmath.vector4(0.9, 0.9, 0.9, 1))
+        if self.icon_theme_row.bg then
+            gui.set_color(self.icon_theme_row.bg, selected and vmath.vector4(0.1, 0.3, 0.6, 0.5) or vmath.vector4(0.2, 0.2, 0.2, 0))
+            gui.set_scale(self.icon_theme_row.bg, selected and vmath.vector3(1.02, 1.1, 1) or vmath.vector3(1,1,1))
+        end
+        if selected then
+            if self.icon_theme_row.label then gui.set_scale(self.icon_theme_row.label, SELECTED_SCALE) end
+            if self.icon_theme_row.value then gui.set_scale(self.icon_theme_row.value, SELECTED_SCALE) end
+        else
+            if self.icon_theme_row.label then gui.set_scale(self.icon_theme_row.label, NORMAL_SCALE) end
+            if self.icon_theme_row.value then gui.set_scale(self.icon_theme_row.value, NORMAL_SCALE) end
+        end
+    end
+
+    -- Handle back button
+    if selected_action == "back" and self.btn_back then
+        gui.set_scale(self.btn_back, SELECTED_SCALE)
+        gui.set_color(self.btn_back, SELECTED_BG_COLOR)
+    end
+end
+
+local function switch_tab(self, tab_name)
+    self.current_tab = tab_name
+
+    -- Update tab buttons
+    for name, tab in pairs(self.tabs) do
+        local is_active = (name == tab_name)
+
+        -- Tab button color - active tab gets blue accent, inactive is dark slate
+        if tab.btn then
+            local color = is_active and vmath.vector4(0.12, 0.25, 0.50, 1) or vmath.vector4(0.22, 0.22, 0.28, 1)
+            gui.set_color(tab.btn, color)
+        end
+
+        -- Tab label color - white when active, muted when inactive
+        if tab.label then
+            local color = is_active and vmath.vector4(1, 1, 1, 1) or vmath.vector4(0.55, 0.55, 0.62, 1)
+            gui.set_color(tab.label, color)
+        end
+
+        -- Page visibility
+        if tab.page then
+            gui.set_enabled(tab.page, is_active)
+            gui.animate(tab.page, gui.PROP_COLOR, vmath.vector4(0.08, 0.08, 0.12, is_active and 1 or 0), gui.EASING_LINEAR, 0.15)
+        end
+    end
+
+    -- Reset selected item when changing tabs
+    self.selected_item = 1
+
+    -- Update selection highlight for new tab
+    update_selection_highlight(self)
+end
+
+local function handle_slider_drag(self, slider_type, x)
+    -- Get slider background node
+    local bg = nil
+    if slider_type == "master" then bg = self.audio.master_bg
+    elseif slider_type == "music" then bg = self.audio.music_bg
+    elseif slider_type == "sfx" then bg = self.audio.sfx_bg
+    end
+
+    if not bg then return end
+
+    -- Both x and the transformed track centre are physical window pixels.
+    -- Convert through the node's parent space, including Fit and parent scale.
+    local bg_pos = gui.get_screen_position(bg)
+    local local_pointer = gui.screen_to_local(bg, vmath.vector3(x, bg_pos.y, 0))
+    local node_pos = gui.get_position(bg)
+    local width = gui.get_size(bg).x * gui.get_scale(bg).x
+    if width <= 0 then return end
+    local local_x = local_pointer.x - (node_pos.x - width / 2)
+    local value = math.max(0, math.min(1, local_x / width))
+
+    -- Preview changed values while dragging; persist once on release.
+    if slider_type == "master" then
+        if value == Settings.get_master_volume() then return end
+        Settings.set_master_volume(value, { save = false })
+    elseif slider_type == "music" then
+        if value == Settings.get_music_volume() then return end
+        Settings.set_music_volume(value, { save = false })
+    elseif slider_type == "sfx" then
+        if value == Settings.get_sfx_volume() then return end
+        Settings.set_sfx_volume(value, { save = false })
+    end
+
+    -- Update UI
+    update_audio_ui(self)
+end
+
+function init(self)
+    -- Load settings
+    Settings.load()
+    Settings.apply_all()
+
+    -- Track current tab
+    self.current_tab = "audio"
+    self.visible = false  -- Initially hidden
+    self.save_error_node = gui.new_text_node(vmath.vector3(0, 0, 1), "Settings could not be saved. Please try again.")
+    gui.set_font(self.save_error_node, "main")
+    gui.set_color(self.save_error_node, vmath.vector4(1, 0.55, 0.45, 1))
+    gui.set_enabled(self.save_error_node, false)
+
+    -- Get all nodes
+    self.tabs = {
+        audio = { btn = n("tab_audio"), label = n("tab_audio_label"), page = n("page_audio") },
+        graphics = { btn = n("tab_graphics"), label = n("tab_graphics_label"), page = n("page_graphics") },
+        controls = { btn = n("tab_controls"), label = n("tab_controls_label"), page = n("page_controls") },
+    }
+    make_pickable(self.tabs.audio.btn, self.tabs.graphics.btn, self.tabs.controls.btn)
+
+    -- Audio controls
+    self.audio = {
+        master_bg = n("slider_master_bg"),
+        master_fg = n("slider_master_fg"),
+        master_val = n("value_master"),
+        music_bg = n("slider_music_bg"),
+        music_fg = n("slider_music_fg"),
+        music_val = n("value_music"),
+        sfx_bg = n("slider_sfx_bg"),
+        sfx_fg = n("slider_sfx_fg"),
+        sfx_val = n("value_sfx"),
+        btn_mute = n("btn_mute"),
+        btn_mute_label = n("btn_mute_label"),
+        btn_reset = n("btn_reset_audio"),
+    }
+    make_pickable(self.audio.master_bg, self.audio.music_bg, self.audio.sfx_bg, self.audio.btn_mute, self.audio.btn_reset)
+
+    -- Graphics controls
+    self.graphics = {
+        btn_window_mode = n("btn_window_mode"),
+        btn_window_mode_label = n("btn_window_mode_label"),
+        btn_vsync = n("btn_vsync"),
+        btn_vsync_label = n("btn_vsync_label"),
+        btn_show_fps = n("btn_show_fps"),
+        btn_show_fps_label = n("btn_show_fps_label"),
+        btn_reset = n("btn_reset_graphics"),
+    }
+    make_pickable(self.graphics.btn_window_mode, self.graphics.btn_vsync, self.graphics.btn_show_fps, self.graphics.btn_reset)
+
+    -- Controls
+    self.controls = {
+        btn_reset = n("btn_reset_controls"),
+        list = n("controls_list"),
+    }
+    make_pickable(self.controls.btn_reset)
+
+    -- Back button
+    self.btn_back = n("btn_back")
+    make_pickable(self.btn_back)
+
+    -- Root node for showing/hiding entire menu
+    self.root = n("root")
+    self.backdrop = n("backdrop")
+
+    -- Slider dragging state
+    self.dragging = nil  -- "master", "music", "sfx"
+    self._pointer_down = nil
+
+    -- Controller navigation state
+    self.selected_item = 1  -- Currently selected item in current tab
+    self.audio_items = { "master", "music", "sfx", "mute", "reset", "back" }
+    self.graphics_items = { "window_mode", "vsync", "show_fps", "reset", "back" }
+    self.controls_items = { "reset" }  -- Will be rebuilt with control actions + reset + back
+
+    -- Restart dialog state
+    self.show_restart_dialog = false
+    self.restart_confirmed = false
+
+    -- Restart confirmation dialog (hidden by default)
+    local screen_w, screen_h = Viewport.design_size()
+
+    self.restart_dialog = {
+        overlay = n("restart_overlay"),
+        panel = n("restart_panel"),
+        title = n("restart_title"),
+        message = n("restart_message"),
+        hint = n("restart_hint"),
+    }
+
+    if not self.restart_dialog.overlay then
+        self.restart_dialog.overlay = gui.new_box_node(vmath.vector3(screen_w/2, screen_h/2, 0), vmath.vector3(screen_w, screen_h, 0))
+    else
+        gui.set_size(self.restart_dialog.overlay, vmath.vector3(screen_w, screen_h, 0))
+    end
+    gui.set_color(self.restart_dialog.overlay, vmath.vector4(0, 0, 0, 0.8))
+    gui.set_enabled(self.restart_dialog.overlay, false)
+
+    if not self.restart_dialog.panel then
+        self.restart_dialog.panel = gui.new_box_node(vmath.vector3(screen_w/2, screen_h/2, 0), vmath.vector3(500, 200, 0))
+    end
+    gui.set_color(self.restart_dialog.panel, vmath.vector4(0.2, 0.2, 0.25, 1))
+    gui.set_enabled(self.restart_dialog.panel, false)
+
+    if not self.restart_dialog.title then
+        self.restart_dialog.title = gui.new_text_node(vmath.vector3(screen_w/2, screen_h/2 + 60, 0), "Restart Required")
+    end
+    gui.set_pivot(self.restart_dialog.title, gui.PIVOT_CENTER)
+    gui.set_scale(self.restart_dialog.title, vmath.vector3(1.5, 1.5, 1))
+    gui.set_color(self.restart_dialog.title, vmath.vector4(0.50, 0.75, 1.0, 1))
+    gui.set_enabled(self.restart_dialog.title, false)
+
+    if not self.restart_dialog.message then
+        self.restart_dialog.message = gui.new_text_node(vmath.vector3(screen_w/2, screen_h/2, 0), "VSync changes require a restart.\n\nRestart now?")
+    end
+    gui.set_pivot(self.restart_dialog.message, gui.PIVOT_CENTER)
+    gui.set_color(self.restart_dialog.message, vmath.vector4(0.9, 0.9, 0.9, 1))
+    gui.set_enabled(self.restart_dialog.message, false)
+
+    if not self.restart_dialog.hint then
+        self.restart_dialog.hint = gui.new_text_node(vmath.vector3(screen_w/2, screen_h/2 - 60, 0), "A: Restart  |  B: Cancel")
+    end
+    gui.set_pivot(self.restart_dialog.hint, gui.PIVOT_CENTER)
+    gui.set_color(self.restart_dialog.hint, vmath.vector4(0.7, 0.7, 0.7, 1))
+    gui.set_enabled(self.restart_dialog.hint, false)
+
+    -- Create control binding list (nodes now come from the GUI for easy editing)
+    self.control_bindings = {}
+    self.remapping_action = nil
+    self.capturing_input = false
+    self.just_captured = false  -- Track if we just captured a button to prevent accidental menu close
+
+    local control_actions = {
+        {action = "jump", display_name = "Jump"},
+        {action = "dash", display_name = "Dash"},
+        {action = "attack", display_name = "Attack"},
+        {action = "special", display_name = "Special"},
+        {action = "ranged", display_name = "Ranged Attack"},
+        {action = "interact", display_name = "Interact"},
+        {action = "map", display_name = "Minimap"},
+        {action = "inventory", display_name = "Inventory"},
+    }
+
+    local function node_for(action, suffix)
+        return n(("controls_%s_%s"):format(action, suffix))
+    end
+
+    for i, action_info in ipairs(control_actions) do
+        local bg_node = node_for(action_info.action, "bg")
+        local label_node = node_for(action_info.action, "label")
+        local value_node = node_for(action_info.action, "value")
+
+        if bg_node then
+            make_pickable(bg_node)
+            gui.set_color(bg_node, vmath.vector4(0.2, 0.2, 0.2, 0)) -- match dynamic default
+        end
+
+        table.insert(self.control_bindings, {
+            action = action_info.action,
+            display_name = action_info.display_name,
+            bg_node = bg_node,
+            label_node = label_node,
+            value_node = value_node,
+            index = i,
+        })
+    end
+
+    -- Update controls items to include all actions
+    self.controls_items = {}
+    for _, action_info in ipairs(control_actions) do
+        table.insert(self.controls_items, action_info.action)
+    end
+    table.insert(self.controls_items, "icon_theme")
+    table.insert(self.controls_items, "reset")
+    table.insert(self.controls_items, "back")
+
+    -- Icon theme row (placed below existing controls)
+    local first_bg = node_for(control_actions[1].action, "bg")
+    local second_bg = node_for(control_actions[2].action, "bg")
+    local base_label = node_for(control_actions[1].action, "label")
+    local base_value = node_for(control_actions[1].action, "value")
+    local bg_pos = first_bg and gui.get_position(first_bg) or vmath.vector3(200, 400, 0)
+    local bg_size = first_bg and gui.get_size(first_bg) or vmath.vector3(380, 32, 0)
+    local spacing = 40
+    if first_bg and second_bg then
+        spacing = math.abs(gui.get_position(first_bg).y - gui.get_position(second_bg).y)
+    end
+    local last_bg = node_for(control_actions[#control_actions].action, "bg")
+    local last_pos = last_bg and gui.get_position(last_bg) or bg_pos
+    local icon_y = last_pos.y - spacing
+    local label_offset = base_label and (gui.get_position(base_label) - bg_pos) or vmath.vector3(16, 0, 0)
+    local value_offset = base_value and (gui.get_position(base_value) - bg_pos) or vmath.vector3(220, 0, 0)
+
+    local icon_bg = gui.new_box_node(vmath.vector3(bg_pos.x, icon_y, 0), bg_size)
+    gui.set_color(icon_bg, vmath.vector4(0.2, 0.2, 0.2, 0))
+    make_pickable(icon_bg)
+    local icon_label = gui.new_text_node(vmath.vector3(bg_pos.x + label_offset.x, icon_y + label_offset.y, 0), "Icon Theme:")
+    local icon_value = gui.new_text_node(vmath.vector3(bg_pos.x + value_offset.x, icon_y + value_offset.y, 0), "XBOX")
+    gui.set_color(icon_label, vmath.vector4(0.78, 0.78, 0.82, 1))
+    gui.set_color(icon_value, vmath.vector4(0.78, 0.78, 0.82, 1))
+
+    -- Parent to page_controls so they show/hide with the tab
+    local page_controls = n("page_controls")
+    if page_controls then
+        gui.set_parent(icon_bg, page_controls)
+        gui.set_parent(icon_label, page_controls)
+        gui.set_parent(icon_value, page_controls)
+    end
+    -- Set pivot to match existing label/value alignment
+    if base_label then gui.set_pivot(icon_label, gui.get_pivot(base_label)) end
+    if base_value then gui.set_pivot(icon_value, gui.get_pivot(base_value)) end
+
+    self.icon_theme_row = {
+        bg = icon_bg,
+        label = icon_label,
+        value = icon_value,
+    }
+
+    -- Initialize UI
+    update_audio_ui(self)
+    update_graphics_ui(self)
+    update_controls_ui(self)
+    switch_tab(self, "audio")
+
+    -- Hide initially - force disable root and backdrop nodes since self.visible is already false
+    if self.backdrop then
+        gui.set_enabled(self.backdrop, false)
+        gui.set_color(self.backdrop, vmath.vector4(0, 0, 0, 0))
+    end
+    if self.root then
+        gui.set_enabled(self.root, false)
+        gui.set_color(self.root, vmath.vector4(0.08, 0.08, 0.12, 0))
+    end
+
+    -- Ensure input focus is released on init
+    msg.post(".", "release_input_focus")
+end
+
+function update(self, dt)
+    local w, h = Viewport.design_size()
+    gui.set_position(self.save_error_node, vmath.vector3(w * 0.5, 32, 1))
+    gui.set_enabled(self.save_error_node, self.visible and Settings.last_save_error ~= nil)
+
+    -- Keep backdrop covering full screen
+    if self.backdrop then
+        gui.set_position(self.backdrop, vmath.vector3(w * 0.5, h * 0.5, 0))
+        gui.set_size(self.backdrop, vmath.vector3(w, h, 0))
+    end
+
+    -- Keep menu centered
+    if self.root then
+        gui.set_pivot(self.root, gui.PIVOT_CENTER)
+        gui.set_position(self.root, vmath.vector3(w * 0.5, h * 0.5, 0))
+    end
+
+    -- Update dragging if active
+    if self.dragging and self.drag_x then
+        handle_slider_drag(self, self.dragging, self.drag_x)
+    end
+
+    -- Show/hide restart dialog (recenter on resize)
+    if self.restart_dialog then
+        local w, h = Viewport.design_size()
+        gui.set_position(self.restart_dialog.overlay, vmath.vector3(w * 0.5, h * 0.5, 0))
+        gui.set_size(self.restart_dialog.overlay, vmath.vector3(w, h, 0))
+        gui.set_position(self.restart_dialog.panel, vmath.vector3(w * 0.5, h * 0.5, 0))
+        gui.set_position(self.restart_dialog.title, vmath.vector3(w * 0.5, h * 0.5 + 60, 0))
+        gui.set_position(self.restart_dialog.message, vmath.vector3(w * 0.5, h * 0.5, 0))
+        gui.set_position(self.restart_dialog.hint, vmath.vector3(w * 0.5, h * 0.5 - 60, 0))
+    end
+    if self.show_restart_dialog and self.restart_dialog then
+        gui.set_enabled(self.restart_dialog.overlay, true)
+        gui.set_enabled(self.restart_dialog.panel, true)
+        gui.set_enabled(self.restart_dialog.title, true)
+        gui.set_enabled(self.restart_dialog.message, true)
+        gui.set_enabled(self.restart_dialog.hint, true)
+    elseif self.restart_dialog then
+        gui.set_enabled(self.restart_dialog.overlay, false)
+        gui.set_enabled(self.restart_dialog.panel, false)
+        gui.set_enabled(self.restart_dialog.title, false)
+        gui.set_enabled(self.restart_dialog.message, false)
+        gui.set_enabled(self.restart_dialog.hint, false)
+    end
+
+    -- Handle restart confirmation
+    if self.restart_confirmed then
+        print("[SETTINGS] Restarting game...")
+        sys.reboot()
+    end
+end
+
+function on_input(self, action_id, action)
+    if not self.visible then return false end
+
+    -- Handle restart dialog input first
+    if self.show_restart_dialog then
+        if action and action.pressed then
+            if action_id == hash("gamepad_rpad_down") or action_id == hash("key_enter") then
+                -- Confirm restart
+                self.restart_confirmed = true
+                return true
+            elseif action_id == hash("gamepad_rpad_right")
+                or action_id == hash("gamepad_back")
+                or action_id == hash("key_escape")
+                or action_id == hash("key_m") then
+                -- Cancel restart
+                self.show_restart_dialog = false
+                return true
+            end
+        end
+        return true  -- Block all other input while dialog is showing
+    end
+
+    -- Handle back/escape button to close settings (but not when capturing or just captured)
+    if not self.capturing_input then
+        if action_id == hash("gamepad_back")
+            or action_id == hash("gamepad_rpad_right")
+            or action_id == hash("key_escape")
+            or action_id == hash("key_m") then
+            if action.released then
+                -- If we just captured this button, don't close menu - just reset the flag
+                if self.just_captured then
+                    self.just_captured = false
+                    return true
+                end
+                hide_menu(self)
+                return true
+            end
+        end
+    end  -- Close the "not capturing" check
+
+    -- Controller navigation
+    if action and action.pressed then
+        -- Skip ALL navigation when in capture mode (let it fall through to capture code below)
+        if self.capturing_input then
+            -- Don't process any navigation - just fall through to capture logic
+        else
+            -- Normal navigation (only when NOT capturing)
+            -- Tab navigation with bumpers
+        if action_id == hash("gamepad_lshoulder") or action_id == hash("key_tab") then
+            local tabs = { "audio", "graphics", "controls" }
+            for i, tab in ipairs(tabs) do
+                if tab == self.current_tab then
+                    local prev = i > 1 and tabs[i-1] or tabs[#tabs]
+                    switch_tab(self, prev)
+                    self.selected_item = 1
+                    return true
+                end
+            end
+        elseif action_id == hash("gamepad_rshoulder") then
+            local tabs = { "audio", "graphics", "controls" }
+            for i, tab in ipairs(tabs) do
+                if tab == self.current_tab then
+                    local next = i < #tabs and tabs[i+1] or tabs[1]
+                    switch_tab(self, next)
+                    self.selected_item = 1
+                    return true
+                end
+            end
+        end
+
+        -- Item navigation
+        local max_items = 1
+        if self.current_tab == "audio" then
+            max_items = #self.audio_items
+        elseif self.current_tab == "graphics" then
+            max_items = #self.graphics_items
+        elseif self.current_tab == "controls" then
+            max_items = #self.controls_items
+        end
+
+        if action_id == hash("key_up") or action_id == hash("key_w")
+            or action_id == hash("gamepad_lpad_up")
+            or action_id == hash("gamepad_lstick_up") then
+            self.selected_item = self.selected_item > 1 and self.selected_item - 1 or max_items
+            update_selection_highlight(self)
+            return true
+        elseif action_id == hash("key_down") or action_id == hash("key_s")
+            or action_id == hash("gamepad_lpad_down")
+            or action_id == hash("gamepad_lstick_down") then
+            self.selected_item = self.selected_item < max_items and self.selected_item + 1 or 1
+            update_selection_highlight(self)
+            return true
+        end
+
+        -- Adjust values with left/right
+        if action_id == hash("key_left") or action_id == hash("key_a")
+            or action_id == hash("gamepad_lpad_left")
+            or action_id == hash("gamepad_lstick_left") then
+            if self.current_tab == "audio" then
+                local item = self.audio_items[self.selected_item]
+                if item == "master" then
+                    Settings.set_master_volume(math.max(0, Settings.get_master_volume() - 0.1))
+                    update_audio_ui(self)
+                elseif item == "music" then
+                    Settings.set_music_volume(math.max(0, Settings.get_music_volume() - 0.1))
+                    update_audio_ui(self)
+                elseif item == "sfx" then
+                    Settings.set_sfx_volume(math.max(0, Settings.get_sfx_volume() - 0.1))
+                    update_audio_ui(self)
+                end
+            elseif self.current_tab == "controls" then
+                local item = self.controls_items[self.selected_item]
+                if item == "icon_theme" then
+                    local themes = {"xbox", "playstation", "switch"}
+                    local cur = Settings.get_icon_theme()
+                    for i, t in ipairs(themes) do
+                        if t == cur then
+                            Settings.set_icon_theme(themes[((i - 2) % #themes) + 1])
+                            break
+                        end
+                    end
+                    update_controls_ui(self)
+                end
+            end
+            return true
+        elseif action_id == hash("key_right") or action_id == hash("key_d")
+            or action_id == hash("gamepad_lpad_right")
+            or action_id == hash("gamepad_lstick_right") then
+            if self.current_tab == "audio" then
+                local item = self.audio_items[self.selected_item]
+                if item == "master" then
+                    Settings.set_master_volume(math.min(1, Settings.get_master_volume() + 0.1))
+                    update_audio_ui(self)
+                elseif item == "music" then
+                    Settings.set_music_volume(math.min(1, Settings.get_music_volume() + 0.1))
+                    update_audio_ui(self)
+                elseif item == "sfx" then
+                    Settings.set_sfx_volume(math.min(1, Settings.get_sfx_volume() + 0.1))
+                    update_audio_ui(self)
+                end
+            elseif self.current_tab == "controls" then
+                local item = self.controls_items[self.selected_item]
+                if item == "icon_theme" then
+                    local themes = {"xbox", "playstation", "switch"}
+                    local cur = Settings.get_icon_theme()
+                    for i, t in ipairs(themes) do
+                        if t == cur then
+                            Settings.set_icon_theme(themes[(i % #themes) + 1])
+                            break
+                        end
+                    end
+                    update_controls_ui(self)
+                end
+            end
+            return true
+        end
+        end  -- Close the else block for normal navigation
+
+        -- Capture any button press when remapping controls
+        if self.capturing_input
+            and self.current_tab == "controls"
+            and action.gamepad ~= nil
+            and InputCtl.accepts_gamepad(action) then
+            -- List of all gamepad buttons we can remap to
+            local button_actions = {
+                "gamepad_rpad_down", "gamepad_rpad_right",
+                "gamepad_rpad_left", "gamepad_rpad_up",
+                "gamepad_lshoulder", "gamepad_rshoulder",
+                "gamepad_ltrigger", "gamepad_rtrigger",
+                "gamepad_lpad_up", "gamepad_lpad_down",
+                "gamepad_lpad_left", "gamepad_lpad_right",
+                "gamepad_lstick_click", "gamepad_rstick_click", "gamepad_guide",
+                "gamepad_start", "gamepad_back",
+            }
+
+            for _, button in ipairs(button_actions) do
+                if action_id == hash(button) then
+                    -- Remap the action to this button
+                    Settings.set_control_binding(self.remapping_action, button)
+                    self.capturing_input = false
+                    self.just_captured = true  -- Mark that we just captured to prevent menu close on release
+                    update_controls_ui(self)
+                    -- Debug disabled
+                    return true
+                end
+            end
+        end
+
+        -- Activate item with A button (only if NOT capturing)
+        if (action_id == hash("gamepad_rpad_down") or action_id == hash("key_enter"))
+            and not self.capturing_input then
+            -- Get current item based on tab
+            local item = nil
+            if self.current_tab == "audio" then
+                item = self.audio_items[self.selected_item]
+            elseif self.current_tab == "graphics" then
+                item = self.graphics_items[self.selected_item]
+            elseif self.current_tab == "controls" then
+                item = self.controls_items[self.selected_item]
+            end
+
+            -- Handle "back" for any tab
+            if item == "back" then
+                hide_menu(self)
+                return true
+            end
+
+            if self.current_tab == "audio" then
+                if item == "mute" then
+                    Settings.toggle_mute()
+                    update_audio_ui(self)
+                elseif item == "reset" then
+                    Settings.reset_to_defaults("audio")
+                    update_audio_ui(self)
+                end
+            elseif self.current_tab == "graphics" then
+                if item == "window_mode" then
+                    Settings.cycle_window_mode()
+                    update_graphics_ui(self)
+                elseif item == "vsync" then
+                    Settings.set_vsync(not Settings.get_vsync())
+                    update_graphics_ui(self)
+                    -- Show restart confirmation
+                    self.show_restart_dialog = true
+                    self.restart_confirmed = false
+                elseif item == "show_fps" then
+                    Settings.set_show_fps(not Settings.get_show_fps())
+                    update_graphics_ui(self)
+                elseif item == "reset" then
+                    Settings.reset_to_defaults("graphics")
+                    update_graphics_ui(self)
+                end
+            elseif self.current_tab == "controls" then
+                if item == "reset" then
+                    Settings.reset_control_bindings()
+                    update_controls_ui(self)
+                elseif item == "icon_theme" then
+                    Settings.toggle_icon_theme()
+                    update_controls_ui(self)
+                elseif item ~= "back" then
+                    -- Start capturing input for this action
+                    self.remapping_action = item
+                    self.capturing_input = true
+                    update_controls_ui(self)
+                    print("[SETTINGS] Started capturing input for:", item)
+                end
+            end
+            return true
+        end
+    end
+
+    if is_pointer_action(action_id) or (not action_id and self.dragging) then
+        local px, py = get_pointer_xy(action)
+        local sx = action.screen_x
+        local _, _, inside = Viewport.pointer(action)
+
+        if action.pressed then
+            if not inside then return true end
+            if self._pointer_down then
+                return true
+            end
+
+            self._pointer_down = action_id
+
+            -- Check tabs
+            for name, tab in pairs(self.tabs) do
+                if tab.btn and px and py and gui.pick_node(tab.btn, px, py) then
+                    switch_tab(self, name)
+                    return true
+                end
+            end
+
+            -- Controls list: clicking a row starts remapping
+            if self.current_tab == "controls" then
+                for _, entry in ipairs(self.control_bindings or {}) do
+                    if entry.bg_node and px and py and gui.pick_node(entry.bg_node, px, py) then
+                        self.selected_item = entry.index or 1
+                        self.remapping_action = entry.action
+                        self.capturing_input = true
+                        self.just_captured = false
+                        update_controls_ui(self)
+                        return true
+                    end
+                end
+                if self.icon_theme_row and self.icon_theme_row.bg and px and py and gui.pick_node(self.icon_theme_row.bg, px, py) then
+                    self.selected_item = #self.controls_items - 1
+                    Settings.toggle_icon_theme()
+                    update_controls_ui(self)
+                    return true
+                end
+            end
+
+            -- Check back button
+            if self.btn_back and px and py and gui.pick_node(self.btn_back, px, py) then
+                -- Close settings menu (send message to menu manager)
+                msg.post("#", "close_settings")
+                return true
+            end
+
+            -- Audio tab interactions
+            if self.current_tab == "audio" then
+                -- Check sliders
+                if self.audio.master_bg and px and py and gui.pick_node(self.audio.master_bg, px, py) then
+                    self.dragging = "master"
+                    self.drag_x = sx
+                    handle_slider_drag(self, "master", sx)
+                    return true
+                elseif self.audio.music_bg and px and py and gui.pick_node(self.audio.music_bg, px, py) then
+                    self.dragging = "music"
+                    self.drag_x = sx
+                    handle_slider_drag(self, "music", sx)
+                    return true
+                elseif self.audio.sfx_bg and px and py and gui.pick_node(self.audio.sfx_bg, px, py) then
+                    self.dragging = "sfx"
+                    self.drag_x = sx
+                    handle_slider_drag(self, "sfx", sx)
+                    return true
+                elseif self.audio.btn_mute and px and py and gui.pick_node(self.audio.btn_mute, px, py) then
+                    Settings.toggle_mute()
+                    update_audio_ui(self)
+                    return true
+                elseif self.audio.btn_reset and px and py and gui.pick_node(self.audio.btn_reset, px, py) then
+                    Settings.reset_to_defaults("audio")
+                    update_audio_ui(self)
+                    return true
+                end
+            end
+
+            -- Graphics tab interactions
+            if self.current_tab == "graphics" then
+                if self.graphics.btn_window_mode and px and py and gui.pick_node(self.graphics.btn_window_mode, px, py) then
+                    Settings.cycle_window_mode()
+                    update_graphics_ui(self)
+                    return true
+                elseif self.graphics.btn_vsync and px and py and gui.pick_node(self.graphics.btn_vsync, px, py) then
+                    Settings.set_vsync(not Settings.get_vsync())
+                    update_graphics_ui(self)
+                    -- Show restart confirmation
+                    self.show_restart_dialog = true
+                    self.restart_confirmed = false
+                    return true
+                elseif self.graphics.btn_show_fps and px and py and gui.pick_node(self.graphics.btn_show_fps, px, py) then
+                    Settings.set_show_fps(not Settings.get_show_fps())
+                    update_graphics_ui(self)
+                    return true
+                elseif self.graphics.btn_reset and px and py and gui.pick_node(self.graphics.btn_reset, px, py) then
+                    Settings.reset_to_defaults("graphics")
+                    update_graphics_ui(self)
+                    return true
+                end
+            end
+
+            -- Controls tab interactions
+            if self.current_tab == "controls" then
+                if self.controls.btn_reset and px and py and gui.pick_node(self.controls.btn_reset, px, py) then
+                    Settings.reset_control_bindings()
+                    update_controls_ui(self)
+                    return true
+                end
+                -- Individual key remapping is handled by the gamepad/keyboard input system above
+            end
+
+        elseif action.released then
+            if self.dragging then Settings.save() end
+            self._pointer_down = nil
+            self.dragging = nil
+            self.drag_x = nil
+            return true
+        else
+            if self.dragging and sx then
+                self.drag_x = sx
+                handle_slider_drag(self, self.dragging, sx)
+                return true
+            end
+        end
+    end
+
+    return false
+end
+
+function on_message(self, message_id, message, sender)
+    if message_id == hash("show_settings") then
+        show_menu(self, message)
+    elseif message_id == hash("hide_settings") then
+        hide_menu(self)
+    elseif message_id == hash("toggle_settings") then
+        -- Toggle settings menu visibility
+        if self.visible then
+            hide_menu(self)
+        else
+            show_menu(self, message)
+        end
+    elseif message_id == hash("close_settings") then
+        -- Close this menu and return to previous
+        hide_menu(self)
+
+        -- Notify sender that settings closed
+        msg.post(sender, "settings_closed")
+    end
+end

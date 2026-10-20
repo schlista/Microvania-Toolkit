@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<template>
+ <object name="Checkpoint" type="checkpoint" width="64" height="64">
+  <properties>
+   <property name="checkpoint_id" type="string" value=""/>
+   <property name="respawn" type="class" propertytype="checkpoint_respawn">
+    <properties>
+     <property name="respawn_facing" type="int" value="1"/>
+    </properties>
+   </property>
+   <property name="activation" type="class" propertytype="checkpoint_activation">
+    <properties>
+     <property name="trigger_once" type="bool" value="false"/>
+     <property name="requires_flag" type="string" value=""/>
+     <property name="set_flag" type="string" value=""/>
+    </properties>
+   </property>
+   <property name="feedback_and_visuals" type="class" propertytype="checkpoint_feedback_and_visuals">
+    <properties>
+     <property name="sound_id" propertytype="sound_effects" value="save_point"/>
+    </properties>
+   </property>
+   <property name="art_item" type="string" value=""/>
+   <property name="art_feedback" type="class" propertytype="checkpoint_art_feedback">
+    <properties>
+     <property name="consume_effect" type="string" propertytype="particle_effects" value="none"/>
+     <property name="interact_effect" type="string" propertytype="particle_effects" value="none"/>
+     <property name="effect_offset_x" type="float" value="0"/>
+     <property name="effect_offset_y" type="float" value="0"/>
+     <property name="effect_scale" type="float" value="1"/>
+     <property name="effect_cooldown" type="float" value="0"/>
+    </properties>
+   </property>
+   <property name="mvtk_template_version" type="string" value="2.7.0"/>
+  </properties>
+ </object>
+</template>

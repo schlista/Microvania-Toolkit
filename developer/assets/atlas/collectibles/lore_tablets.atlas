@@ -1,0 +1,5 @@
+animations { id: "tablet" images { image: "/developer/assets/atlas/collectibles/lore_tablet.png" } playback: PLAYBACK_NONE fps: 1 }
+animations { id: "origins" images { image: "/developer/assets/atlas/collectibles/lore_origins.png" } playback: PLAYBACK_NONE fps: 1 }
+margin: 2
+extrude_borders: 0
+inner_padding: 0

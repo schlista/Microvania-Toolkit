@@ -1,0 +1,56 @@
+-- developer/ui/game/damage_indicator.gui_script
+local M = {}
+
+local indicators = {}
+local FADE_DURATION = 1.0
+local RISE_SPEED = 50
+
+function init(self)
+    self.root = gui.get_node("root")
+end
+
+function update(self, dt)
+    for i = #indicators, 1, -1 do
+        local indicator = indicators[i]
+        indicator.lifetime = indicator.lifetime - dt
+
+        local pos = gui.get_position(indicator.node)
+        pos.y = pos.y + RISE_SPEED * dt
+        gui.set_position(indicator.node, pos)
+
+        local alpha = indicator.lifetime / FADE_DURATION
+        gui.set_color(indicator.node, vmath.vector4(indicator.color.x, indicator.color.y, indicator.color.z, alpha))
+
+        if indicator.lifetime <= 0 then
+            gui.delete_node(indicator.node)
+            table.remove(indicators, i)
+        end
+    end
+end
+
+function on_message(self, message_id, message, sender)
+    if message_id == hash("show_damage") then
+        local pos = message.screen_position or vmath.vector3(640, 360, 0)
+        local damage = message.damage or 0
+        local is_critical = message.critical or false
+
+        local node = gui.new_text_node(pos, tostring(damage))
+        gui.set_font(node, "damage_font")
+        gui.set_pivot(node, gui.PIVOT_CENTER)
+        gui.set_parent(node, self.root)
+
+        local color = is_critical and vmath.vector4(1, 0.5, 0, 1) or vmath.vector4(1, 1, 1, 1)
+        local scale = is_critical and 1.5 or 1.0
+
+        gui.set_color(node, color)
+        gui.set_scale(node, vmath.vector3(scale, scale, 1))
+
+        table.insert(indicators, {
+            node = node,
+            lifetime = FADE_DURATION,
+            color = color
+        })
+    end
+end
+
+return M

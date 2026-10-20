@@ -1,0 +1,210 @@
+extrude_borders: 0
+inner_padding: 0
+max_page_width: 0
+max_page_height: 0
+
+margin: 0
+# === BEGIN GENERATED ENEMY SKINS (Sync Enemy Art - do not edit) ===
+
+
+
+
+
+
+
+
+
+animations {
+  id: "default__idle"
+  images { image: "/developer/assets/enemies/default/idle_01.png" }
+  images { image: "/developer/assets/enemies/default/idle_02.png" }
+  playback: PLAYBACK_LOOP_FORWARD
+  fps: 6
+  flip_horizontal: 0
+  flip_vertical: 0
+}
+animations {
+  id: "default__walk"
+  images { image: "/developer/assets/enemies/default/walk_01.png" }
+  images { image: "/developer/assets/enemies/default/walk_02.png" }
+  images { image: "/developer/assets/enemies/default/walk_03.png" }
+  images { image: "/developer/assets/enemies/default/walk_04.png" }
+  playback: PLAYBACK_LOOP_FORWARD
+  fps: 8
+  flip_horizontal: 0
+  flip_vertical: 0
+}
+animations {
+  id: "default__run"
+  images { image: "/developer/assets/enemies/default/run_01.png" }
+  images { image: "/developer/assets/enemies/default/run_02.png" }
+  images { image: "/developer/assets/enemies/default/run_03.png" }
+  images { image: "/developer/assets/enemies/default/run_04.png" }
+  playback: PLAYBACK_LOOP_FORWARD
+  fps: 10
+  flip_horizontal: 0
+  flip_vertical: 0
+}
+animations {
+  id: "default__jump"
+  images { image: "/developer/assets/enemies/default/jump_01.png" }
+  playback: PLAYBACK_ONCE_FORWARD
+  fps: 12
+  flip_horizontal: 0
+  flip_vertical: 0
+}
+animations {
+  id: "default__fall"
+  images { image: "/developer/assets/enemies/default/fall_01.png" }
+  playback: PLAYBACK_LOOP_FORWARD
+  fps: 8
+  flip_horizontal: 0
+  flip_vertical: 0
+}
+animations {
+  id: "default__fly"
+  images { image: "/developer/assets/enemies/default/fly_01.png" }
+  images { image: "/developer/assets/enemies/default/fly_02.png" }
+  images { image: "/developer/assets/enemies/default/fly_03.png" }
+  images { image: "/developer/assets/enemies/default/fly_04.png" }
+  playback: PLAYBACK_LOOP_FORWARD
+  fps: 10
+  flip_horizontal: 0
+  flip_vertical: 0
+}
+animations {
+  id: "default__fly_idle"
+  images { image: "/developer/assets/enemies/default/fly_idle_01.png" }
+  images { image: "/developer/assets/enemies/default/fly_idle_02.png" }
+  playback: PLAYBACK_LOOP_FORWARD
+  fps: 6
+  flip_horizontal: 0
+  flip_vertical: 0
+}
+animations {
+  id: "default__attack"
+  images { image: "/developer/assets/enemies/default/attack_01.png" }
+  images { image: "/developer/assets/enemies/default/attack_02.png" }
+  images { image: "/developer/assets/enemies/default/attack_03.png" }
+  playback: PLAYBACK_ONCE_FORWARD
+  fps: 12
+  flip_horizontal: 0
+  flip_vertical: 0
+}
+animations {
+  id: "default__ranged_attack"
+  images { image: "/developer/assets/enemies/default/ranged_attack_01.png" }
+  images { image: "/developer/assets/enemies/default/ranged_attack_02.png" }
+  images { image: "/developer/assets/enemies/default/ranged_attack_03.png" }
+  playback: PLAYBACK_ONCE_FORWARD
+  fps: 12
+  flip_horizontal: 0
+  flip_vertical: 0
+}
+animations {
+  id: "default__charge"
+  images { image: "/developer/assets/enemies/default/charge_01.png" }
+  images { image: "/developer/assets/enemies/default/charge_02.png" }
+  playback: PLAYBACK_ONCE_FORWARD
+  fps: 14
+  flip_horizontal: 0
+  flip_vertical: 0
+}
+animations {
+  id: "default__hurt"
+  images { image: "/developer/assets/enemies/default/hurt_01.png" }
+  images { image: "/developer/assets/enemies/default/hurt_02.png" }
+  playback: PLAYBACK_ONCE_FORWARD
+  fps: 12
+  flip_horizontal: 0
+  flip_vertical: 0
+}
+animations {
+  id: "default__death"
+  images { image: "/developer/assets/enemies/default/death_01.png" }
+  images { image: "/developer/assets/enemies/default/death_02.png" }
+  images { image: "/developer/assets/enemies/default/death_03.png" }
+  images { image: "/developer/assets/enemies/default/death_04.png" }
+  playback: PLAYBACK_ONCE_FORWARD
+  fps: 10
+  flip_horizontal: 0
+  flip_vertical: 0
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# === END GENERATED ENEMY SKINS ===

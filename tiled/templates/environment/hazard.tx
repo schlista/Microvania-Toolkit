@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<template>
+ <object name="Hazard" type="hazard" width="128" height="32">
+  <properties>
+   <property name="hazard_type" propertytype="hazards" value="spikes"/>
+   <property name="hazard_id" type="string" value=""/>
+   <property name="damage_and_knockback" type="class" propertytype="hazard_damage_and_knockback">
+    <properties>
+     <property name="damage" type="int" value="1"/>
+     <property name="damage_interval" type="float" value="0.5"/>
+     <property name="stun_t" type="float" value="-1"/>
+     <property name="knockback_force" type="int" value="300"/>
+     <property name="instant_kill" type="bool" value="false"/>
+     <property name="required_resistance" propertytype="optional_abilities" value="none"/>
+    </properties>
+   </property>
+   <property name="motion" type="class" propertytype="hazard_motion">
+    <properties>
+     <property name="retractable" type="bool" value="false"/>
+     <property name="retract_time" type="float" value="2.0"/>
+     <property name="extend_time" type="float" value="2.0"/>
+     <property name="start_retracted" type="bool" value="false"/>
+     <property name="pattern" propertytype="hazard_patterns" value="none"/>
+     <property name="pattern_speed" type="float" value="1.0"/>
+     <property name="retract_visual_layer" type="string" value="player"/>
+     <property name="retract_hides_tiles" type="bool" value="true"/>
+    </properties>
+   </property>
+   <property name="activation_and_feedback" type="class" propertytype="hazard_activation_and_feedback">
+    <properties>
+     <property name="enabled" type="bool" value="true"/>
+     <property name="sound_on_hit" propertytype="sound_effects" value="spike_hit"/>
+    </properties>
+   </property>
+   <property name="mvtk_template_version" type="string" value="2.8.0"/>
+  </properties>
+ </object>
+</template>

@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<template>
+ <object name="Hint Stone" type="hint_stone" width="32" height="32">
+  <properties>
+   <property name="hint_id" type="string" value=""/>
+   <property name="title" type="string" value="Hint"/>
+   <property name="body" type="string" value=""/>
+   <property name="interaction" type="class" propertytype="hint_stone_interaction">
+    <properties>
+     <property name="label" type="string" value="Inspect"/>
+     <property name="range" type="int" value="96"/>
+    </properties>
+   </property>
+   <property name="display" type="class" propertytype="hint_stone_display">
+    <properties>
+     <property name="position" propertytype="hint_positions" value="top"/>
+     <property name="duration" type="float" value="4.0"/>
+    </properties>
+   </property>
+   <property name="conditions_and_persistence" type="class" propertytype="hint_stone_conditions_and_persistence">
+    <properties>
+     <property name="trigger_once" type="bool" value="false"/>
+     <property name="requires_flag" type="string" value=""/>
+     <property name="set_flag" type="string" value=""/>
+    </properties>
+   </property>
+   <property name="feedback" type="class" propertytype="hint_stone_feedback">
+    <properties>
+     <property name="sound_id" propertytype="sound_effects" value="none"/>
+    </properties>
+   </property>
+   <property name="art_item" type="string" value=""/>
+   <property name="art_feedback" type="class" propertytype="hint_stone_art_feedback">
+    <properties>
+     <property name="consume_effect" type="string" propertytype="particle_effects" value="none"/>
+     <property name="interact_effect" type="string" propertytype="particle_effects" value="none"/>
+     <property name="effect_offset_x" type="float" value="0"/>
+     <property name="effect_offset_y" type="float" value="0"/>
+     <property name="effect_scale" type="float" value="1"/>
+     <property name="effect_cooldown" type="float" value="0"/>
+    </properties>
+   </property>
+   <property name="mvtk_template_version" type="string" value="2.7.0"/>
+  </properties>
+ </object>
+</template>

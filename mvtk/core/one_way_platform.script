@@ -1,0 +1,585 @@
+-- mvtk/core/one_way_platform.script
+-- Attach to a GO with:
+--  - collisionobject id "co" (solid group) for collisions
+--  - trigger id "sensor" or "sensor_top" (sensor group) near the top edge
+--  - trigger id "sensor_bottom" (sensor group) near the bottom edge (recommended)
+-- This script notifies the player when overlapping so the player can request drop-through.
+
+local Util = require "mvtk.core.util"
+
+go.property("direction", "down") -- "down" = standard floor platform, "up" = inverted ceiling platform
+go.property("debug_logging", false)
+go.property("room_id", "")
+go.property("clear_room_collision", false)
+go.property("show_sprite", true) -- false when the Tiled layer owns the visible art
+
+local PLAYER = hash("player")
+local DIRECTION_UP = "up"
+local DIRECTION_DOWN = "down"
+local SENSOR_TOP = hash("sensor")
+local SENSOR_TOP_ALT = hash("sensor_top")
+local SENSOR_BOTTOM = hash("sensor_bottom")
+local PASS_THROUGH_TIME = 0.32
+local SENSOR_APPROACH_MEMORY = 0.24
+local SENSOR_STALE_TTL = 1.0
+local VERTICAL_NORMAL_THRESHOLD = 0.65
+local POSITION_SIDE_EPSILON = 4.0
+local PASS_WINDOW_MAX_LIFETIME = 1.0
+local JUMP_PASS_PROBE = hash("jump_pass_probe")
+local DEFAULT_VISUAL_WIDTH = 256
+local DEFAULT_VISUAL_HEIGHT = 32
+local ROOM_CLEAR_RETRY_INTERVAL = 0.25
+
+local SafeRequire = require "mvtk.core.safe_require"
+local RoomManagerOk, RoomManager = SafeRequire("mvtk.map.streaming.room_manager", "mvtk.core.one_way_platform")
+local SurfaceClassifierOk, SurfaceClassifier = SafeRequire("mvtk.core.surface_classifier", "mvtk.core.one_way_platform")
+local TileSettingsOk, TileSettings = SafeRequire("developer.config.tile_settings", "mvtk.core.one_way_platform")
+
+local TILE_W = (TileSettingsOk and TileSettings and tonumber(TileSettings.width)) or 128
+local TILE_H = (TileSettingsOk and TileSettings and tonumber(TileSettings.height)) or 128
+
+local function try_get_component_property(url, property)
+  local ok, value = pcall(go.get, url, property)
+  if ok then
+    return value
+  end
+  return nil
+end
+
+local function normalize_room_id(value)
+  local normalized = Util.normalize_room_id(value)
+  return normalized ~= "" and normalized or nil
+end
+
+local function resolve_go_id_string()
+  return Util.go_id_text(go.get_id()) or ""
+end
+
+local function infer_room_id_from_instance()
+  local raw = resolve_go_id_string()
+  local tail = raw:match("/([^/]+)$") or raw
+  local room = tail:match("^(.-)_one_way_platform_%d+$")
+  if room and room ~= "" then
+    return room
+  end
+  if RoomManagerOk and RoomManager and RoomManager.get_current_room then
+    return normalize_room_id(RoomManager.get_current_room())
+  end
+  return nil
+end
+
+local function get_platform_world_bounds()
+  local pos = go.get_world_position()
+  local root_scale = go.get_scale()
+  local sprite_scale = try_get_component_property("#sprite", "scale") or vmath.vector3(1, 1, 1)
+  local sprite_size = try_get_component_property("#sprite", "size")
+  local width = tonumber(sprite_size and sprite_size.x) or DEFAULT_VISUAL_WIDTH
+  local height = tonumber(sprite_size and sprite_size.y) or DEFAULT_VISUAL_HEIGHT
+
+  width = math.abs(width * (root_scale and root_scale.x or 1) * (sprite_scale and sprite_scale.x or 1))
+  height = math.abs(height * (root_scale and root_scale.y or 1) * (sprite_scale and sprite_scale.y or 1))
+
+  local half_w = width * 0.5
+  local half_h = height * 0.5
+  return pos.x - half_w, pos.x + half_w, pos.y - half_h, pos.y + half_h, width, height
+end
+
+local function fmt_vec3(v)
+  if type(v) ~= "userdata" or v.x == nil or v.y == nil or v.z == nil then
+    return "nil"
+  end
+  return string.format("(%.3f, %.3f, %.3f)", v.x, v.y, v.z)
+end
+
+function init(self)
+  if not self.show_sprite then
+    Util.set_component_enabled("#sprite", false)
+  end
+  self.players = {}
+  self.player_sensors = {}
+  self.player_recent = {}
+  self.pass_windows = {}
+  self.direction = (self.direction == DIRECTION_UP) and DIRECTION_UP or DIRECTION_DOWN
+  self._co_enabled = true
+  self._forced_disable_until = 0
+  self._time = 0
+  self.room_id_str = normalize_room_id(self.room_id) or infer_room_id_from_instance()
+  self._room_collision_cleared = true
+  self._room_collision_retry_t = 0
+  self._room_clear_attempts = 0
+  local left, right, bottom, top, width, height = get_platform_world_bounds()
+  print(string.format(
+    "[ONE_WAY id=%s dir=%s t=%.3f] init room_prop=%s resolved_room=%s clear_room_collision=%s room_manager=%s surface_classifier=%s util=%s tile=(%d,%d) root_scale=%s sprite_scale=%s sprite_size=%s bounds=(%.1f,%.1f)-(%.1f,%.1f) size=(%.1f,%.1f)",
+    tostring(go.get_id()),
+    (self.direction == DIRECTION_DOWN) and "down" or "up",
+    self._time or 0,
+    tostring(self.room_id),
+    tostring(self.room_id_str),
+    self.clear_room_collision and "true" or "false",
+    (RoomManagerOk and RoomManager ~= nil) and "true" or "false",
+    (SurfaceClassifierOk and SurfaceClassifier ~= nil) and "true" or "false",
+    Util ~= nil and "true" or "false",
+    TILE_W,
+    TILE_H,
+    fmt_vec3(go.get_scale()),
+    fmt_vec3(try_get_component_property("#sprite", "scale")),
+    fmt_vec3(try_get_component_property("#sprite", "size")),
+    left,
+    bottom,
+    right,
+    top,
+    width,
+    height
+  ))
+end
+
+local function direction_label(direction)
+  return (direction == DIRECTION_DOWN) and "down" or "up"
+end
+
+local function fmt_bool(v)
+  return v and "true" or "false"
+end
+
+local function fmt_side(v)
+  return v or "nil"
+end
+
+local function dbg(self, fmt, ...)
+  if not self.debug_logging then
+    return
+  end
+  local ok, body = pcall(string.format, fmt, ...)
+  if not ok then
+    body = tostring(fmt)
+  end
+  print(string.format(
+    "[ONE_WAY id=%s dir=%s t=%.3f] %s",
+    tostring(go.get_id()),
+    direction_label(self.direction),
+    self._time or 0,
+    body
+  ))
+end
+
+local function set_enabled(id, on)
+  local url = msg.url(nil, go.get_id(), hash(id))
+  -- Recorded so a room hide/show restores the pass-through state.
+  pcall(Util.post_component_enabled, url, on)
+end
+
+local function set_collision_enabled(self, enabled)
+  if self._co_enabled == enabled then
+    return
+  end
+  self._co_enabled = enabled
+  set_enabled("co", enabled)
+  dbg(self, "co %s", enabled and "enabled" or "disabled")
+end
+
+local function temporarily_disable_collision(self, duration, reason, other_id)
+  local now = self._time or 0
+  local until_t = now + (duration or PASS_THROUGH_TIME)
+  if (self._forced_disable_until or 0) < until_t then
+    self._forced_disable_until = until_t
+  end
+  dbg(self, "disable co duration=%.3f until=%.3f reason=%s other=%s", duration or PASS_THROUGH_TIME, until_t, tostring(reason or "n/a"), tostring(other_id))
+  set_collision_enabled(self, false)
+end
+
+local function sensor_role_from_sender(sender)
+  if not sender then return nil end
+  local fragment = sender.fragment
+  if fragment == SENSOR_BOTTOM then
+    return "bottom"
+  end
+  if fragment == SENSOR_TOP or fragment == SENSOR_TOP_ALT then
+    return "top"
+  end
+  return nil
+end
+
+local function update_sensor_contact(self, player_id, role, entering)
+  if not player_id or not role then
+    return
+  end
+
+  local state = self.player_sensors[player_id]
+  if not state then
+    state = { top = false, bottom = false }
+    self.player_sensors[player_id] = state
+  end
+  state[role] = entering and true or false
+  if entering then
+    local recent = self.player_recent[player_id] or {}
+    recent[role] = self._time or 0
+    self.player_recent[player_id] = recent
+    dbg(self, "trigger role=%s enter=true other=%s top=%s bottom=%s", tostring(role), tostring(player_id), fmt_bool(state.top), fmt_bool(state.bottom))
+    return
+  end
+
+  if not state.top and not state.bottom then
+    local now = self._time or 0
+    local recent = self.player_recent[player_id]
+    local keep_recent = false
+    if recent then
+      local top_age = recent.top and (now - recent.top) or math.huge
+      local bottom_age = recent.bottom and (now - recent.bottom) or math.huge
+      keep_recent = (top_age <= SENSOR_STALE_TTL) or (bottom_age <= SENSOR_STALE_TTL)
+    end
+    if not keep_recent then
+      self.player_sensors[player_id] = nil
+      self.player_recent[player_id] = nil
+    end
+  end
+  dbg(self, "trigger role=%s enter=false other=%s top=%s bottom=%s", tostring(role), tostring(player_id), fmt_bool(state.top), fmt_bool(state.bottom))
+end
+
+local function get_player_side(self, player_id)
+  local state = self.player_sensors[player_id]
+  if not state then return nil end
+  if state.top and not state.bottom then
+    return "top"
+  end
+  if state.bottom and not state.top then
+    return "bottom"
+  end
+  return nil
+end
+
+local function has_recent_side(self, player_id, role)
+  local recent = self.player_recent[player_id]
+  if not recent then
+    return false
+  end
+  local t = recent[role]
+  if not t then
+    return false
+  end
+  return ((self._time or 0) - t) <= SENSOR_APPROACH_MEMORY
+end
+
+local function mark_recent_side(self, player_id, role)
+  if not player_id or not role then
+    return
+  end
+  local recent = self.player_recent[player_id] or {}
+  recent[role] = self._time or 0
+  self.player_recent[player_id] = recent
+end
+
+local function start_pass_window(self, player_id, from_side, reason)
+  if not player_id or (from_side ~= "top" and from_side ~= "bottom") then
+    return
+  end
+  mark_recent_side(self, player_id, from_side)
+  local now = self._time or 0
+  local window = self.pass_windows[player_id]
+  if not window then
+    window = {
+      from = from_side,
+      expires = now + PASS_THROUGH_TIME,
+      reached_opposite = false,
+      started_at = now
+    }
+    self.pass_windows[player_id] = window
+    dbg(self, "pass_window start other=%s from=%s reason=%s expires=%.3f", tostring(player_id), tostring(from_side), tostring(reason), window.expires or 0)
+    return
+  end
+  local old_exp = window.expires or 0
+  local old_from = window.from
+  window.from = from_side
+  if old_from ~= from_side then
+    window.reached_opposite = false
+    window.started_at = now
+  elseif window.reached_opposite == nil then
+    window.reached_opposite = false
+  end
+  if not window.started_at then
+    window.started_at = now
+  end
+  window.expires = math.max(old_exp, now + PASS_THROUGH_TIME)
+  if window.expires > old_exp + 0.01 then
+    dbg(self, "pass_window extend other=%s from=%s reason=%s expires=%.3f", tostring(player_id), tostring(from_side), tostring(reason), window.expires or 0)
+  end
+end
+
+local function has_active_pass_window(self, player_id)
+  local window = player_id and self.pass_windows[player_id] or nil
+  if not window then
+    return false
+  end
+  return (window.expires or 0) > (self._time or 0)
+end
+
+local function pass_window_from(self, player_id)
+  local window = player_id and self.pass_windows[player_id] or nil
+  if not window then
+    return nil
+  end
+  if (window.expires or 0) <= (self._time or 0) then
+    return nil
+  end
+  return window.from
+end
+
+local function side_from_contact_normal(message)
+  local normal = message and message.normal
+  if not normal then
+    return nil
+  end
+  local ny = tonumber(normal.y) or 0
+  if ny >= VERTICAL_NORMAL_THRESHOLD then
+    return "bottom"
+  end
+  if ny <= -VERTICAL_NORMAL_THRESHOLD then
+    return "top"
+  end
+  return nil
+end
+
+local function side_from_relative_position(other_id)
+  local ok_other, other_pos = pcall(go.get_position, other_id)
+  if not ok_other or not other_pos then
+    return nil
+  end
+  local self_pos = go.get_position()
+  local dy = (other_pos.y or 0) - (self_pos.y or 0)
+  if dy >= POSITION_SIDE_EPSILON then
+    return "top"
+  end
+  if dy <= -POSITION_SIDE_EPSILON then
+    return "bottom"
+  end
+  return nil
+end
+
+local function should_allow_directional_pass(self, other_id, message)
+  local side = get_player_side(self, other_id)
+  local in_top_sensor = self.players[other_id] == true
+  local recent_top = has_recent_side(self, other_id, "top")
+  local recent_bottom = has_recent_side(self, other_id, "bottom")
+  local normal_side = side_from_contact_normal(message)
+  local position_side = side_from_relative_position(other_id)
+  local active_window = has_active_pass_window(self, other_id)
+  local active_window_from = pass_window_from(self, other_id)
+  local reason = "none"
+  local pass_from = nil
+
+  if self.direction == DIRECTION_UP then
+    -- "up": allow drop/fall down through when approaching from above.
+    if active_window and active_window_from == "top" then
+      reason = "up:active-window"
+      return true, reason, side, in_top_sensor, recent_top, recent_bottom, normal_side, position_side, "top"
+    end
+    if side == "top" then reason = "up:side-top"; pass_from = "top"; return true, reason, side, in_top_sensor, recent_top, recent_bottom, normal_side, position_side, pass_from end
+    if side == "bottom" then reason = "up:side-bottom"; return false, reason, side, in_top_sensor, recent_top, recent_bottom, normal_side, position_side end
+    if recent_top then reason = "up:recent-top"; pass_from = "top"; return true, reason, side, in_top_sensor, recent_top, recent_bottom, normal_side, position_side, pass_from end
+    if normal_side == "top" then reason = "up:normal-top"; pass_from = "top"; return true, reason, side, in_top_sensor, recent_top, recent_bottom, normal_side, position_side, pass_from end
+    if normal_side == "bottom" then reason = "up:normal-bottom"; return false, reason, side, in_top_sensor, recent_top, recent_bottom, normal_side, position_side end
+    if position_side == "top" then reason = "up:position-top"; pass_from = "top"; return true, reason, side, in_top_sensor, recent_top, recent_bottom, normal_side, position_side, pass_from end
+    if position_side == "bottom" then reason = "up:position-bottom"; return false, reason, side, in_top_sensor, recent_top, recent_bottom, normal_side, position_side end
+    reason = "up:in-top-sensor-fallback"
+    pass_from = in_top_sensor and "top" or nil
+    return in_top_sensor, reason, side, in_top_sensor, recent_top, recent_bottom, normal_side, position_side, pass_from
+  end
+
+  -- Default = "down": allow jump up through only when in bottom sensor.
+  if active_window and active_window_from == "bottom" then
+    reason = "down:active-window"
+    return true, reason, side, in_top_sensor, recent_top, recent_bottom, normal_side, position_side, "bottom"
+  end
+  if side == "top" then reason = "down:side-top"; return false, reason, side, in_top_sensor, recent_top, recent_bottom, normal_side, position_side end
+  if side == "bottom" then reason = "down:side-bottom"; pass_from = "bottom"; return true, reason, side, in_top_sensor, recent_top, recent_bottom, normal_side, position_side, pass_from end
+  if recent_bottom then reason = "down:recent-bottom"; pass_from = "bottom"; return true, reason, side, in_top_sensor, recent_top, recent_bottom, normal_side, position_side, pass_from end
+  if normal_side == "bottom" then reason = "down:normal-bottom"; pass_from = "bottom"; return true, reason, side, in_top_sensor, recent_top, recent_bottom, normal_side, position_side, pass_from end
+  if normal_side == "top" then reason = "down:normal-top"; return false, reason, side, in_top_sensor, recent_top, recent_bottom, normal_side, position_side end
+  if position_side == "bottom" then reason = "down:position-bottom"; pass_from = "bottom"; return true, reason, side, in_top_sensor, recent_top, recent_bottom, normal_side, position_side, pass_from end
+  if position_side == "top" then reason = "down:position-top"; return false, reason, side, in_top_sensor, recent_top, recent_bottom, normal_side, position_side end
+  reason = "down:default-block"
+  return false, reason, side, in_top_sensor, recent_top, recent_bottom, normal_side, position_side, pass_from
+end
+
+function update(self, dt)
+  self._time = (self._time or 0) + (dt or 0)
+  local now = self._time or 0
+
+  -- Extend/clear per-player pass windows while the player traverses the platform.
+  for player_id, window in pairs(self.pass_windows) do
+    local state = self.player_sensors[player_id]
+    local in_top = state and state.top or false
+    local in_bottom = state and state.bottom or false
+    local position_side = side_from_relative_position(player_id)
+    local recent_top = has_recent_side(self, player_id, "top")
+    local recent_bottom = has_recent_side(self, player_id, "bottom")
+    local should_extend = false
+    local reached_opposite = window.reached_opposite and true or false
+    local started_at = window.started_at or now
+    local age = math.max(0, now - started_at)
+    local timed_out = age >= PASS_WINDOW_MAX_LIFETIME
+
+    if timed_out then
+      window.expires = now
+      dbg(self, "pass_window timeout other=%s from=%s age=%.3f", tostring(player_id), tostring(window.from), age)
+    else
+      if window.from == "bottom" then
+        if in_top or position_side == "top" then
+          reached_opposite = true
+        end
+        -- Keep pass active until player has clearly crossed above.
+        if not reached_opposite then
+          should_extend = true
+        else
+          should_extend = in_top or recent_bottom
+        end
+      elseif window.from == "top" then
+        if in_bottom or position_side == "bottom" then
+          reached_opposite = true
+        end
+        if not reached_opposite then
+          should_extend = true
+        else
+          should_extend = in_bottom or recent_top
+        end
+      end
+      window.reached_opposite = reached_opposite
+    end
+
+    if should_extend then
+      window.expires = math.max(window.expires or 0, now + PASS_THROUGH_TIME)
+      dbg(self, "pass_window keep other=%s from=%s reached_opposite=%s expires=%.3f age=%.3f side=%s", tostring(player_id), tostring(window.from), fmt_bool(reached_opposite), window.expires or 0, age, fmt_side(position_side))
+    else
+      dbg(self, "pass_window idle other=%s from=%s reached_opposite=%s expires=%.3f age=%.3f side=%s in_top=%s in_bottom=%s", tostring(player_id), tostring(window.from), fmt_bool(reached_opposite), window.expires or 0, age, fmt_side(position_side), fmt_bool(in_top), fmt_bool(in_bottom))
+    end
+
+    if (window.expires or 0) <= now then
+      self.pass_windows[player_id] = nil
+      dbg(self, "pass_window clear other=%s from=%s", tostring(player_id), tostring(window.from))
+    end
+  end
+
+  local disable = (self._forced_disable_until or 0) > now
+  if not disable then
+    for _, window in pairs(self.pass_windows) do
+      if (window.expires or 0) > now then
+        disable = true
+        break
+      end
+    end
+  end
+  set_collision_enabled(self, not disable)
+end
+
+function on_message(self, message_id, message, sender)
+  if message_id == hash("trigger_response") then
+    local other_group = message.other_group or message.group
+    if other_group ~= PLAYER then return end
+
+    local role = sensor_role_from_sender(sender) or "top"
+    update_sensor_contact(self, message.other_id, role, message.enter)
+    dbg(self,
+      "trigger_response sender=%s role=%s enter=%s other=%s group=%s",
+      tostring(sender and sender.fragment),
+      tostring(role),
+      fmt_bool(message.enter),
+      tostring(message.other_id),
+      tostring(other_group)
+    )
+
+    if role == "top" then
+      if message.enter then
+        self.players[message.other_id] = true
+        dbg(self, "one_way_contact -> %s", tostring(message.other_id))
+        -- Advertise to player that we're a one-way candidate
+        local left, right, bottom, top, width, height = get_platform_world_bounds()
+        pcall(msg.post, message.other_id, hash("one_way_contact"), {
+          url = msg.url(),
+          direction = self.direction,
+          bounds_bottom = bottom,
+          bounds_top = top,
+          bounds_left = left,
+          bounds_right = right,
+        })
+      else
+        self.players[message.other_id] = nil
+      end
+    end
+    if message.enter then
+      if self.direction == DIRECTION_DOWN and role == "bottom" then
+        start_pass_window(self, message.other_id, "bottom", "sensor-bottom-enter")
+      elseif self.direction == DIRECTION_UP and role == "top" then
+        start_pass_window(self, message.other_id, "top", "sensor-top-enter")
+      end
+    end
+  elseif message_id == hash("collision_response") or message_id == hash("contact_point_response") then
+    local other_group = message.other_group or message.group
+    if other_group ~= PLAYER then return end
+    local sender_fragment = sender and sender.fragment
+    if sender_fragment ~= hash("co") then
+      dbg(self, "collision msg=%s sender=%s ignored=non-co other=%s", tostring(message_id), tostring(sender_fragment), tostring(message.other_id))
+      return
+    end
+    local allow, reason, side, in_top_sensor, recent_top, recent_bottom, normal_side, position_side, pass_from =
+      should_allow_directional_pass(self, message.other_id, message)
+    dbg(self,
+      "collision msg=%s sender=%s other=%s allow=%s reason=%s side=%s in_top=%s recent_top=%s recent_bottom=%s normal_side=%s ny=%.3f position_side=%s pass_from=%s active_window=%s",
+      tostring(message_id),
+      tostring(sender_fragment),
+      tostring(message.other_id),
+      fmt_bool(allow),
+      tostring(reason),
+      fmt_side(side),
+      fmt_bool(in_top_sensor),
+      fmt_bool(recent_top),
+      fmt_bool(recent_bottom),
+      fmt_side(normal_side),
+      tonumber(message and message.normal and message.normal.y) or 0,
+      fmt_side(position_side),
+      fmt_side(pass_from),
+      fmt_bool(has_active_pass_window(self, message.other_id))
+    )
+    if allow then
+      if pass_from then
+        start_pass_window(self, message.other_id, pass_from, reason)
+      end
+      temporarily_disable_collision(self, PASS_THROUGH_TIME, reason, message.other_id)
+    end
+  elseif message_id == hash("drop_through") then
+    -- Explicit drop-through is needed for standard "down" platforms because the
+    -- player is standing on a solid collision object when requesting the pass.
+    local other_id = (message and message.other_id) or sender
+    local side = get_player_side(self, other_id) or side_from_relative_position(other_id)
+    local in_top_sensor = self.players[other_id] == true
+    local recent_top = has_recent_side(self, other_id, "top")
+    local allow_manual = true
+
+    if self.direction == DIRECTION_UP then
+      allow_manual = in_top_sensor or recent_top or side == "top"
+    end
+
+    if allow_manual then
+      if self.direction == DIRECTION_DOWN then
+        start_pass_window(self, other_id, "top", "drop_through")
+      end
+      dbg(self, "drop_through from sender=%s other=%s side=%s in_top=%s recent_top=%s", tostring(sender and sender.fragment), tostring(other_id), fmt_side(side), fmt_bool(in_top_sensor), fmt_bool(recent_top))
+      temporarily_disable_collision(self, PASS_THROUGH_TIME, "drop_through", other_id)
+    else
+      dbg(self, "drop_through ignored sender=%s other=%s side=%s in_top=%s recent_top=%s", tostring(sender and sender.fragment), tostring(other_id), fmt_side(side), fmt_bool(in_top_sensor), fmt_bool(recent_top))
+    end
+  elseif message_id == JUMP_PASS_PROBE then
+    -- Fallback path from player jump probe: ensure standard "down" one-way opens regardless of facing.
+    if self.direction == DIRECTION_DOWN then
+      local other_id = (message and message.other_id) or sender
+      start_pass_window(self, other_id, "bottom", "jump-pass-probe")
+      temporarily_disable_collision(self, PASS_THROUGH_TIME, "jump-pass-probe", other_id)
+      dbg(self, "jump_pass_probe other=%s sender=%s", tostring(other_id), tostring(sender))
+    end
+  end
+end
+
+function final(self)
+  self.players = {}
+  self.player_sensors = {}
+  self.player_recent = {}
+  self.pass_windows = {}
+end

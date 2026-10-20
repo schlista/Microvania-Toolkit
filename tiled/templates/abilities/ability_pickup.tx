@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<template>
+ <object name="Ability Pickup" type="ability" width="32" height="32">
+  <properties>
+   <property name="collectible_id" type="string" value=""/>
+   <property name="ability_id" propertytype="optional_abilities" value="double_jump"/>
+   <property name="popup" type="class" propertytype="ability_pickup_popup">
+    <properties>
+     <property name="popup_description" value=""/>
+     <property name="popup_title" value=""/>
+     <property name="show_popup" type="bool" value="true"/>
+    </properties>
+   </property>
+   <property name="art_item" type="string" value=""/>
+   <property name="art_feedback" type="class" propertytype="ability_pickup_art_feedback">
+    <properties>
+     <property name="consume_effect" type="string" propertytype="particle_effects" value="none"/>
+     <property name="interact_effect" type="string" propertytype="particle_effects" value="none"/>
+     <property name="effect_offset_x" type="float" value="0"/>
+     <property name="effect_offset_y" type="float" value="0"/>
+     <property name="effect_scale" type="float" value="1"/>
+     <property name="effect_cooldown" type="float" value="0"/>
+    </properties>
+   </property>
+   <property name="mvtk_template_version" type="string" value="2.7.0"/>
+  </properties>
+ </object>
+</template>

@@ -1,0 +1,7 @@
+animations { id: "forest" images { image: "/developer/assets/atlas/collectibles/map_forest.png" } playback: PLAYBACK_NONE fps: 1 }
+animations { id: "caves" images { image: "/developer/assets/atlas/collectibles/map_caves.png" } playback: PLAYBACK_NONE fps: 1 }
+animations { id: "castle" images { image: "/developer/assets/atlas/collectibles/map_castle.png" } playback: PLAYBACK_NONE fps: 1 }
+animations { id: "fragment" images { image: "/developer/assets/atlas/collectibles/map_fragment.png" } playback: PLAYBACK_NONE fps: 1 }
+margin: 2
+extrude_borders: 0
+inner_padding: 0

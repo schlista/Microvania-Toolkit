@@ -1,0 +1,76 @@
+local Viewport = require "mvtk.ui.viewport"
+-- developer/ui/game/toast.gui_script
+
+local v3 = vmath.vector3
+
+local function layout(self)
+  local w, h = Viewport.design_size()
+  local p = v3(w * 0.5, 120, 0)
+  gui.set_position(self.label, p)
+  -- Backdrop sizing based on label extents
+  local font_name = gui.get_font(self.label)
+  local font = gui.get_font_resource(font_name)
+  local e = resource.get_text_metrics(font, gui.get_text(self.label))
+  local size = v3(e.width + self.margin.x*2, e.height + self.margin.y*2, 0)
+  gui.set_position(self.bg, p)
+  gui.set_size(self.bg, size)
+end
+
+function init(self)
+  msg.post(".", "acquire_input_focus")
+  self.label = gui.get_node("label")
+  -- Create a backdrop for readability
+  self.bg = gui.new_box_node(v3(0,0,0), v3(1,1,0))
+  gui.set_pivot(self.bg, gui.PIVOT_CENTER)
+  gui.set_color(self.bg, vmath.vector4(0,0,0,0))
+  self.t = 0
+  self.alpha = 0
+  self.fade_in = 0.12
+  self.fade_out = 0.35
+  self.margin = v3(24, 12, 0)
+  layout(self)
+end
+
+local function set_text(self, s)
+  local text = tostring(s or "")
+  gui.set_text(self.label, text)
+  layout(self)
+end
+
+local function set_alpha(self, a)
+  self.alpha = math.max(0, math.min(1, a))
+  local lc = gui.get_color(self.label); lc.w = self.alpha; gui.set_color(self.label, lc)
+  local bc = gui.get_color(self.bg); bc.w = self.alpha * 0.6; gui.set_color(self.bg, bc)
+end
+
+function on_message(self, message_id, message, sender)
+  if message_id == hash('toast') then
+    set_text(self, message and message.text or "")
+    self.tag = message and message.tag
+    self.persistent = message and message.persistent == true
+    self.t = math.max(1.5, tonumber(message and message.duration) or 1.5)
+    set_alpha(self, 0)
+    self._rise = true
+    self._fall = false
+  elseif message_id == hash('dismiss_toast') and self.tag == (message and message.tag) then
+    self.t, self.persistent = 0, false
+    self._rise, self._fall = false, false
+    set_alpha(self, 0)
+  end
+end
+
+function update(self, dt)
+  -- Fade in/out
+  if self._rise then
+    local a = self.alpha + dt / (self.fade_in or 0.12)
+    set_alpha(self, a)
+    if self.alpha >= 1 then self._rise = false end
+  elseif not self.persistent and (self.t or 0) > 0 then
+    self.t = self.t - dt
+    if self.t <= 0 then self._fall = true end
+  elseif self._fall then
+    local a = self.alpha - dt / (self.fade_out or 0.35)
+    set_alpha(self, a)
+    if self.alpha <= 0 then self._fall = false end
+  end
+end

@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<template>
+ <object name="Enemy" type="enemy">
+  <properties>
+   <property name="enemy_type" propertytype="enemies" value="default"/>
+   <property name="art" type="file" value=""/>
+   <property name="movement_and_attacks" type="class" propertytype="enemy_movement_and_attacks">
+    <properties>
+     <property name="attack_pattern" propertytype="enemy_attack_patterns" value="type_default"/>
+     <property name="attack_pattern2" propertytype="enemy_attack_patterns" value="type_default"/>
+     <property name="chase_speed" type="float" value="-1"/>
+     <property name="chase_speed_mult" type="float" value="-1"/>
+     <property name="detection_range" type="float" value="-1"/>
+     <property name="facing" type="int" value="0"/>
+     <property name="hover_height" type="float" value="-1"/>
+     <property name="movement" propertytype="enemy_movement" value="type_default"/>
+     <property name="patrol_distance" type="float" value="-1"/>
+     <property name="patrol_height" type="float" value="-1"/>
+     <property name="patrol_route" value=""/>
+    </properties>
+   </property>
+   <property name="mvtk_template_version" type="string" value="2.8.0"/>
+   <property name="rewards" type="class" propertytype="enemy_rewards">
+    <properties>
+     <property name="drops" value=""/>
+     <property name="loot_table" value=""/>
+    </properties>
+   </property>
+   <property name="stats" type="class" propertytype="enemy_stats">
+    <properties>
+     <property name="ally_detection_range" type="float" value="-1"/>
+     <property name="contact_damage" type="float" value="-1"/>
+     <property name="contact_damage_cooldown" type="float" value="-1"/>
+     <property name="damage_mult" type="float" value="-1"/>
+     <property name="difficulty" propertytype="difficulty" value="none"/>
+     <property name="elite" type="bool" value="false"/>
+     <property name="faction" value=""/>
+     <property name="group_id" value=""/>
+     <property name="health_mult" type="float" value="-1"/>
+     <property name="iframes_on_hit" type="float" value="-1"/>
+     <property name="knockback_force" type="float" value="-1"/>
+     <property name="speed_mult" type="float" value="-1"/>
+    </properties>
+   </property>
+   <property name="tuning" type="class" propertytype="enemy_tuning">
+    <properties>
+     <property name="attack_cooldown" type="float" value="-1"/>
+     <property name="attack_detection_range" type="float" value="-1"/>
+     <property name="attack_height" type="float" value="-1"/>
+     <property name="attack_range" type="float" value="-1"/>
+     <property name="attack_windup" type="float" value="-1"/>
+     <property name="charge_cooldown" type="float" value="-1"/>
+     <property name="charge_distance" type="float" value="-1"/>
+     <property name="charge_duration" type="float" value="-1"/>
+     <property name="charge_speed" type="float" value="-1"/>
+     <property name="dart_interval" type="float" value="-1"/>
+     <property name="dart_speed" type="float" value="-1"/>
+     <property name="dart_vertical_speed" type="float" value="-1"/>
+     <property name="projectile_damage" type="float" value="-1"/>
+     <property name="projectile_speed" type="float" value="-1"/>
+     <property name="rise_height" type="float" value="-1"/>
+     <property name="rise_range" type="float" value="-1"/>
+     <property name="rise_speed" type="float" value="-1"/>
+     <property name="shoot_cooldown" type="float" value="-1"/>
+     <property name="swoop_detection_range" type="float" value="-1"/>
+     <property name="swoop_duration" type="float" value="-1"/>
+     <property name="swoop_speed" type="float" value="-1"/>
+    </properties>
+   </property>
+  </properties>
+  <point/>
+ </object>
+</template>

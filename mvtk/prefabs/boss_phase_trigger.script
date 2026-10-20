@@ -1,0 +1,151 @@
+-- mvtk/prefabs/boss_phase_trigger.script
+-- Trigger zone that forces a boss/arena phase when the player enters.
+
+local PU = require "mvtk.prefabs.prefab_utils"
+local Flags = require "mvtk.core.flags"
+
+local function to_bool(value, default)
+    if value == nil then return default end
+    if type(value) == "boolean" then return value end
+    if type(value) == "string" then
+        local v = value:lower()
+        if v == "true" or v == "1" or v == "yes" then return true end
+        if v == "false" or v == "0" or v == "no" then return false end
+    end
+    return default
+end
+
+-- Identity metadata emitted by Create Rooms.
+go.property("trigger_id", "")
+go.property("room_id", "")
+go.property("boss_id", "")
+go.property("boss_type", "")
+go.property("arena_id", "")
+go.property("phase", 1)
+go.property("transition_time", 0.0)
+go.property("trigger_once", false)
+go.property("requires_flag", "")
+go.property("set_flag", "")
+go.property("delay", 0.0)
+
+local function resolve_boss_id(self)
+    local ok_mgr, BossManager = pcall(require, "mvtk.bosses.boss_manager")
+    if not ok_mgr or not BossManager then return nil end
+
+    if BossManager.find_boss_id then
+        return BossManager.find_boss_id({
+            boss_id = self.boss_id_str,
+            boss_tag = self.boss_id_str,
+            boss_type = self.boss_type_str,
+        })
+    end
+
+    if self.boss_id_str and BossManager.get_boss and BossManager.get_boss(self.boss_id_str) then
+        return self.boss_id_str
+    end
+
+    return nil
+end
+
+local function apply_phase(self)
+    local phase = tonumber(self.phase) or 1
+
+    local ok_mgr, BossManager = pcall(require, "mvtk.bosses.boss_manager")
+    if ok_mgr and BossManager and BossManager.force_phase then
+        local boss_id = resolve_boss_id(self)
+        if boss_id then
+            BossManager.force_phase(boss_id, phase)
+        end
+    end
+
+    local ok_arena, BossArena = pcall(require, "mvtk.bosses.boss_arena")
+    if ok_arena and BossArena and BossArena.transition_to_phase then
+        local active = BossArena.get_active_arena and BossArena.get_active_arena() or nil
+        local arena_id = self.arena_id_str or ""
+        if arena_id == "" and active and active.id then
+            arena_id = active.id
+        end
+        if not active or arena_id == "" or (active and active.id == arena_id) then
+            local t = tonumber(self.transition_time) or 0
+            if t > 0 then
+                BossArena.transition_to_phase(phase, t)
+            else
+                BossArena.transition_to_phase(phase)
+            end
+        end
+    end
+
+    if self.set_flag_str and self.set_flag_str ~= "" then
+        Flags.set(self.set_flag_str, true)
+    end
+
+    if self.trigger_once then
+        self._used = true
+    end
+end
+
+local function trigger(self)
+    if self.trigger_once and self._used then
+        return
+    end
+    if self.requires_flag_str and self.requires_flag_str ~= "" and not Flags.has(self.requires_flag_str) then
+        return
+    end
+
+    local delay = tonumber(self.delay) or 0
+    if delay > 0 then
+        if self._pending_timer then return end
+        self._pending_timer = timer.delay(delay, false, function()
+            self._pending_timer = nil
+            apply_phase(self)
+        end)
+    else
+        apply_phase(self)
+    end
+end
+
+local function apply_props(self, props)
+    props = props or {}
+    if props.boss_id ~= nil then self.boss_id_str = tostring(props.boss_id) end
+    if props.boss_type ~= nil then self.boss_type_str = tostring(props.boss_type) end
+    if props.arena_id ~= nil then self.arena_id_str = tostring(props.arena_id) end
+    if props.phase ~= nil then self.phase = tonumber(props.phase) or self.phase end
+    if props.transition_time ~= nil then self.transition_time = tonumber(props.transition_time) or self.transition_time end
+    if props.trigger_once ~= nil then self.trigger_once = to_bool(props.trigger_once, self.trigger_once) end
+    if props.requires_flag ~= nil then self.requires_flag_str = tostring(props.requires_flag) end
+    if props.set_flag ~= nil then self.set_flag_str = tostring(props.set_flag) end
+    if props.delay ~= nil then self.delay = tonumber(props.delay) or self.delay end
+end
+
+function init(self)
+    self.boss_id_str = PU.normalize_hash_string(self.boss_id) or ""
+    self.boss_type_str = PU.normalize_hash_string(self.boss_type) or ""
+    self.arena_id_str = PU.normalize_hash_string(self.arena_id) or ""
+    self.requires_flag_str = PU.normalize_hash_string(self.requires_flag) or ""
+    self.set_flag_str = PU.normalize_hash_string(self.set_flag) or ""
+end
+
+function on_message(self, message_id, message, sender)
+    if message_id == hash("apply_tiled_props") and message and message.properties then
+        apply_props(self, message.properties)
+        return
+    end
+
+    if message_id == hash("trigger") or message_id == hash("activate") then
+        trigger(self)
+        return
+    end
+
+    if message_id ~= hash("trigger_response") then
+        return
+    end
+
+    local other_group = message.other_group or message.group
+    if other_group ~= hash("player") then
+        return
+    end
+
+    if message.enter then
+        trigger(self)
+    end
+end

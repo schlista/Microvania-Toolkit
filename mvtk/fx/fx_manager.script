@@ -1,0 +1,154 @@
+-- mvtk/fx/fx_manager.script
+-- Plays in-world particle effects based on incoming messages.
+-- Effect dispatch is data-driven via developer/config/fx_types.lua: each
+-- fx_type maps to a primary component id and optional fallback ids on the
+-- fx_manager game object. Adding a new effect requires no code change here.
+
+local _ok_debug, Debug = pcall(require, "developer.config.debug_config")
+local Colors = require "mvtk.core.colors"
+if not _ok_debug or type(Debug) ~= "table" then
+    Debug = { global = {}, fx = {} }
+end
+
+local function fx_log(...)
+    if (Debug.global and Debug.global.enable) or (Debug.fx and Debug.fx.particles) then
+        print(...)
+    end
+end
+
+-- Route bare print()s in this script through the gated logger.
+local print = fx_log
+
+local _ok_fx_types, FxTypes = pcall(require, "developer.config.fx_types")
+if not _ok_fx_types or type(FxTypes) ~= "table" then
+    FxTypes = { effects = {}, aliases = {}, position_offsets = {},
+                stop_before_play = {}, effects_needing_min_z = {},
+                default_fallback = {}, default_min_z = 0.5 }
+end
+
+local _warned_missing_fx = {}
+
+local function warn_once(fx_type, message)
+    if _warned_missing_fx[fx_type] then return end
+    _warned_missing_fx[fx_type] = true
+    print(string.format("[FX_MANAGER] %s (%s)", tostring(message), tostring(fx_type)))
+end
+
+-- Resolve aliases (e.g. "dash_trail" -> "dash") so the registry only needs
+-- one canonical entry per effect.
+local function canonical_fx_type(fx_type)
+    local aliases = FxTypes.aliases or {}
+    local seen = {}
+    while aliases[fx_type] and not seen[fx_type] do
+        seen[fx_type] = true
+        fx_type = aliases[fx_type]
+    end
+    return fx_type
+end
+
+local function apply_position_offset(fx_type, position)
+    local offsets = FxTypes.position_offsets or {}
+    local offset = offsets[fx_type]
+    if not offset then return position end
+    -- Accept either { x, y, z } table or a vmath.vector3.
+    local ox = tonumber(offset.x) or 0
+    local oy = tonumber(offset.y) or 0
+    local oz = tonumber(offset.z) or 0
+    return position + vmath.vector3(ox, oy, oz)
+end
+
+local function apply_min_z(fx_type, position)
+    if (FxTypes.effects_needing_min_z or {})[fx_type] then
+        local min_z = tonumber(FxTypes.default_min_z) or 0.5
+        if not position.z or position.z < min_z then
+            position.z = min_z
+        end
+    end
+    return position
+end
+
+-- Try each component id in order; return true on the first success.
+local function try_components(component_ids)
+    for _, id in ipairs(component_ids or {}) do
+        if id and id ~= "" then
+            local ok = pcall(particlefx.play, "#" .. tostring(id))
+            if ok then return true, id end
+        end
+    end
+    return false
+end
+
+local function dispatch(fx_type, position)
+    local canonical = canonical_fx_type(fx_type)
+
+    -- Apply per-effect transforms before resolving components.
+    position = apply_min_z(canonical, position)
+    position = apply_position_offset(canonical, position)
+    go.set_position(position)
+
+    if (FxTypes.stop_before_play or {})[canonical] then
+        local entry = (FxTypes.effects or {})[canonical]
+        local primary = entry and entry.components and entry.components[1]
+        if primary then
+            pcall(particlefx.stop, "#" .. tostring(primary))
+        end
+    end
+
+    local entry = (FxTypes.effects or {})[canonical]
+    if entry and entry.components then
+        local ok = try_components(entry.components)
+        if ok then return true end
+    end
+
+    -- Last-resort fallback so gameplay code can fire-and-forget.
+    local fallback = FxTypes.default_fallback or {}
+    local ok = try_components(fallback)
+    if ok then
+        warn_once(canonical, "fx_type missing primary; used default_fallback")
+        return true
+    end
+
+    warn_once(canonical, "no particle component resolved for fx_type")
+    return false
+end
+
+local function pulse_glow(message)
+    if not (message and message.glow) then
+        return
+    end
+
+    local intensity = tonumber(message.glow_intensity or message.intensity) or 0.65
+    local duration = math.max(0.01, tonumber(message.glow_duration) or 0.18)
+    local radius = tonumber(message.glow_radius) or 96
+    local color = Colors.to_v4(message.glow_color, vmath.vector4(1.0, 0.84, 0.42, math.max(0, math.min(1, intensity))))
+
+    pcall(msg.post, "#glow_sprite", hash("enable"))
+    pcall(go.set, "#glow_sprite", "tint", color)
+    local scale = math.max(0.05, radius / 512)
+    pcall(go.set_scale, vmath.vector3(scale, scale, 1), msg.url(nil, go.get_id(), "glow_sprite"))
+    timer.delay(duration, false, function()
+        pcall(msg.post, "#glow_sprite", hash("disable"))
+    end)
+end
+
+function init(self)
+    -- Register this fx_manager URL so other systems can reach it via C.URL.FX.
+    local ok_constants, C = pcall(require, "mvtk.core.constants")
+    if ok_constants and C and C.set_url then
+        pcall(C.set_url, "FX", msg.url())
+    end
+    pcall(msg.post, "#glow_sprite", hash("disable"))
+end
+
+function on_message(self, message_id, message, sender)
+    if message_id == hash("play_fx") or message_id == hash("spawn_effect") then
+        local fx_type = (message and (message.fx_type or message.effect_type or message.name)) or nil
+        local position = (message and message.position) or vmath.vector3(0, 0, 0)
+        if not fx_type then
+            print("[FX_MANAGER] Missing fx_type for message:", message_id)
+            return
+        end
+        dispatch(fx_type, position)
+        pulse_glow(message)
+    end
+end

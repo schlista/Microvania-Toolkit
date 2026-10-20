@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<template>
+ <object name="Grapple Slope" type="grapple_slope">
+  <properties>
+   <property name="mvtk_template_version" type="string" value="2.8.0"/>
+  </properties>
+  <polygon points="0,0 64,0 64,64"/>
+ </object>
+</template>

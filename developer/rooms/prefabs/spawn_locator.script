@@ -1,0 +1,6 @@
+-- developer/rooms/prefabs/spawn_locator.script
+-- Placeholder for Tiled-authored spawn markers. The room stream manager reads
+-- spawn positions by looking up named marker game objects; this script only
+-- carries the authored marker id as a property.
+
+go.property("marker", "spawn_a")

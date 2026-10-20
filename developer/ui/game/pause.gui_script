@@ -1,0 +1,62 @@
+local Viewport = require "mvtk.ui.viewport"
+-- developer/ui/game/pause.gui_script
+local InputCtl = require "mvtk.rooms.input_controller"
+local Pause = require "mvtk.core.pause"
+
+local v3 = vmath.vector3
+
+function init(self)
+  msg.post(".", "acquire_input_focus")
+  self._enabled = false
+  msg.post(".", "disable")
+
+  -- Dim overlay
+  self.overlay = gui.new_box_node(v3(0,0,0), v3(1,1,0))
+  gui.set_color(self.overlay, vmath.vector4(0,0,0,0.6))
+  gui.set_pivot(self.overlay, gui.PIVOT_SW)
+  gui.set_visible(self.overlay, true)
+
+  self.w, self.h = Viewport.design_size()
+  gui.set_size(self.overlay, v3(self.w, self.h, 0))
+end
+
+local function open_menu(self)
+  self._enabled = true
+  msg.post(".", "enable")
+  if InputCtl and InputCtl.set_blocked then InputCtl.set_blocked(true) end
+  if Pause and Pause.set then Pause.set(true) end
+  self.w, self.h = Viewport.design_size()
+  gui.set_size(self.overlay, v3(self.w, self.h, 0))
+end
+
+local function close_menu(self)
+  self._enabled = false
+  msg.post(".", "disable")
+  if InputCtl and InputCtl.set_blocked then InputCtl.set_blocked(false) end
+  if Pause and Pause.set then Pause.set(false) end
+end
+
+function on_message(self, message_id, message, sender)
+  if message_id == hash("toggle_pause") then
+    if self._enabled then close_menu(self) else open_menu(self) end
+  end
+end
+
+function on_input(self, action_id, action)
+  if not self._enabled then return end
+  if action and action.pressed then
+    if action_id == hash("gamepad_start") or action_id == hash("gamepad_back")
+        or action_id == hash("gamepad_rpad_right") or action_id == hash("key_p")
+        or action_id == hash("key_escape") or action_id == hash("key_m") then
+      close_menu(self)
+    end
+  end
+end
+
+function update(self, dt)
+  local w, h = Viewport.design_size()
+  if w ~= self.w or h ~= self.h then
+    self.w, self.h = w, h
+    gui.set_size(self.overlay, v3(self.w, self.h, 0))
+  end
+end

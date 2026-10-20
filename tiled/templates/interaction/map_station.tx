@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<template>
+ <object name="Map Station" type="map_station" width="32" height="32">
+  <properties>
+   <property name="reveal_area" propertytype="reveal_areas" value="current"/>
+   <property name="station_id" type="string" value=""/>
+   <property name="prompt_text" type="string" value="Reveal Map"/>
+   <property name="reveal" type="class" propertytype="map_station_reveal">
+    <properties>
+     <property name="reveal_radius" type="int" value="320"/>
+     <property name="reveal_full_biome" type="bool" value="true"/>
+    </properties>
+   </property>
+   <property name="access" type="class" propertytype="map_station_access">
+    <properties>
+     <property name="range" type="int" value="96"/>
+     <property name="cost" type="int" value="0"/>
+     <property name="trigger_once" type="bool" value="true"/>
+    </properties>
+   </property>
+   <property name="feedback" type="class" propertytype="map_station_feedback">
+    <properties>
+     <property name="sound_id" propertytype="sound_effects" value="collect_map"/>
+    </properties>
+   </property>
+   <property name="art_item" type="string" value=""/>
+   <property name="art_feedback" type="class" propertytype="map_station_art_feedback">
+    <properties>
+     <property name="consume_effect" type="string" propertytype="particle_effects" value="none"/>
+     <property name="interact_effect" type="string" propertytype="particle_effects" value="none"/>
+     <property name="effect_offset_x" type="float" value="0"/>
+     <property name="effect_offset_y" type="float" value="0"/>
+     <property name="effect_scale" type="float" value="1"/>
+     <property name="effect_cooldown" type="float" value="0"/>
+    </properties>
+   </property>
+   <property name="mvtk_template_version" type="string" value="2.7.0"/>
+  </properties>
+ </object>
+</template>

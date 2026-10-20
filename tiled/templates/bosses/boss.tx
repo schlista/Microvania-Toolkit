@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<template>
+ <object name="Boss" type="boss">
+  <properties>
+   <property name="arena_ref" type="object" value="0"/>
+   <property name="boss_type" propertytype="bosses" value="default_boss"/>
+   <property name="boss_id" type="string" value=""/>
+   <property name="arena_id" type="string" value=""/>
+   <property name="visuals" type="class" propertytype="boss_visuals">
+    <properties>
+     <property name="boss_visual_type" propertytype="boss_visual_types" value="sprite"/>
+     <property name="visual_component" type="string" value=""/>
+    </properties>
+   </property>
+   <property name="combat" type="class" propertytype="boss_combat">
+    <properties>
+     <property name="max_health" type="float" value="0"/>
+     <property name="defense" type="float" value="0"/>
+     <property name="damage_resistance" type="float" value="0"/>
+     <property name="attack_pattern_ids" type="string" value=""/>
+     <property name="contact_damage" type="float" value="0"/>
+     <property name="contact_knockback_x" type="float" value="-1"/>
+     <property name="contact_knockback_y" type="float" value="-1"/>
+     <property name="contact_stun_t" type="float" value="-1"/>
+    </properties>
+   </property>
+   <property name="boss_hit_feedback" type="class" propertytype="boss_hit_feedback">
+    <properties>
+     <property name="override_boss_feedback" type="bool" value="false"/>
+     <property name="boss_hurt_sfx" propertytype="sound_effects" value="enemy_hurt"/>
+     <property name="boss_hitstop" type="float" value="0.05"/>
+     <property name="boss_flash_color" type="color" value="#ffff4040"/>
+     <property name="boss_flash_duration" type="float" value="0.2"/>
+     <property name="boss_shake" type="float" value="6"/>
+     <property name="boss_rumble" type="float" value="0.2"/>
+    </properties>
+   </property>
+   <property name="player_hit_feedback" type="class" propertytype="boss_player_hit_feedback">
+    <properties>
+     <property name="override_player_feedback" type="bool" value="false"/>
+     <property name="player_hurt_sfx" propertytype="sound_effects" value="player_hurt"/>
+     <property name="player_hitstop" type="float" value="0.06"/>
+     <property name="player_flash_color" type="color" value="#ffff4040"/>
+     <property name="player_flash_duration" type="float" value="0.2"/>
+     <property name="player_shake" type="float" value="5"/>
+     <property name="player_rumble" type="float" value="0.18"/>
+     <property name="player_stun_t" type="float" value="0.2"/>
+     <property name="player_hurt_animation" type="string" value="hurt"/>
+     <property name="player_interrupt_attack" type="bool" value="true"/>
+     <property name="player_hurt_decel" type="float" value="5"/>
+    </properties>
+   </property>
+   <property name="attack_tuning" type="class" propertytype="boss_attack_tuning">
+    <properties>
+     <property name="chase_speed" type="float" value="-1"/>
+     <property name="charge_speed" type="float" value="-1"/>
+     <property name="charge_distance" type="float" value="-1"/>
+     <property name="charge_telegraph_time" type="float" value="-1"/>
+     <property name="charge_duration" type="float" value="-1"/>
+     <property name="charge_cooldown" type="float" value="-1"/>
+     <property name="charge_recovery" type="float" value="-1"/>
+    </properties>
+   </property>
+   <property name="arena_and_ui" type="class" propertytype="boss_arena_and_ui">
+    <properties>
+     <property name="arena_lock" type="bool" value="true"/>
+     <property name="show_health_bar" type="bool" value="true"/>
+     <property name="health_bar_position" propertytype="boss_health_bar_positions" value="top"/>
+    </properties>
+   </property>
+   <property name="presentation" type="class" propertytype="boss_presentation">
+    <properties>
+     <property name="music_track" propertytype="boss_music_tracks" value="none"/>
+     <property name="victory_music" propertytype="boss_music_tracks" value="none"/>
+     <property name="intro_cutscene" type="string" value=""/>
+    </properties>
+   </property>
+   <property name="rewards_and_persistence" type="class" propertytype="boss_rewards_and_persistence">
+    <properties>
+     <property name="defeat_flag" type="string" value=""/>
+     <property name="reward_currency_min" type="int" value="0"/>
+     <property name="reward_currency_max" type="int" value="0"/>
+     <property name="reward_drops" type="string" value=""/>
+     <property name="reward_loot_table" type="string" value=""/>
+     <property name="reward_unlock_flag" type="string" value=""/>
+     <property name="reward_unlock_fast_travel" type="string" value=""/>
+    </properties>
+   </property>
+   <property name="mvtk_template_version" type="string" value="2.7.0"/>
+  </properties>
+  <point/>
+ </object>
+</template>

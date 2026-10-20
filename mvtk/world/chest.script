@@ -1,0 +1,342 @@
+-- mvtk/world/chest.script
+-- Chest/loot container component
+-- Spawned from Tiled objects, contains configurable loot
+
+print("[CHEST] ========== CHEST SCRIPT LOADING ==========")
+
+local CollectibleManager = require "mvtk.collectibles.collectible_manager"
+print("[CHEST] CollectibleManager loaded")
+local Flags = require "mvtk.core.flags"
+print("[CHEST] Flags loaded")
+local ChestInlineRegistry = require "mvtk.world.chest_inline_registry"
+local Util = require "mvtk.core.util"
+local KeyIds = require "mvtk.core.key_ids"
+local PU = require "mvtk.prefabs.prefab_utils"
+local RewardDrops = require "mvtk.collectibles.reward_drops"
+local ObjectArt = Util.require_module("developer.config.object_art") or {}
+
+-- InteractionManager loaded lazily in init() to avoid module load order issues
+local InteractionManager = nil
+
+-- Properties - authored identifiers and names are text
+go.property("chest_id", "")
+go.property("chest_type", "")
+go.property("loot_table", "common")           -- loot table ID hash
+go.property("locked", false)                        -- if true, requires key
+go.property("key_required", "")               -- key item hash to unlock
+go.property("room_id", "")
+go.property("single_use", true)                     -- if true, stays open forever after opened
+
+-- Build hash-to-string reverse lookup for loot tables
+local LootTables = Util.require_module("developer.config.loot_tables")
+local loot_table_hash_to_string = {}
+if LootTables then
+    for key, _ in pairs(LootTables) do
+        loot_table_hash_to_string[hash(key)] = key
+    end
+end
+
+-- Build hash-to-string reverse lookup from the shared key vocabulary plus any
+-- creator-defined key items registered in collectible configuration.
+local configured_key_ids = {}
+local CollectibleTypes = Util.require_module("developer.config.collectible_types") or {}
+for type_id, definition in pairs(CollectibleTypes) do
+    if type(definition) == "table" and (definition.category == "key" or definition.item_id) then
+        configured_key_ids[#configured_key_ids + 1] = definition.item_id or type_id
+    end
+end
+local item_hash_to_string = KeyIds.build_hash_lookup(configured_key_ids)
+
+-- Resolve item hash to string key for inventory lookups
+local function resolve_item_key(item_hash)
+    local canonical = KeyIds.canonicalize(item_hash)
+    if canonical and canonical ~= "" then
+        return canonical
+    end
+    return item_hash_to_string[item_hash]
+end
+
+-- "key_red" -> "Red Key"; other item ids -> "Title Case".
+local function title_case(id)
+    return (tostring(id):gsub("_", " "):gsub("(%a)([%w]*)", function(a, b) return a:upper() .. b end))
+end
+
+local function key_display_name(key_id)
+    local def = CollectibleTypes and CollectibleTypes[key_id]
+    if type(def) == "table" and type(def.name) == "string" and def.name ~= "" then
+        return def.name
+    end
+    local color = tostring(key_id or ""):match("^key_(.+)$")
+    if color then
+        return title_case(color) .. " Key"
+    end
+    return title_case(key_id or "the key")
+end
+
+local function chest_log(msg)
+    print("[CHEST]", msg)
+end
+
+local normalize_hash_string = Util.normalize_hash_string
+
+local function set_chest_sprite(self, state)
+    require("mvtk.tiled.object_presentation").restore(state == "open" and "opened" or state)
+    if not Util.component_exists("#sprite") then
+        return
+    end
+    local candidates = {}
+    if self.chest_type_str and self.chest_type_str ~= "" then
+        candidates[#candidates + 1] = "chest_" .. self.chest_type_str .. "_" .. state
+        candidates[#candidates + 1] = self.chest_type_str .. "_" .. state
+        candidates[#candidates + 1] = "chest_" .. self.chest_type_str
+    end
+    candidates[#candidates + 1] = "chest_" .. state
+    candidates[#candidates + 1] = "chest_base"
+
+    for _, anim in ipairs(candidates) do
+        local ok = pcall(sprite.play_flipbook, "#sprite", hash(anim))
+        if ok then
+            return
+        end
+    end
+end
+
+-- Resolve loot table hash to string key
+local function resolve_loot_table_key(loot_hash)
+    if type(loot_hash) == "string" then return loot_hash end
+    return loot_table_hash_to_string[loot_hash]
+end
+
+local Inventory = Util.require_module("mvtk.core.inventory")
+
+-- Parse inline contents format: "type:amount,type:amount" (e.g., "currency:500,health_large:1")
+local function parse_inline_contents(contents_str)
+    if not contents_str or contents_str == "" then return nil end
+
+    local items = {}
+    for entry in string.gmatch(contents_str, "([^,]+)") do
+        local item_type, amount_str = string.match(entry, "([^:]+):?(%d*)")
+        if item_type then
+            item_type = string.gsub(item_type, "^%s+", "")  -- trim leading spaces
+            item_type = string.gsub(item_type, "%s+$", "")  -- trim trailing spaces
+            local amount = tonumber(amount_str) or 1
+            table.insert(items, { type = item_type, amount = amount })
+        end
+    end
+
+    return #items > 0 and items or nil
+end
+
+-----------------------------------------------------------
+-- Local Helper Functions (order: spawn_loot → open_chest → attempt_open)
+-----------------------------------------------------------
+
+-- Build the chest's reward list: named loot table (with chance rolls), then
+-- inline "type:amount,..." contents, then a single gem as a last resort.
+local function loot_items(self)
+    local items = {}
+    local loot_config = LootTables and LootTables[self.loot_table_key]
+    if loot_config then
+        for _, item in ipairs(loot_config.items or {}) do
+            if math.random() <= (item.chance or 1.0) then
+                items[#items + 1] = { type = item.type or item.collectible_type, amount = item.amount or 1 }
+            end
+        end
+        return items
+    end
+    local inline_items = parse_inline_contents(self.loot_table_key)
+    if inline_items then
+        return inline_items
+    end
+    chest_log(string.format("No loot table or inline contents for '%s', dropping a default gem", tostring(self.loot_table_key)))
+    return { { type = "gem_small", amount = 1 } }
+end
+
+local function spawn_loot(self)
+    -- Real pickups from the room collectible factory (see reward_drops.lua).
+    -- Stable ids ("chest_<id>_loot_<n>") keep collected loot from respawning.
+    local drops = RewardDrops.plan(loot_items(self), CollectibleTypes, "chest_" .. tostring(self.chest_id_key) .. "_loot_")
+    local created = RewardDrops.spawn(drops, go.get_position())
+    chest_log(string.format("Chest %s dropped %d pickup(s)", tostring(self.chest_id_key), created))
+end
+
+local function open_chest(self)
+    self.opened = true
+    if InteractionManager then
+        InteractionManager.unregister(msg.url())
+    end
+
+    chest_log(string.format("Chest %s opened!", self.chest_id_key))
+
+    -- Set persistent flag using hex key
+    if self.is_single_use then
+        local flag_name = "chest_opened_" .. self.chest_id_key
+        Flags.set(flag_name, true)
+    end
+
+    -- Play open animation. Sound ids come from developer/config/sound_bank.lua.
+    set_chest_sprite(self, "open")
+    PU.play_sound(hash("chest_open"))
+
+    -- Spawn loot using resolved string key
+    spawn_loot(self)
+    require("mvtk.tiled.object_presentation").emit("opened", "opened")
+end
+
+local function attempt_open(self)
+    if self.opened then return end
+
+    -- Check if locked (use resolved string key for inventory)
+    if self.is_locked then
+        if self.key_required_str then
+            -- Check if player has key using inventory module (pass string key)
+            local has_key = false
+            if Inventory and Inventory.has_item then
+                has_key = Inventory.has_item(self.key_required_str)
+            end
+
+            if not has_key then
+                chest_log(string.format("Chest %s requires key: %s", self.chest_id_key, self.key_required_str))
+                -- Show "locked" feedback
+                PU.play_sound(hash("chest_locked"))
+                PU.toast("Locked: needs " .. key_display_name(self.key_required_str), 2.5)
+                return
+            end
+
+            -- Consume key using inventory module (pass string key)
+            if Inventory and Inventory.consume then
+                Inventory.consume(self.key_required_str)
+            end
+            self.is_locked = false
+            chest_log(string.format("Chest %s unlocked with key: %s", self.chest_id_key, self.key_required_str))
+        end
+    end
+
+    -- Open the chest
+    open_chest(self)
+end
+
+-----------------------------------------------------------
+-- Lifecycle Functions
+-----------------------------------------------------------
+
+function init(self)
+    print("[CHEST] ========== CHEST INIT STARTING ==========")
+    print(string.format("[CHEST] Script URL: %s", tostring(msg.url())))
+
+    -- Load InteractionManager now (deferred to avoid module load order issues)
+    if not InteractionManager then
+        local ok, mgr = pcall(require, "mvtk.game.interaction_manager")
+        if ok then
+            InteractionManager = mgr
+            print("[CHEST] InteractionManager loaded successfully")
+        else
+            print("[CHEST] WARNING: Failed to load InteractionManager: " .. tostring(mgr))
+        end
+    end
+
+    -- Opened chests with only default art dim instead of looking unopened
+    -- (developer/config/object_art.lua chest_state_fallbacks).
+    require("mvtk.tiled.object_presentation").set_state_fallbacks(ObjectArt.chest_state_fallbacks)
+
+    -- Chest opened flags retain their hexadecimal authored identity.
+    self.chest_id_key = Util.hash_key_hex(self.chest_id) or ""
+    print(string.format("[CHEST] chest_id_key=%s", self.chest_id_key))
+    self.chest_type_str = normalize_hash_string(self.chest_type)
+    ChestInlineRegistry.init_from_config()
+    -- Resolve loot table hash to string key for lookups
+    self.loot_table_key = resolve_loot_table_key(self.loot_table)
+    if not self.loot_table_key then
+        self.loot_table_key = ChestInlineRegistry.resolve(self.loot_table)
+    end
+    if not self.loot_table_key then
+        self.loot_table_key = normalize_hash_string(self.loot_table)
+    end
+    if not self.loot_table_key or self.loot_table_key == "" then
+        self.loot_table_key = "common"
+    end
+    -- Resolve key_required hash to string key for inventory lookups
+    self.key_required_str = resolve_item_key(self.key_required)
+    self.opened = false
+    self.is_locked = self.locked or false
+    self.is_single_use = self.single_use ~= false -- default true
+
+    -- Check if already opened (persistent) using hex key
+    if self.is_single_use then
+        local flag_name = "chest_opened_" .. self.chest_id_key
+        if Flags.has(flag_name) then
+            self.opened = true
+            -- Show opened sprite
+            set_chest_sprite(self, "open")
+            chest_log(string.format("Chest %s already opened", self.chest_id_key))
+            return
+        end
+    end
+
+    -- Show closed (locked or unlocked) sprite
+    if self.is_locked then
+        set_chest_sprite(self, "locked")
+    else
+        set_chest_sprite(self, "closed")
+    end
+
+    -- Register with InteractionManager so player can interact by pressing interact button
+    if InteractionManager then
+        local label = self.is_locked and "Open (Locked)" or "Open"
+        local my_url = msg.url()
+        print(string.format("[CHEST] Registering with InteractionManager: url=%s, label=%s", tostring(my_url), label))
+        InteractionManager.register(my_url, {
+            label = label,
+            -- Use developer/config/interaction.lua's shared default range.
+            priority = 10
+        })
+        print(string.format("[CHEST] Registration complete for %s", self.chest_id_key))
+    else
+        print("[CHEST] WARNING: InteractionManager not loaded!")
+    end
+
+    local pos = go.get_position()
+    print(string.format("[CHEST] Chest initialized: id=%s, locked=%s, pos=(%.1f, %.1f)",
+        self.chest_id_key, tostring(self.is_locked), pos.x, pos.y))
+end
+
+function final(self)
+    -- Unregister from InteractionManager on cleanup
+    if InteractionManager then
+        InteractionManager.unregister(msg.url())
+    end
+end
+
+function on_message(self, message_id, message, sender)
+    -- Skip collision_response messages - we only care about trigger_response
+    if message_id == hash("collision_response") then
+        return
+    end
+
+    -- Log non-collision messages
+    if message_id == hash("mvtk_interact") or message_id == hash("interact") or message_id == hash("trigger_response") then
+        print(string.format("[CHEST] on_message: id=%s, opened=%s", tostring(message_id), tostring(self.opened)))
+    end
+
+    if self.opened then
+        return
+    end
+
+    -- Listen for interact from InteractionManager (mvtk_interact), legacy interact, or trigger
+    if message_id == hash("mvtk_interact") or message_id == hash("interact") or message_id == hash("trigger_response") then
+        print(string.format("[CHEST] Received interaction message: %s", tostring(message_id)))
+
+        -- Check for trigger response (player collision)
+        if message_id == hash("trigger_response") then
+            -- message.enter is true when entering, false when leaving
+            if not message.enter then
+                print("[CHEST] Ignoring exit trigger")
+                return
+            end
+            print(string.format("[CHEST] Player entered chest trigger area!"))
+        end
+
+        print(string.format("[CHEST] Opening chest %s!", self.chest_id_key))
+        attempt_open(self)
+    end
+end

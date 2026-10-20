@@ -1,0 +1,91 @@
+images {
+  image: "/developer/addons/spine/player/rig/buck/BeardyBuck_arm_lower_far.png"
+}
+images {
+  image: "/developer/addons/spine/player/rig/buck/BeardyBuck_arm_lower_near.png"
+}
+images {
+  image: "/developer/addons/spine/player/rig/buck/BeardyBuck_arm_upper_far.png"
+}
+images {
+  image: "/developer/addons/spine/player/rig/buck/BeardyBuck_arm_upper_near.png"
+}
+images {
+  image: "/developer/addons/spine/player/rig/buck/BeardyBuck_foot_far_1.png"
+}
+images {
+  image: "/developer/addons/spine/player/rig/buck/BeardyBuck_foot_far_2_bent.png"
+}
+images {
+  image: "/developer/addons/spine/player/rig/buck/BeardyBuck_foot_near_1.png"
+}
+images {
+  image: "/developer/addons/spine/player/rig/buck/BeardyBuck_foot_near_2_bent.png"
+}
+images {
+  image: "/developer/addons/spine/player/rig/buck/BeardyBuck_gun.png"
+}
+images {
+  image: "/developer/addons/spine/player/rig/buck/BeardyBuck_gun_shoot.png"
+}
+images {
+  image: "/developer/addons/spine/player/rig/buck/BeardyBuck_hand_far_1_fistBack.png"
+}
+images {
+  image: "/developer/addons/spine/player/rig/buck/BeardyBuck_hand_far_2_fistPalm.png"
+}
+images {
+  image: "/developer/addons/spine/player/rig/buck/BeardyBuck_hand_near_1_fistBack.png"
+}
+images {
+  image: "/developer/addons/spine/player/rig/buck/BeardyBuck_hand_near_2_fistPalm.png"
+}
+images {
+  image: "/developer/addons/spine/player/rig/buck/BeardyBuck_head_1.png"
+}
+images {
+  image: "/developer/addons/spine/player/rig/buck/BeardyBuck_leg_lower_far.png"
+}
+images {
+  image: "/developer/addons/spine/player/rig/buck/BeardyBuck_leg_lower_near_1.png"
+}
+images {
+  image: "/developer/addons/spine/player/rig/buck/BeardyBuck_leg_lower_near_2.png"
+}
+images {
+  image: "/developer/addons/spine/player/rig/buck/BeardyBuck_leg_upper_far.png"
+}
+images {
+  image: "/developer/addons/spine/player/rig/buck/BeardyBuck_leg_upper_near.png"
+}
+images {
+  image: "/developer/addons/spine/player/rig/buck/BeardyBuck_machineGun.png"
+}
+images {
+  image: "/developer/addons/spine/player/rig/buck/BeardyBuck_machineGun_clip.png"
+}
+images {
+  image: "/developer/addons/spine/player/rig/buck/BeardyBuck_machineGun_shoot.png"
+}
+images {
+  image: "/developer/addons/spine/player/rig/buck/BeardyBuck_pistol.png"
+}
+images {
+  image: "/developer/addons/spine/player/rig/buck/BeardyBuck_pistol_shoot.png"
+}
+images {
+  image: "/developer/addons/spine/player/rig/buck/BeardyBuck_sword_1.png"
+}
+images {
+  image: "/developer/addons/spine/player/rig/buck/BeardyBuck_sword_2_swing.png"
+}
+images {
+  image: "/developer/addons/spine/player/rig/buck/BeardyBuck_sword_3_bigSwing.png"
+}
+images {
+  image: "/developer/addons/spine/player/rig/buck/BeardyBuck_torso.png"
+}
+images {
+  image: "/developer/addons/spine/player/rig/buck/BeardyBuck_waist.png"
+}
+extrude_borders: 2

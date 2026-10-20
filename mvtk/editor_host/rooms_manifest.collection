@@ -1,0 +1,9 @@
+name: "rooms_manifest"
+embedded_instances {
+  id: "rooms_manifest"
+  data: "components {\n"
+  "  id: \"rooms_manifest\"\n"
+  "  component: \"/mvtk/editor_host/rooms_manifest.script\"\n"
+  "}\n"
+  ""
+}

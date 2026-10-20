@@ -1,0 +1,34 @@
+animations { id: "xbox_a"      images { image: "/developer/assets/atlas/input_icons/xbox_a.png" }      playback: PLAYBACK_NONE fps: 1 }
+animations { id: "xbox_b"      images { image: "/developer/assets/atlas/input_icons/xbox_b.png" }      playback: PLAYBACK_NONE fps: 1 }
+animations { id: "xbox_x"      images { image: "/developer/assets/atlas/input_icons/xbox_x.png" }      playback: PLAYBACK_NONE fps: 1 }
+animations { id: "xbox_y"      images { image: "/developer/assets/atlas/input_icons/xbox_y.png" }      playback: PLAYBACK_NONE fps: 1 }
+animations { id: "xbox_lb"     images { image: "/developer/assets/atlas/input_icons/xbox_lb.png" }     playback: PLAYBACK_NONE fps: 1 }
+animations { id: "xbox_rb"     images { image: "/developer/assets/atlas/input_icons/xbox_rb.png" }     playback: PLAYBACK_NONE fps: 1 }
+animations { id: "xbox_lt"     images { image: "/developer/assets/atlas/input_icons/xbox_lt.png" }     playback: PLAYBACK_NONE fps: 1 }
+animations { id: "xbox_rt"     images { image: "/developer/assets/atlas/input_icons/xbox_rt.png" }     playback: PLAYBACK_NONE fps: 1 }
+animations { id: "xbox_menu"   images { image: "/developer/assets/atlas/input_icons/xbox_menu.png" }   playback: PLAYBACK_NONE fps: 1 }
+animations { id: "xbox_view"   images { image: "/developer/assets/atlas/input_icons/xbox_view.png" }   playback: PLAYBACK_NONE fps: 1 }
+
+animations { id: "ps_cross"    images { image: "/developer/assets/atlas/input_icons/ps_cross.png" }    playback: PLAYBACK_NONE fps: 1 }
+animations { id: "ps_circle"   images { image: "/developer/assets/atlas/input_icons/ps_circle.png" }   playback: PLAYBACK_NONE fps: 1 }
+animations { id: "ps_square"   images { image: "/developer/assets/atlas/input_icons/ps_square.png" }   playback: PLAYBACK_NONE fps: 1 }
+animations { id: "ps_triangle" images { image: "/developer/assets/atlas/input_icons/ps_triangle.png" } playback: PLAYBACK_NONE fps: 1 }
+animations { id: "ps_l1"       images { image: "/developer/assets/atlas/input_icons/ps_l1.png" }       playback: PLAYBACK_NONE fps: 1 }
+animations { id: "ps_r1"       images { image: "/developer/assets/atlas/input_icons/ps_r1.png" }       playback: PLAYBACK_NONE fps: 1 }
+animations { id: "ps_l2"       images { image: "/developer/assets/atlas/input_icons/ps_l2.png" }       playback: PLAYBACK_NONE fps: 1 }
+animations { id: "ps_r2"       images { image: "/developer/assets/atlas/input_icons/ps_r2.png" }       playback: PLAYBACK_NONE fps: 1 }
+animations { id: "ps_options"  images { image: "/developer/assets/atlas/input_icons/ps_options.png" }  playback: PLAYBACK_NONE fps: 1 }
+animations { id: "ps_share"    images { image: "/developer/assets/atlas/input_icons/ps_share.png" }    playback: PLAYBACK_NONE fps: 1 }
+
+animations { id: "switch_a"    images { image: "/developer/assets/atlas/input_icons/switch_a.png" }    playback: PLAYBACK_NONE fps: 1 }
+animations { id: "switch_b"    images { image: "/developer/assets/atlas/input_icons/switch_b.png" }    playback: PLAYBACK_NONE fps: 1 }
+animations { id: "switch_x"    images { image: "/developer/assets/atlas/input_icons/switch_x.png" }    playback: PLAYBACK_NONE fps: 1 }
+animations { id: "switch_y"    images { image: "/developer/assets/atlas/input_icons/switch_y.png" }    playback: PLAYBACK_NONE fps: 1 }
+animations { id: "switch_l"    images { image: "/developer/assets/atlas/input_icons/switch_l.png" }    playback: PLAYBACK_NONE fps: 1 }
+animations { id: "switch_r"    images { image: "/developer/assets/atlas/input_icons/switch_r.png" }    playback: PLAYBACK_NONE fps: 1 }
+animations { id: "switch_zl"   images { image: "/developer/assets/atlas/input_icons/switch_zl.png" }   playback: PLAYBACK_NONE fps: 1 }
+animations { id: "switch_zr"   images { image: "/developer/assets/atlas/input_icons/switch_zr.png" }   playback: PLAYBACK_NONE fps: 1 }
+animations { id: "switch_plus" images { image: "/developer/assets/atlas/input_icons/switch_plus.png" } playback: PLAYBACK_NONE fps: 1 }
+animations { id: "switch_minus" images { image: "/developer/assets/atlas/input_icons/switch_minus.png" } playback: PLAYBACK_NONE fps: 1 }
+
+margin: 2

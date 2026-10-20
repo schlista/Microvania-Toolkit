@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<template>
+ <object name="Locked Door" type="locked_door" width="32" height="64">
+  <properties>
+   <property name="door_id" value="locked_door_1"/>
+   <property name="locking" type="class" propertytype="locked_door_locking">
+    <properties>
+     <property name="require_ability" propertytype="optional_abilities" value="none"/>
+     <property name="require_key" propertytype="keys" value="none"/>
+     <property name="require_item" propertytype="collectibles" value="none"/>
+     <property name="consume_key" type="bool" value="true"/>
+     <property name="starts_locked" type="bool" value="true"/>
+    </properties>
+   </property>
+   <property name="feedback" type="class" propertytype="locked_door_feedback">
+    <properties>
+     <property name="unlock_message" value="unlock"/>
+     <property name="sound_locked" propertytype="sound_effects" value="none"/>
+     <property name="sound_unlock" propertytype="sound_effects" value="none"/>
+    </properties>
+   </property>
+   <property name="mvtk_template_version" type="string" value="2.7.0"/>
+  </properties>
+ </object>
+</template>

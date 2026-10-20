@@ -1,0 +1,2544 @@
+local Viewport = require "mvtk.ui.viewport"
+-- developer/ui/game/minimap.gui_script
+-- Minimap display using pre-rendered sprite export.
+-- layout_map.* is the canonical baked map loaded at startup. updated_map.* is
+-- only a staging copy used for live editor refresh and must contain the same
+-- pixels/metadata as layout_map.* after each layout export.
+
+local CFG = require("developer.config.runtime_settings").section("minimap",require "developer.config.minimap_settings")
+local Tile = require("developer.config.tile_settings")
+local Config = require("developer.config.resolved_config")
+local Debug = require("developer.config.debug_config")
+local SOURCE_PATH = "/developer/assets/minimap/layout_map.lua"
+local DISK_SOURCE_PATHS = {
+    "./developer/assets/minimap/layout_map.lua",
+    "./developer/assets/minimap/updated_map.lua",
+}
+local HOT_RELOAD_IMAGE_PATHS = {
+    "./developer/assets/minimap/layout_map.png",
+    "./developer/assets/minimap/updated_map.png",
+}
+local GameManager = require("mvtk.game.game_manager")
+local MarkerRenderer = require("mvtk.ui.minimap.custom_markers")
+local GateMarkerRenderer = require("mvtk.ui.minimap.gate_marker_renderer")
+local DynamicTexture = require("mvtk.ui.dynamic_texture")
+local Fog = require "mvtk.ui.minimap.fog"
+local Discovery = require "mvtk.map.discovery"
+
+-- Use socket.gettime() for high-precision timing, fallback to system time
+local Time = require "mvtk.core.time"
+local get_time = Time.gettime
+
+local function minimap_log(...)
+    if Debug.global.enable or Debug.minimap.load then
+        print(...)
+    end
+end
+
+local function minimap_debug_log(...)
+    if Debug.global.enable or Debug.minimap.debug then
+        print(...)
+    end
+end
+
+local image_module_checked = false
+local image_module = nil
+local IMAGE_OPTIONS = { premultiply_alpha = false }
+
+local function get_image_module()
+    if not image_module_checked then
+        image_module = rawget(_G, "image")
+        if not image_module and type(require) == "function" then
+            local ok, mod = pcall(require, "ima" .. "ge")
+            if ok then
+                image_module = mod
+            end
+        end
+        image_module_checked = true
+    end
+    return image_module
+end
+
+local function decode_image(data)
+    local mod = get_image_module()
+    if not (mod and mod.load) then
+        minimap_log('[MINIMAP_LOAD] image module unavailable; skipping dynamic texture refresh')
+        return false, "image module unavailable"
+    end
+    return pcall(mod.load, data, IMAGE_OPTIONS)
+end
+
+-- Door detection for precise freeze zones
+local Doors = require("mvtk.rooms.tile_doors")
+
+-- Forward declarations
+local check_door_proximity_zone
+
+local function deserialize_map(src, context)
+    local loader = loadstring or load
+    if not loader then
+        minimap_log(string.format('[MINIMAP_LOAD] No loader available (%s)', context or 'unknown'))
+        return nil
+    end
+    local chunk, compile_err = loader(src)
+    if not chunk then
+        minimap_log(string.format('[MINIMAP_LOAD] Compile failed (%s): %s', context or 'unknown', tostring(compile_err)))
+        return nil
+    end
+    local ok_eval, data = pcall(chunk)
+    if not ok_eval or type(data) ~= 'table' then
+        minimap_log(string.format('[MINIMAP_LOAD] Eval failed (%s): %s', context or 'unknown', tostring(data)))
+        return nil
+    end
+    return data
+end
+
+local function load_map_data(initial, context)
+    if type(initial) == 'table' then
+        return initial
+    end
+    if io and io.open then
+        for _, disk_path in ipairs(DISK_SOURCE_PATHS) do
+            local fh = io.open(disk_path, "r")
+            if fh then
+                local src = fh:read("*a")
+                fh:close()
+                if src and #src > 0 then
+                    local data = deserialize_map(src, context or disk_path)
+                    if data then
+                        return data
+                    end
+                end
+            end
+        end
+    end
+    local ok_txt, src = pcall(sys.load_resource, SOURCE_PATH)
+    if not ok_txt then
+        minimap_log(string.format('[MINIMAP_LOAD] sys.load_resource failed (%s): %s', context or 'unknown', tostring(src)))
+        return nil
+    end
+    if not src or #src == 0 then
+        minimap_log(string.format('[MINIMAP_LOAD] Empty map resource (%s)', context or 'unknown'))
+        return nil
+    end
+    return deserialize_map(src, context)
+end
+
+local MapData = load_map_data(nil, 'init') or {}
+local MODE = { OFF = 0, PANEL = 1, FULL = 2 }
+local MODE_CYCLE = {
+    [MODE.OFF] = MODE.PANEL,
+    [MODE.PANEL] = MODE.FULL,
+    [MODE.FULL] = MODE.OFF,
+}
+
+local WORLD_MAP_URL = msg.url("main:/world_map_gui#world_map")
+
+-- normalized_room_id is defined below as local function
+local TEXTURE_ID = hash("minimap_atlas")
+local FLIP_ID = hash("layout_map")
+local UPDATED_TEXTURE_NAME = "updated_minimap"
+local UPDATED_TEXTURE_FORMAT = "rgba"
+
+-- Prefer CFG values over MapData (allows easy config without regenerating sprite)
+local MAP_WIDTH = math.max(1, CFG.map_width or MapData.width or 1)
+local MAP_HEIGHT = math.max(1, CFG.map_height or MapData.height or 1)
+local world_min_x = (CFG.map_world_min and CFG.map_world_min.x) or (MapData.world_min and MapData.world_min.x) or 0
+local world_min_y = (CFG.map_world_min and CFG.map_world_min.y) or (MapData.world_min and MapData.world_min.y) or 0
+local world_max_x = (CFG.map_world_max and CFG.map_world_max.x) or (MapData.world_max and MapData.world_max.x) or (world_min_x + MAP_WIDTH)
+local world_max_y = (CFG.map_world_max and CFG.map_world_max.y) or (MapData.world_max and MapData.world_max.y) or (world_min_y + MAP_HEIGHT)
+local scale_x = (CFG.map_scale and CFG.map_scale.x) or (MapData.scale and MapData.scale.x) or (MAP_WIDTH / math.max(1, world_max_x - world_min_x))
+local scale_y = (CFG.map_scale and CFG.map_scale.y) or (MapData.scale and MapData.scale.y) or (MAP_HEIGHT / math.max(1, world_max_y - world_min_y))
+local origin_shift_x, origin_shift_y = 0, 0
+
+local v3 = vmath.vector3
+local v4 = vmath.vector4
+
+local layout_container
+local apply_map_dimensions
+local update_dynamic_texture
+local get_seam_contact
+local function round_to_step(v, step)
+    if not step or step <= 0 then return v end
+    return math.floor(v / step + 0.5) * step
+end
+local function screen_size()
+    -- The Fit root maps this design-space panel into the letterbox.
+    return Viewport.design_size()
+end
+
+local function clamp(v, lo, hi)
+    if lo > hi then
+        lo, hi = hi, lo
+    end
+    if v < lo then return lo end
+    if v > hi then return hi end
+    return v
+end
+
+local function in_bounds(bounds, wx, wy, margin)
+    if not bounds then return false end
+    margin = margin or 0
+    if wx < bounds.min_x - margin then return false end
+    if wx > bounds.max_x + margin then return false end
+    if wy < bounds.min_y - margin then return false end
+    if wy > bounds.max_y + margin then return false end
+    return true
+end
+local function normalize_room_id(id)
+    if not id then return nil end
+    local sid = tostring(id)
+    if sid == '' then return nil end
+    sid = sid:gsub('^/+', '')
+    sid = sid:gsub('%.collection$', '')
+    sid = sid:gsub('^developer/rooms/', '')
+    return sid
+end
+
+local function ids_match(a, b)
+    if not a or not b then return false end
+    local na = normalize_room_id(a)
+    local nb = normalize_room_id(b)
+    if na and nb then
+        return na == nb
+    end
+    return tostring(a) == tostring(b)
+end
+
+-- Debug helper: dump GUI node positions/sizes to find stray nodes (e.g., white box)
+local function debug_dump_nodes(self, label)
+    label = label or "minimap_debug"
+    local nodes = {
+        { id = "panel_container", node = self.panel_container },
+        { id = "frame_node", node = self.frame_node },
+        { id = "clip_node", node = self.clip_node },
+        { id = "container", node = self.container },
+        { id = "backdrop", node = self.backdrop },
+        { id = "map_node", node = self.map_node },
+        { id = "player_node", node = self.player_node },
+    }
+    print(string.format("[MINIMAP_DEBUG] === %s ===", label))
+    for _, entry in ipairs(nodes) do
+        local node = entry.node
+        if node then
+            local pos = gui.get_screen_position(node)
+            local size = gui.get_size(node)
+            local vis = gui.is_enabled(node)
+            print(string.format("[MINIMAP_DEBUG] node=%-14s pos=(%.1f,%.1f) size=(%.1f,%.1f) visible=%s",
+                tostring(entry.id),
+                pos.x or 0, pos.y or 0,
+                size.x or 0, size.y or 0,
+                tostring(vis)))
+        else
+            print(string.format("[MINIMAP_DEBUG] node=%-14s missing", tostring(entry.id)))
+        end
+    end
+end
+
+
+-- Blend helpers (top-level)
+local function lerp(a, b, t)
+    return (a or 0) + (t or 0) * ((b or 0) - (a or 0))
+end
+
+local function equal_eps(a, b, eps)
+    eps = eps or (CFG.seam_eps_world or 1.0)
+    return math.abs((a or 0) - (b or 0)) <= eps
+end
+
+local function find_room_entry_for_point(px, py, rooms, margin, opts)
+    if not rooms then return nil end
+    margin = margin or 0
+    opts = opts or {}
+
+    -- Build a list of room ids we should prefer when multiple rooms overlap the test point
+    local preferred = {}
+    local function add_preferred(id)
+        local nid = normalize_room_id(id)
+        if not nid then return end
+        for _, existing in ipairs(preferred) do
+            if existing == nid then return end
+        end
+        preferred[#preferred + 1] = nid
+    end
+
+    if opts.preferred_ids then
+        if type(opts.preferred_ids) == "table" then
+            for _, id in ipairs(opts.preferred_ids) do
+                add_preferred(id)
+            end
+        else
+            add_preferred(opts.preferred_ids)
+        end
+    end
+    if opts.preferred_id then
+        add_preferred(opts.preferred_id)
+    end
+
+    local function preferred_rank(id)
+        local nid = normalize_room_id(id)
+        if not nid then return math.huge end
+        for idx, pid in ipairs(preferred) do
+            if pid == nid then
+                return idx
+            end
+        end
+        return math.huge
+    end
+
+    local best_entry, best_meta = nil, nil
+
+    for _, entry in ipairs(rooms) do
+        local r = entry and entry.r
+        if r then
+            local min_x = (r.min_x or 0) - margin
+            local max_x = (r.max_x or 0) + margin
+            local min_y = (r.min_y or 0) - margin
+            local max_y = (r.max_y or 0) + margin
+
+            if px >= min_x and px <= max_x and py >= min_y and py <= max_y then
+                local actual_min_x = r.min_x or min_x
+                local actual_max_x = r.max_x or max_x
+                local actual_min_y = r.min_y or min_y
+                local actual_max_y = r.max_y or max_y
+
+                local inside_actual = (px >= actual_min_x and px <= actual_max_x and py >= actual_min_y and py <= actual_max_y)
+
+                local dx = math.min(px - actual_min_x, actual_max_x - px)
+                local dy = math.min(py - actual_min_y, actual_max_y - py)
+                local distance = math.min(dx, dy)
+
+                local priority = distance or 0
+                if inside_actual then
+                    priority = priority + 1000000 -- ensure true interior wins over margin overlap
+                end
+
+                local rank = preferred_rank(entry.id)
+                local meta = {
+                    inside_actual = inside_actual,
+                    distance = distance,
+                    priority = priority,
+                    preferred_rank = rank,
+                }
+
+                if not best_meta or priority > best_meta.priority then
+                    best_entry = entry
+                    best_meta = meta
+                elseif best_meta and math.abs(priority - best_meta.priority) <= 1e-6 then
+                    local best_rank = best_meta.preferred_rank or math.huge
+                    if rank < best_rank then
+                        best_entry = entry
+                        best_meta = meta
+                    elseif rank == best_rank then
+                        local best_distance = best_meta.distance or -math.huge
+                        if (distance or -math.huge) > best_distance then
+                            best_entry = entry
+                            best_meta = meta
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    if best_entry then
+        return best_entry, best_meta
+    end
+
+    return nil, nil
+end
+
+local function find_neighbor_across_seam(seam_axis, seam_coord, side, rooms)
+    if not rooms or not seam_axis or not seam_coord then return nil end
+    local eps = CFG.seam_eps_world or 1.0
+    for _, entry in ipairs(rooms) do
+        local r = entry and entry.r
+        if r then
+            if seam_axis == 'x' then
+                if (side == 'left'  and equal_eps(r.max_x, seam_coord, eps))
+                or (side == 'right' and equal_eps(r.min_x, seam_coord, eps)) then
+                    return entry
+                end
+            else
+                if (side == 'bottom' and equal_eps(r.max_y, seam_coord, eps))
+                or (side == 'top'    and equal_eps(r.min_y, seam_coord, eps)) then
+                    return entry
+                end
+            end
+        end
+    end
+    return nil
+end
+
+get_seam_contact = function(px, py, bounds, margin)
+    if not bounds or not margin then return nil end
+    if margin < 0 then return nil end
+    local min_x, max_x = bounds.min_x, bounds.max_x
+    local min_y, max_y = bounds.min_y, bounds.max_y
+    local best, best_abs
+    local function consider(axis, seam, side, signed_dist)
+        local abs_dist = math.abs(signed_dist)
+        if abs_dist <= margin and (not best_abs or abs_dist < best_abs) then
+            best = { axis = axis, seam = seam, side = side, signed_dist = signed_dist }
+            best_abs = abs_dist
+        end
+    end
+    if py >= (min_y - margin) and py <= (max_y + margin) then
+        consider("x", min_x, "left", px - min_x)
+        consider("x", max_x, "right", px - max_x)
+    end
+    if px >= (min_x - margin) and px <= (max_x + margin) then
+        consider("y", min_y, "bottom", py - min_y)
+        consider("y", max_y, "top", py - max_y)
+    end
+    return best
+end
+
+-- Door-based freeze detection functions
+
+-- Door data cache to avoid repeated message requests
+local door_data_cache = {}
+local door_data_pending = {}
+
+-- Get stored door positions from the streaming system
+local function get_door_positions_for_room(room_id)
+    if not room_id then return {} end
+
+    -- Check cache first
+    if door_data_cache[room_id] then
+        if CFG.debug and #door_data_cache[room_id] > 0 then
+            minimap_log(string.format("[MINIMAP_DBG] Using cached door data for %s: %d doors", room_id, #door_data_cache[room_id]))
+        end
+        return door_data_cache[room_id]
+    end
+
+    -- If request is pending, return empty for now
+    if door_data_pending[room_id] then
+        if CFG.debug then
+            minimap_log(string.format("[MINIMAP_DBG] Door data request pending for %s", room_id))
+        end
+        return {}
+    end
+
+    -- Request door data from stream manager
+    local stream_manager_url = msg.url("main:/room_manager#script")
+    door_data_pending[room_id] = true
+    if CFG.debug then
+        minimap_log(string.format("[MINIMAP_DBG] Requesting door data for %s from %s", room_id, tostring(stream_manager_url)))
+    end
+    msg.post(stream_manager_url, "get_door_data", { room_id = room_id })
+
+    return {}
+end
+
+-- Handle door data response from stream manager
+local function handle_door_data_response(message)
+    if message and message.room_id then
+        door_data_cache[message.room_id] = message.doors or {}
+        door_data_pending[message.room_id] = nil
+        if CFG.debug then
+            local door_count = message.doors and #message.doors or 0
+            minimap_log(string.format("[MINIMAP_DBG] Received door data for %s: %d doors", message.room_id, door_count))
+            if door_count > 0 and message.doors then
+                for i, door in ipairs(message.doors) do
+                    if i <= 2 then  -- Only show first 2 doors to avoid spam
+                        minimap_log(string.format("[MINIMAP_DBG]   Cached door %d: (%.1f,%.1f) locked=%s", i, door.x, door.y, tostring(door.locked)))
+                    end
+                end
+            end
+        end
+    end
+end
+
+-- Get actual door pairs between adjacent rooms using your Doors.find_pair system
+local function get_door_pairs_for_rooms(room_a_id, room_b_id, side)
+    -- This would need to call Doors.find_pair with the actual room game objects
+    -- For now, we'll use a different approach - check individual door positions
+    return nil
+end
+
+-- Improved door zone detection that focuses on actual door transition areas
+local function check_door_zone(px, py, room_a_bounds, room_b_bounds, side, freeze_depth, release_distance)
+    if not (room_a_bounds and room_b_bounds) then return nil end
+
+    local allow_vertical = (CFG.door_freeze_allow_vertical ~= false)
+    if not allow_vertical and (side == 'top' or side == 'bottom') then
+        return nil
+    end
+
+    -- Use improved door proximity detection if enabled
+    if CFG.door_proximity_detection then
+        return check_door_proximity_zone(px, py, room_a_bounds, room_b_bounds, side)
+    end
+
+    -- Original room boundary method (fallback)
+    local seam_pos = nil
+    local is_vertical = (side == "left" or side == "right")
+
+    if side == "right" then
+        seam_pos = room_a_bounds.max_x
+    elseif side == "left" then
+        seam_pos = room_a_bounds.min_x
+    elseif side == "top" then
+        seam_pos = room_a_bounds.max_y
+    elseif side == "bottom" then
+        seam_pos = room_a_bounds.min_y
+    end
+
+    if seam_pos then
+        local seam_offset = CFG.door_seam_offset_px or 0
+        if seam_offset ~= 0 then
+            if side == "right" then
+                seam_pos = seam_pos - seam_offset
+            elseif side == "left" then
+                seam_pos = seam_pos + seam_offset
+            elseif side == "top" then
+                seam_pos = seam_pos - seam_offset
+            elseif side == "bottom" then
+                seam_pos = seam_pos + seam_offset
+            end
+        end
+    end
+
+    if not seam_pos then return nil end
+
+    local distance_from_seam
+    local in_freeze_zone = false
+    local in_release_zone = false
+
+    if is_vertical then
+        distance_from_seam = math.abs(px - seam_pos)
+        if py >= math.max(room_a_bounds.min_y, room_b_bounds.min_y) and
+           py <= math.min(room_a_bounds.max_y, room_b_bounds.max_y) then
+            in_freeze_zone = distance_from_seam <= freeze_depth
+            in_release_zone = distance_from_seam >= release_distance
+        end
+    else
+        distance_from_seam = math.abs(py - seam_pos)
+        if px >= math.max(room_a_bounds.min_x, room_b_bounds.min_x) and
+           px <= math.min(room_a_bounds.max_x, room_b_bounds.max_x) then
+            in_freeze_zone = distance_from_seam <= freeze_depth
+            in_release_zone = distance_from_seam >= release_distance
+        end
+    end
+
+    if in_freeze_zone then
+        return {
+            type = "freeze",
+            side = side,
+            seam = seam_pos,
+            axis = is_vertical and "x" or "y",
+            distance = distance_from_seam
+        }
+    elseif in_release_zone then
+        return {
+            type = "release",
+            side = side,
+            seam = seam_pos,
+            axis = is_vertical and "x" or "y",
+            distance = distance_from_seam
+        }
+    end
+
+    return nil
+end
+
+-- Advanced door proximity detection - focuses on areas where doors are likely to be
+check_door_proximity_zone = function(px, py, room_a_bounds, room_b_bounds, side)
+    local area_tolerance = CFG.door_area_tolerance_px or 96
+    local freeze_threshold = CFG.door_freeze_threshold_px or 48
+    local release_threshold = CFG.door_release_threshold_px or 128
+
+    local seam_pos = nil
+    local is_vertical = (side == "left" or side == "right")
+    if not is_vertical and (CFG.door_freeze_allow_vertical == false) then
+        return nil
+    end
+
+    if side == "right" then
+        seam_pos = room_a_bounds.max_x
+    elseif side == "left" then
+        seam_pos = room_a_bounds.min_x
+    elseif side == "top" then
+        seam_pos = room_a_bounds.max_y
+    elseif side == "bottom" then
+        seam_pos = room_a_bounds.min_y
+    end
+
+    if seam_pos then
+        local seam_offset = CFG.door_seam_offset_px or 0
+        if seam_offset ~= 0 then
+            if side == "right" then
+                seam_pos = seam_pos - seam_offset
+            elseif side == "left" then
+                seam_pos = seam_pos + seam_offset
+            elseif side == "top" then
+                seam_pos = seam_pos - seam_offset
+            elseif side == "bottom" then
+                seam_pos = seam_pos + seam_offset
+            end
+        end
+    end
+
+    if not seam_pos then return nil end
+
+    local distance_from_seam
+    local in_door_area = false
+
+    if is_vertical then
+        distance_from_seam = math.abs(px - seam_pos)
+        -- Check if player is in a potential door area (overlapping room bounds)
+        local overlap_min = math.max(room_a_bounds.min_y, room_b_bounds.min_y)
+        local overlap_max = math.min(room_a_bounds.max_y, room_b_bounds.max_y)
+
+        -- Only consider this a door area if there's significant overlap between rooms
+        if overlap_max > overlap_min + 64 then  -- At least 64px of overlap for door
+            -- Check if player is within the overlapping area (potential door zone)
+            if py >= (overlap_min - area_tolerance) and py <= (overlap_max + area_tolerance) then
+                in_door_area = true
+            end
+        end
+    else
+        distance_from_seam = math.abs(py - seam_pos)
+        -- Check horizontal overlap for vertical doors
+        local overlap_min = math.max(room_a_bounds.min_x, room_b_bounds.min_x)
+        local overlap_max = math.min(room_a_bounds.max_x, room_b_bounds.max_x)
+
+        if overlap_max > overlap_min + 64 then  -- At least 64px of overlap for door
+            if px >= (overlap_min - area_tolerance) and px <= (overlap_max + area_tolerance) then
+                in_door_area = true
+            end
+        end
+    end
+
+    -- Only activate freeze/release if we're actually in a door area
+    if in_door_area then
+        if CFG.debug then
+            minimap_log(string.format("[MINIMAP_DBG] Door area detected: side=%s dist=%.1f area=%s",
+                side, distance_from_seam, tostring(in_door_area)))
+        end
+
+        if distance_from_seam <= freeze_threshold then
+            return {
+                type = "freeze",
+                side = side,
+                seam = seam_pos,
+                axis = is_vertical and "x" or "y",
+                distance = distance_from_seam
+            }
+        elseif distance_from_seam >= release_threshold then
+            return {
+                type = "release",
+                side = side,
+                seam = seam_pos,
+                axis = is_vertical and "x" or "y",
+                distance = distance_from_seam
+            }
+        end
+    end
+
+    return nil
+end
+
+local function room_contains_point(bounds, px, py, margin)
+    if not bounds then return false end
+    margin = margin or 0
+    local min_x = (bounds.min_x or 0) - margin
+    local max_x = (bounds.max_x or 0) + margin
+    local min_y = (bounds.min_y or 0) - margin
+    local max_y = (bounds.max_y or 0) + margin
+    return px >= min_x and px <= max_x and py >= min_y and py <= max_y
+end
+
+local function distance_to_room_bounds(px, py, bounds)
+    if not bounds then return math.huge end
+    local dx = 0
+    if px < bounds.min_x then
+        dx = bounds.min_x - px
+    elseif px > bounds.max_x then
+        dx = px - bounds.max_x
+    end
+    local dy = 0
+    if py < bounds.min_y then
+        dy = bounds.min_y - py
+    elseif py > bounds.max_y then
+        dy = py - bounds.max_y
+    end
+    if dx == 0 and dy == 0 then
+        return 0
+    elseif dx == 0 then
+        return math.abs(dy)
+    elseif dy == 0 then
+        return math.abs(dx)
+    end
+    return math.sqrt(dx * dx + dy * dy)
+end
+
+local function build_door_room_candidates(px, py, rooms_data)
+    local primary = {}
+    local secondary = {}
+    if not rooms_data then return primary, secondary end
+    local inside_margin = CFG.door_player_room_margin_px or 96
+    local neighbor_margin = CFG.door_neighbor_margin_px or 256
+    for _, entry in ipairs(rooms_data) do
+        local bounds = entry and entry.r
+        if bounds then
+            if room_contains_point(bounds, px, py, inside_margin) then
+                primary[#primary + 1] = entry
+            elseif distance_to_room_bounds(px, py, bounds) <= neighbor_margin then
+                secondary[#secondary + 1] = entry
+            end
+        end
+    end
+    return primary, secondary
+end
+
+-- Check for door contacts using exact door positions (100% accurate via stream manager)
+local function get_door_zone_contact_exact(px, py, rooms_data, freeze_depth, release_distance)
+    if not rooms_data then return nil end
+
+    local freeze_depth_cfg = freeze_depth
+    if freeze_depth_cfg == nil then
+        freeze_depth_cfg = CFG.door_freeze_depth_px
+    end
+    freeze_depth_cfg = freeze_depth_cfg or 64
+    if freeze_depth_cfg <= 0 then
+        freeze_depth_cfg = CFG.door_freeze_min_depth_px or 12
+    end
+    freeze_depth = freeze_depth_cfg
+    local trigger_depth = math.max(freeze_depth, CFG.door_freeze_trigger_px or 0)
+    if trigger_depth < freeze_depth then
+        trigger_depth = freeze_depth
+    end
+
+    local release_distance_cfg = release_distance
+    if release_distance_cfg == nil then
+        release_distance_cfg = CFG.door_release_distance_px
+    end
+    release_distance_cfg = release_distance_cfg or 64
+    if release_distance_cfg < trigger_depth then
+        release_distance_cfg = trigger_depth
+    end
+    release_distance = release_distance_cfg
+
+    -- Reduced debug output for door zone detection (disabled verbose logs)
+    if CFG.debug and false then
+        minimap_log(string.format("[MINIMAP_DBG] Exact door zone check: player=(%.1f,%.1f) freeze_depth=%d trigger=%d release_dist=%d rooms=%d",
+            px, py, freeze_depth, trigger_depth, release_distance, rooms_data and #rooms_data or 0))
+    end
+
+    -- Use door position detection with enhanced accuracy
+    -- The stream manager already provides precise door positions from tilemap scanning
+    local allow_vertical = (CFG.door_freeze_allow_vertical ~= false)
+    local primary_rooms, secondary_rooms = build_door_room_candidates(px, py, rooms_data)
+    if (#primary_rooms == 0) and (#secondary_rooms == 0) then
+        primary_rooms = rooms_data
+        secondary_rooms = {}
+    end
+
+    local door_tolerance = CFG.door_proximity_radius_px or math.max(release_distance * 2, 256)
+    local boundary_tolerance_cfg = CFG.door_boundary_tolerance_px or math.max(door_tolerance * 0.5, freeze_depth)
+
+    local function scan_room_list(room_list, tag)
+        if not room_list then return nil end
+        for _, room_entry in ipairs(room_list) do
+            if room_entry and room_entry.id then
+                local room_doors = get_door_positions_for_room(room_entry.id)
+
+                -- Disabled verbose room door listing
+                if CFG.debug and false and room_doors then
+                    minimap_log(string.format('[MINIMAP_DBG] (%s) Room %s has %d doors', tag or 'any', room_entry.id, #room_doors))
+                end
+
+                if room_doors and #room_doors > 0 then
+                    for _, door in ipairs(room_doors) do
+                        local door_x, door_y = door.x, door.y
+                        local dx = px - door_x
+                        local dy = py - door_y
+                        local distance_to_door = math.sqrt(dx * dx + dy * dy)
+                        if distance_to_door <= door_tolerance then
+                            local room_bounds = room_entry.r
+                            local approach_side = 'unknown'
+                            local seam_coord = door_x
+                            local axis = 'x'
+
+                            if room_bounds then
+                                local to_left = math.abs(door_x - room_bounds.min_x)
+                                local to_right = math.abs(door_x - room_bounds.max_x)
+                                local to_bottom = math.abs(door_y - room_bounds.min_y)
+                                local to_top = math.abs(door_y - room_bounds.max_y)
+
+                                if CFG.debug then
+                                    minimap_log(string.format('[MINIMAP_DBG] Room %s bounds: min=(%.1f,%.1f) max=(%.1f,%.1f)',
+                                        room_entry.id, room_bounds.min_x, room_bounds.min_y, room_bounds.max_x, room_bounds.max_y))
+                                end
+
+                                local seam_offset = CFG.door_seam_offset_px or 0
+                                local min_dist = math.min(to_left, to_right, to_bottom, to_top)
+                                if min_dist == to_left then
+                                    approach_side = 'left'
+                                    seam_coord = room_bounds.min_x + seam_offset
+                                    axis = 'x'
+                                elseif min_dist == to_right then
+                                    approach_side = 'right'
+                                    seam_coord = room_bounds.max_x - seam_offset
+                                    axis = 'x'
+                                elseif min_dist == to_bottom then
+                                    approach_side = 'bottom'
+                                    seam_coord = room_bounds.min_y + seam_offset
+                                    axis = 'y'
+                                else
+                                    approach_side = 'top'
+                                    seam_coord = room_bounds.max_y - seam_offset
+                                    axis = 'y'
+                                end
+                            end
+
+                            local distance_from_seam
+                            if axis == 'x' then
+                                distance_from_seam = math.abs(px - seam_coord)
+                            else
+                                distance_from_seam = math.abs(py - seam_coord)
+                            end
+
+                            -- Disabled verbose door check debug output
+                            if CFG.debug and false then
+                                minimap_log(string.format('[MINIMAP_DBG] Enhanced door check (%s): pos=(%.1f,%.1f) door=(%.1f,%.1f) side=%s seam=%.1f dist=%.1f door_dist=%.1f',
+                                    tag or 'any', px, py, door_x, door_y, approach_side, seam_coord, distance_from_seam, distance_to_door))
+                            end
+
+                            local skip_vertical = (not allow_vertical) and axis == 'y'
+                            if skip_vertical then
+                                if CFG.debug then
+                                    minimap_log(string.format('[MINIMAP_DBG] Skipping vertical door (tag=%s) door=(%.1f,%.1f)',
+                                        tag or 'any', door_x, door_y))
+                                end
+                            else
+                                local in_band = true
+                                if axis == 'x' then
+                                    local band = CFG.door_horizontal_band_px or 0
+                                    if band <= 0 then
+                                        band = door_tolerance * 0.5
+                                    end
+                                    band = math.max(band, boundary_tolerance_cfg * 0.5)
+                                    if math.abs(py - door_y) > band then
+                                        in_band = false
+                                        if CFG.debug then
+                                            minimap_log(string.format('[MINIMAP_DBG] Skipping horizontal door - outside band (tag=%s) door=(%.1f,%.1f) player=(%.1f,%.1f) diff_y=%.1f band=%.1f',
+                                                tag or 'any', door_x, door_y, px, py, math.abs(py - door_y), band))
+                                        end
+                                    end
+                                end
+
+                                if in_band then
+                                    local in_door_area = true
+                                    if room_bounds then
+                                        if axis == 'x' then
+                                            local dist_to_left = math.abs(px - room_bounds.min_x)
+                                            local dist_to_right = math.abs(px - room_bounds.max_x)
+                                            local dist_to_bottom = math.abs(py - room_bounds.min_y)
+                                            local dist_to_top = math.abs(py - room_bounds.max_y)
+                                            local min_boundary_dist = math.min(dist_to_left, dist_to_right, dist_to_bottom, dist_to_top)
+                                            if CFG.debug then
+                                                minimap_log(string.format('[MINIMAP_DBG] Boundary distances: left=%.1f right=%.1f bottom=%.1f top=%.1f min=%.1f tolerance=%.1f',
+                                                    dist_to_left, dist_to_right, dist_to_bottom, dist_to_top, min_boundary_dist, boundary_tolerance_cfg))
+                                            end
+                                            if py < room_bounds.min_y - boundary_tolerance_cfg or py > room_bounds.max_y + boundary_tolerance_cfg then
+                                                in_door_area = false
+                                            end
+                                        else
+                                            local dist_to_left = math.abs(px - room_bounds.min_x)
+                                            local dist_to_right = math.abs(px - room_bounds.max_x)
+                                            local dist_to_bottom = math.abs(py - room_bounds.min_y)
+                                            local dist_to_top = math.abs(py - room_bounds.max_y)
+                                            local min_boundary_dist = math.min(dist_to_left, dist_to_right, dist_to_bottom, dist_to_top)
+                                            if CFG.debug then
+                                                minimap_log(string.format('[MINIMAP_DBG] Boundary distances: left=%.1f right=%.1f bottom=%.1f top=%.1f min=%.1f tolerance=%.1f',
+                                                    dist_to_left, dist_to_right, dist_to_bottom, dist_to_top, min_boundary_dist, boundary_tolerance_cfg))
+                                            end
+                                            if px < room_bounds.min_x - boundary_tolerance_cfg or px > room_bounds.max_x + boundary_tolerance_cfg then
+                                                in_door_area = false
+                                            end
+                                        end
+                                    end
+
+                                    if in_door_area then
+                                        if distance_from_seam <= trigger_depth then
+                                            return {
+                                                type = 'freeze',
+                                                side = approach_side,
+                                                seam = seam_coord,
+                                                axis = axis,
+                                                distance = distance_from_seam,
+                                                door = door,
+                                                release_distance = release_distance
+                                            }
+                                        elseif distance_from_seam >= release_distance then
+                                            return {
+                                                type = 'release',
+                                                side = approach_side,
+                                                seam = seam_coord,
+                                                axis = axis,
+                                                distance = distance_from_seam,
+                                                door = door,
+                                                release_distance = release_distance
+                                            }
+                                        end
+                                    elseif CFG.debug and distance_to_door <= door_tolerance * 2 then
+                                        minimap_log(string.format('[MINIMAP_DBG] Door candidate skipped (tag=%s) door=(%.1f,%.1f) player=(%.1f,%.1f) dist=%.1f tol=%.1f',
+                                            tag or 'any', door_x, door_y, px, py, distance_to_door, door_tolerance))
+                                    end
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+        return nil
+    end
+
+    local contact = scan_room_list(primary_rooms, 'primary')
+    if contact then return contact end
+    contact = scan_room_list(secondary_rooms, 'adjacent')
+    if contact then return contact end
+
+    return nil
+end
+
+local function get_door_zone_contact(px, py, rooms_data, freeze_depth, release_distance)
+    if CFG.use_door_based_freeze then
+        -- Use exact door positions for 100% accuracy
+        return get_door_zone_contact_exact(px, py, rooms_data, freeze_depth, release_distance)
+    elseif not rooms_data then
+        return nil
+    end
+
+    local freeze_depth_cfg = freeze_depth
+    if freeze_depth_cfg == nil then
+        freeze_depth_cfg = CFG.door_freeze_depth_px
+    end
+    freeze_depth_cfg = freeze_depth_cfg or 64
+    if freeze_depth_cfg <= 0 then
+        freeze_depth_cfg = CFG.door_freeze_min_depth_px or 12
+    end
+    freeze_depth = freeze_depth_cfg
+    local trigger_depth = math.max(freeze_depth, CFG.door_freeze_trigger_px or 0)
+    if trigger_depth < freeze_depth then
+        trigger_depth = freeze_depth
+    end
+
+    local release_distance_cfg = release_distance
+    if release_distance_cfg == nil then
+        release_distance_cfg = CFG.door_release_distance_px
+    end
+    release_distance_cfg = release_distance_cfg or 64
+    if release_distance_cfg < trigger_depth then
+        release_distance_cfg = trigger_depth
+    end
+    release_distance = release_distance_cfg
+
+    if CFG.debug then
+        minimap_log(string.format("[MINIMAP_DBG] Door zone check: player=(%.1f,%.1f) freeze_depth=%d trigger=%d release_dist=%d rooms=%d",
+            px, py, freeze_depth, trigger_depth, release_distance, #rooms_data))
+    end
+
+    -- Check all room pairs for door contacts (approximation method)
+    for i, room_a in ipairs(rooms_data) do
+        if room_a and room_a.r then
+            for j, room_b in ipairs(rooms_data) do
+                if room_b and room_b.r and i ~= j then
+                    -- Check each side for potential doors
+                    local sides
+                    if CFG.door_freeze_allow_vertical == false then
+                        sides = { 'left', 'right' }
+                    else
+                        sides = { 'left', 'right', 'top', 'bottom' }
+                    end
+                    for _, side in ipairs(sides) do
+                        local door_contact = check_door_zone(px, py, room_a.r, room_b.r, side, trigger_depth, release_distance)
+                        if door_contact then
+                            if CFG.debug then
+                                minimap_log(string.format("[MINIMAP_DBG] Door zone contact found: %s side=%s seam=%.1f",
+                                    door_contact.type, door_contact.side, door_contact.seam))
+                            end
+                            return door_contact
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return nil
+end
+
+local function world_to_map(wx, wy)
+    local px = ((wx + origin_shift_x) - world_min_x) * scale_x
+    local py = ((wy + origin_shift_y) - world_min_y) * scale_y
+    return clamp(px, 0, MAP_WIDTH), clamp(py, 0, MAP_HEIGHT)
+end
+
+local function debug_player_state(label, px_w, py_w, map_x, map_y, map_disp_x, map_disp_y, shift_x, shift_y, freeze_active, seam_side, seam_dist, catchup_dx, catchup_dy)
+    -- Simplified debug output - only show when frozen or when there's significant drift
+    if not CFG.debug then return end
+    local rx = map_x or 0
+    local ry = map_y or 0
+    local dx = ((map_disp_x ~= nil) and map_disp_x or rx) - rx
+    local dy = ((map_disp_y ~= nil) and map_disp_y or ry) - ry
+    local drift = math.sqrt(dx*dx + dy*dy)
+
+    -- Only print if frozen or if there's noticeable drift (> 1 pixel)
+    if freeze_active or drift > 1.0 then
+        print(string.format('[MINIMAP_POS] %s: world=(%.1f,%.1f) map=(%.1f,%.1f) drift=%.2f freeze=%s',
+            label or 'pos', px_w or 0, py_w or 0,
+            (map_disp_x ~= nil) and map_disp_x or rx,
+            (map_disp_y ~= nil) and map_disp_y or ry,
+            drift, tostring(freeze_active)))
+    end
+end
+
+-- Post-freeze alignment: clear freeze state and reset offsets for clean positioning
+local function map_to_world(px, py)
+    local wx = (px / (scale_x ~= 0 and scale_x or 1)) + world_min_x - origin_shift_x
+    local wy = (py / (scale_y ~= 0 and scale_y or 1)) + world_min_y - origin_shift_y
+    return wx, wy
+end
+
+local function numeric_bounds(bounds)
+    if not bounds then return nil end
+    local min_x = tonumber(bounds.min_x)
+    local max_x = tonumber(bounds.max_x)
+    local min_y = tonumber(bounds.min_y)
+    local max_y = tonumber(bounds.max_y)
+    if not (min_x and max_x and min_y and max_y) then return nil end
+    if max_x == min_x or max_y == min_y then return nil end
+    return {
+        min_x = math.min(min_x, max_x),
+        max_x = math.max(min_x, max_x),
+        min_y = math.min(min_y, max_y),
+        max_y = math.max(min_y, max_y),
+    }
+end
+
+local function mapdata_bounds()
+    if not (MapData and MapData.world_min and MapData.world_max) then
+        return {
+            min_x = 0,
+            min_y = 0,
+            max_x = MAP_WIDTH,
+            max_y = MAP_HEIGHT,
+        }
+    end
+    return {
+        min_x = MapData.world_min.x,
+        min_y = MapData.world_min.y,
+        max_x = MapData.world_max.x,
+        max_y = MapData.world_max.y,
+    }
+end
+
+local function apply_world_mapping(bounds, opts)
+    opts = opts or {}
+    local b = numeric_bounds(bounds)
+    if not b then return false end
+
+    local cfg_min = CFG.map_world_min
+    local cfg_max = CFG.map_world_max
+    if cfg_min and cfg_max then
+        b = numeric_bounds({
+            min_x = cfg_min.x,
+            min_y = cfg_min.y,
+            max_x = cfg_max.x,
+            max_y = cfg_max.y,
+        }) or b
+    end
+
+    world_min_x = b.min_x
+    world_min_y = b.min_y
+    world_max_x = b.max_x
+    world_max_y = b.max_y
+
+    local world_w = math.max(1e-3, world_max_x - world_min_x)
+    local world_h = math.max(1e-3, world_max_y - world_min_y)
+    local map_scale_x = opts.use_mapdata_scale and MapData and MapData.scale and MapData.scale.x
+    local map_scale_y = opts.use_mapdata_scale and MapData and MapData.scale and MapData.scale.y
+
+    scale_x = (CFG.map_scale and CFG.map_scale.x) or map_scale_x or (MAP_WIDTH / world_w)
+    scale_y = (CFG.map_scale and CFG.map_scale.y) or map_scale_y or (MAP_HEIGHT / world_h)
+
+    if opts.self then
+        opts.self._world_bounds_dirty = true
+    end
+    if CFG.debug then
+        minimap_log(string.format('[MINIMAP_DBG] world mapping (%s) min=(%.1f, %.1f) max=(%.1f, %.1f) scale=(%.6f, %.6f)',
+            tostring(opts.source or 'unknown'), world_min_x, world_min_y, world_max_x, world_max_y, scale_x, scale_y))
+    end
+    return true
+end
+
+local function live_bounds_for_map(bounds)
+    local b = numeric_bounds(bounds)
+    if not b then return nil end
+    local pad = tonumber(MapData and MapData.padding_world) or 0
+    if pad < 0 then pad = 0 end
+    return {
+        min_x = b.min_x + origin_shift_x - pad,
+        max_x = b.max_x + origin_shift_x + pad,
+        min_y = b.min_y + origin_shift_y - pad,
+        max_y = b.max_y + origin_shift_y + pad,
+    }
+end
+
+
+local function reload_map_data(self, supplied)
+    local data = load_map_data(supplied, 'reload')
+    if not data then
+        minimap_log('[MINIMAP_LOAD] Reload failed; keeping existing map data')
+        return false
+    end
+
+    MapData = data
+
+    local new_width = math.max(1, MapData.width or MAP_WIDTH)
+    local new_height = math.max(1, MapData.height or MAP_HEIGHT)
+
+    if self then
+        if MapData.world_min and MapData.world_min.x then self._pending_world_min_x = MapData.world_min.x end
+        if MapData.world_min and MapData.world_min.y then self._pending_world_min_y = MapData.world_min.y end
+        if MapData.world_max and MapData.world_max.x then self._pending_world_max_x = MapData.world_max.x end
+        if MapData.world_max and MapData.world_max.y then self._pending_world_max_y = MapData.world_max.y end
+    end
+
+    apply_map_dimensions(self, new_width, new_height)
+
+    if self then
+        self._view_center_x = nil
+        self._view_center_y = nil
+        self._player_visible = false
+    end
+
+    apply_world_mapping(mapdata_bounds(), {
+        self = self,
+        source = "mapdata",
+        use_mapdata_scale = true,
+    })
+
+    minimap_log('[MINIMAP_LOAD] Updated world coords: min=(' .. world_min_x .. ',' .. world_min_y .. ') max=(' .. world_max_x .. ',' .. world_max_y .. ') scale=(' .. scale_x .. ',' .. scale_y .. ')')
+
+    self._view_dirty = true
+    self._world_bounds_dirty = true
+    self._live_world_bounds = nil
+
+    if self.map_node then
+        gui.set_texture(self.map_node, TEXTURE_ID)
+        gui.play_flipbook(self.map_node, FLIP_ID)
+    end
+    return true
+end
+
+local function reload_with_updated_atlas(self, message)
+    local supplied = message and message.map
+    reload_map_data(self, supplied)
+
+    if message and message.use_updated_atlas then
+        minimap_log('[MINIMAP_LOAD] Loading updated minimap texture...')
+        minimap_log('[MINIMAP_LOAD] Map node exists: ' .. tostring(self.map_node ~= nil))
+        minimap_log('[MINIMAP_LOAD] Container exists: ' .. tostring(self.container ~= nil))
+
+        if not self.map_node and self.container then
+            minimap_log('[MINIMAP_LOAD] Recreating map node for updated texture')
+            self.map_node = gui.new_box_node(v3(0, 0, 0.01), v3(MAP_WIDTH, MAP_HEIGHT, 0))
+            gui.set_parent(self.map_node, self.container, false)
+            gui.set_pivot(self.map_node, gui.PIVOT_CENTER)
+            minimap_log('[MINIMAP_LOAD] Map node recreated successfully')
+        elseif self.map_node then
+            minimap_log('[MINIMAP_LOAD] Using existing map node')
+        else
+            minimap_log('[MINIMAP_LOAD] ERROR: No container available to create map node')
+        end
+
+        if self.map_node then
+            local refreshed = false
+            local last_error = nil
+            for _, img_path in ipairs(HOT_RELOAD_IMAGE_PATHS) do
+                local img_file = io and io.open and io.open(img_path, "rb")
+                if img_file then
+                    local img_data = img_file:read("*all")
+                    img_file:close()
+
+                    minimap_log('[MINIMAP_LOAD] Decoding minimap image: ' .. tostring(img_path))
+                    local img_ok, img = decode_image(img_data)
+                    if img_ok and img and img.buffer and img.width and img.height then
+                        local texture_name = UPDATED_TEXTURE_NAME
+                        local texture_ok = update_dynamic_texture(texture_name, img.width, img.height, img.buffer)
+
+                        if texture_ok then
+                            minimap_log('[MINIMAP_LOAD] Setting texture to: ' .. texture_name)
+                            gui.set_texture(self.map_node, texture_name)
+
+                            local old_width, old_height = MAP_WIDTH, MAP_HEIGHT
+                            apply_map_dimensions(self, img.width, img.height, { force = true })
+                            apply_world_mapping(self._live_world_bounds or mapdata_bounds(), {
+                                self = self,
+                                source = "texture_reload",
+                                use_mapdata_scale = not self._live_world_bounds,
+                            })
+                            minimap_log('[MINIMAP_LOAD] Updated MAP dimensions from ' .. old_width .. 'x' .. old_height .. ' to ' .. MAP_WIDTH .. 'x' .. MAP_HEIGHT)
+                            minimap_log('[MINIMAP_LOAD] Successfully applied updated texture (' .. img.width .. 'x' .. img.height .. ')')
+
+                            self._mode = MODE.OFF
+                            msg.post(".", "set_minimap_mode", {mode = MODE.PANEL})
+                            refreshed = true
+                            break
+                        else
+                            last_error = "dynamic texture update failed"
+                            minimap_log('[MINIMAP_LOAD] Failed to refresh dynamic texture from ' .. tostring(img_path))
+                        end
+                    else
+                        last_error = tostring(img)
+                        minimap_log('[MINIMAP_LOAD] Failed to decode minimap image ' .. tostring(img_path) .. ': ' .. tostring(img))
+                    end
+                else
+                    last_error = "image file unavailable"
+                end
+            end
+
+            if not refreshed then
+                minimap_log('[MINIMAP_LOAD] Runtime image refresh unavailable (' .. tostring(last_error) .. '); using bundled minimap atlas')
+                gui.set_texture(self.map_node, TEXTURE_ID)
+                gui.play_flipbook(self.map_node, FLIP_ID)
+            end
+
+            minimap_log('[MINIMAP_LOAD] Updated texture processing complete - toggle minimap to see')
+        end
+    end
+end
+
+local function apply_player_scale(self)
+    if not self.player_node then return end
+    local base_panel = CFG.player_px or 6
+    local base_full = CFG.player_fullscreen_px or base_panel or 6
+    base_panel = math.max(1, base_panel)
+    base_full = math.max(1, base_full)
+    local base = base_panel
+    if self and self._mode == MODE.FULL then
+        base = base_full
+    end
+    local zoom = self and self._map_zoom or 1
+    if zoom <= 0 then zoom = 1 end
+    gui.set_size(self.player_node, v3(base / zoom, base / zoom, 0))
+end
+
+local function resolve_zoom(mode, base_zoom)
+    local zoom = base_zoom or 1
+    if zoom <= 0 then zoom = 1 end
+    local auto = CFG.auto_zoom
+    if auto and auto.enabled ~= false then
+        local ratios = {}
+        local ref_w = auto.reference_width_px
+        if ref_w and ref_w > 0 and MAP_WIDTH > 0 then
+            ratios[#ratios + 1] = ref_w / MAP_WIDTH
+        end
+        local ref_h = auto.reference_height_px
+        if ref_h and ref_h > 0 and MAP_HEIGHT > 0 then
+            ratios[#ratios + 1] = ref_h / MAP_HEIGHT
+        end
+        if #ratios > 0 then
+            local ratio = ratios[1]
+            for i = 2, #ratios do
+                if ratios[i] < ratio then ratio = ratios[i] end
+            end
+            if ratio > 0 then
+                local exponent = auto.exponent or 1
+                if exponent ~= 1 then
+                    ratio = ratio ^ exponent
+                end
+                zoom = zoom * ratio
+                local min_zoom = auto.min_zoom
+                local max_zoom = auto.max_zoom
+                if mode == MODE.FULL then
+                    if auto.fullscreen_min_zoom then min_zoom = auto.fullscreen_min_zoom end
+                    if auto.fullscreen_max_zoom then max_zoom = auto.fullscreen_max_zoom end
+                end
+                if min_zoom then
+                    zoom = math.max(min_zoom, zoom)
+                end
+                if max_zoom then
+                    zoom = math.min(max_zoom, zoom)
+                end
+            end
+        end
+    end
+    return zoom
+end
+
+update_dynamic_texture = function(name, width, height, buffer)
+    return DynamicTexture.update(name, width, height, buffer, {
+        format = UPDATED_TEXTURE_FORMAT,
+        log = function(message)
+            minimap_log("[MINIMAP_LOAD] " .. tostring(message))
+        end,
+    })
+end
+
+layout_container = function(self, mode)
+    if not self then return end
+
+    local sw, sh = screen_size()
+    local margin = CFG.margin_px or 16
+    local cfg_size = CFG.size_px or { w = MAP_WIDTH, h = MAP_HEIGHT }
+
+    local panel_w
+    local panel_h
+    if mode == MODE.FULL then
+        panel_w = math.max(1, sw - margin * 2)
+        panel_h = math.max(1, sh - margin * 2)
+    else
+        panel_w = cfg_size.w or MAP_WIDTH
+        panel_h = cfg_size.h or MAP_HEIGHT
+    end
+
+    local frame_normal = CFG.frame_px or 2
+    local frame_full = CFG.frame_px_fullscreen or frame_normal
+    local frame_px = (mode == MODE.FULL) and frame_full or frame_normal
+    local inner_w = math.max(1, panel_w - frame_px * 2)
+    local inner_h = math.max(1, panel_h - frame_px * 2)
+
+    gui.set_size(self.panel_container, v3(panel_w, panel_h, 0))
+    if self.frame_node then
+        gui.set_size(self.frame_node, v3(panel_w, panel_h, 0))
+        local frame_color = CFG.frame_rgba or v4(0.80, 0.80, 0.80, 0.85)
+        if mode == MODE.FULL and CFG.frame_rgba_fullscreen then
+            frame_color = CFG.frame_rgba_fullscreen
+        end
+        gui.set_color(self.frame_node, frame_color)
+    end
+
+    gui.set_size(self.clip_node, v3(inner_w, inner_h, 0))
+    if mode == MODE.FULL then
+        gui.set_clipping_mode(self.clip_node, gui.CLIPPING_MODE_NONE)
+    else
+        gui.set_clipping_mode(self.clip_node, (CFG.clip_panel ~= false) and gui.CLIPPING_MODE_STENCIL or gui.CLIPPING_MODE_NONE)
+    end
+    local panel_cx = -panel_w * 0.5
+    local panel_cy = -panel_h * 0.5
+    gui.set_position(self.frame_node, v3(panel_cx, panel_cy, -0.02))
+    gui.set_position(self.clip_node, v3(panel_cx, panel_cy, -0.01))
+
+    if self.container then
+        gui.set_size(self.container, v3(MAP_WIDTH, MAP_HEIGHT, 0))
+        gui.set_position(self.container, v3(0, 0, 0))
+    end
+    if self.backdrop then
+        gui.set_size(self.backdrop, v3(MAP_WIDTH, MAP_HEIGHT, 0))
+    end
+    if self.map_node then
+        gui.set_size(self.map_node, v3(MAP_WIDTH, MAP_HEIGHT, 0))
+    end
+
+    local target_w = inner_w
+    local target_h = inner_h
+
+    local base_zoom = (mode == MODE.FULL and CFG.fullscreen_zoom) or CFG.zoom or 1
+    if not base_zoom or base_zoom <= 0 then base_zoom = 1 end
+    local zoom = resolve_zoom(mode, base_zoom)
+    if mode == MODE.FULL then
+        local max_zoom_w = target_w / math.max(1, MAP_WIDTH)
+        local max_zoom_h = target_h / math.max(1, MAP_HEIGHT)
+        local contain_zoom = math.min(max_zoom_w, max_zoom_h)
+        if contain_zoom > 0 then
+            zoom = math.min(zoom, contain_zoom)
+        end
+    end
+
+    local container_scale = 1
+    self._container_scale = container_scale
+    self._map_zoom = zoom
+    self._effective_scale = container_scale * zoom
+
+    local follow_cfg = (CFG.follow and CFG.follow.window) or {}
+    local frac_w = follow_cfg.frac_w or 1
+    local frac_h = follow_cfg.frac_h or 1
+    frac_w = math.max(0.05, math.min(1, frac_w))
+    frac_h = math.max(0.05, math.min(1, frac_h))
+    local half_w = (MAP_WIDTH * frac_w * 0.5) / math.max(zoom, 1e-6)
+    local half_h = (MAP_HEIGHT * frac_h * 0.5) / math.max(zoom, 1e-6)
+    self._view_half_w = math.max(0.5, math.min(MAP_WIDTH * 0.5, half_w))
+    self._view_half_h = math.max(0.5, math.min(MAP_HEIGHT * 0.5, half_h))
+    self._view_dirty = true
+
+    gui.set_scale(self.container, v3(1, 1, 1))
+    if self.map_node then
+        gui.set_scale(self.map_node, v3(zoom, zoom, 1))
+    end
+    minimap_debug_log(string.format('[MINIMAP_DEBUG] Container: size=%dx%d, scale=%.2f, map_zoom=%.2f', MAP_WIDTH, MAP_HEIGHT, container_scale, zoom))
+    local clip_mode = gui.get_clipping_mode(self.clip_node)
+    minimap_debug_log(string.format('[MINIMAP_DEBUG] Clipping mode: %s', (clip_mode == gui.CLIPPING_MODE_STENCIL) and 'STENCIL' or 'NONE'))
+
+    local pos
+    if mode == MODE.FULL then
+        pos = v3(sw * 0.5, sh * 0.5, 0)
+    else
+        local offset = CFG.panel_offset_px or { x = 0, y = 0 }
+        local offset_x = offset.x or 0
+        local offset_y = offset.y or 0
+        local x_pos = sw - margin + offset_x
+        local y_pos = sh - margin + offset_y
+        pos = v3(x_pos, y_pos, 0)
+        minimap_debug_log(string.format('[MINIMAP_DEBUG] Panel positioning: screen=%dx%d, margin=%d, panel=%dx%d', sw, sh, margin, panel_w, panel_h))
+        minimap_debug_log(string.format('[MINIMAP_DEBUG] offsets=(%d,%d)', offset_x, offset_y))
+        minimap_debug_log(string.format('[MINIMAP_DEBUG] Final position: (%.1f, %.1f)', x_pos, y_pos))
+    end
+    gui.set_position(self.panel_container, pos)
+
+    apply_player_scale(self)
+    self._screen_w = sw
+    self._screen_h = sh
+end
+
+apply_map_dimensions = function(self, width, height, opts)
+    local new_w = math.max(1, width or MAP_WIDTH or 1)
+    local new_h = math.max(1, height or MAP_HEIGHT or 1)
+    local force = opts and opts.force or false
+    local changed = force or new_w ~= MAP_WIDTH or new_h ~= MAP_HEIGHT
+
+    if not changed then
+        return MAP_WIDTH, MAP_HEIGHT
+    end
+
+    MAP_WIDTH = new_w
+    MAP_HEIGHT = new_h
+
+    if self then
+        if self.map_node then
+            gui.set_size(self.map_node, v3(MAP_WIDTH, MAP_HEIGHT, 0))
+        end
+        if self.container then
+            gui.set_size(self.container, v3(MAP_WIDTH, MAP_HEIGHT, 0))
+        end
+        if self.backdrop then
+            gui.set_size(self.backdrop, v3(MAP_WIDTH, MAP_HEIGHT, 0))
+        end
+
+        self._view_dirty = true
+
+        if self.container and layout_container then
+            layout_container(self, self._mode or MODE.PANEL)
+        end
+    end
+
+    return MAP_WIDTH, MAP_HEIGHT
+end
+local function apply_mode(self, new_mode, opts)
+    if CFG.enabled==false then new_mode=MODE.OFF end
+    opts = opts or {}
+    local source = opts.source
+    local force = opts.force
+    minimap_debug_log(string.format('[MINIMAP_DEBUG] apply_mode called: %d', new_mode))
+    local prev = self._mode or MODE.OFF
+    local prev_mode = prev
+    if new_mode == prev and not force then
+        if new_mode == MODE.PANEL then
+            layout_container(self, new_mode)
+        end
+        return
+    end
+
+    -- Fullscreen minimap should not pause or open the world map; it remains transparent gameplay overlay
+    self._world_map_opened_by_minimap = false
+    self._paused_for_fullscreen = false
+    self._world_map_restore_mode = new_mode
+
+    self._mode = new_mode
+    if new_mode ~= MODE.FULL then
+        self._world_map_restore_mode = new_mode
+    end
+    local panel_visible = (new_mode == MODE.PANEL)
+    gui.set_visible(self.panel_container, panel_visible)
+    if self.frame_node then gui.set_visible(self.frame_node, panel_visible) end
+    if self.clip_node then gui.set_visible(self.clip_node, panel_visible) end
+    if self.backdrop then gui.set_visible(self.backdrop, panel_visible) end
+    if self.map_node then gui.set_visible(self.map_node, panel_visible) end
+    if self.player_node then gui.set_visible(self.player_node, panel_visible and self._player_visible) end
+
+    if panel_visible then
+        layout_container(self, new_mode)
+    end
+    minimap_debug_log(string.format('[MINIMAP_DEBUG] Mode=%d panel_visible=%s', new_mode, tostring(panel_visible)))
+end
+
+function init(self)
+    minimap_debug_log('[MINIMAP_DEBUG] Init called')
+    self._mode = nil
+    self._paused_for_fullscreen = false
+    self._player_visible = false
+    self._post_freeze_offset_x = 0
+    self._post_freeze_offset_y = 0
+    self._last_player_room_id = nil
+    self._world_map_opened_by_minimap = false
+    self._world_map_restore_mode = MODE.PANEL
+    self._map_scale_bias_override = nil
+    self._debug_bias_instructions_printed = nil
+    self._last_inside_room_id = nil
+    self._last_inside_map_x = nil
+    self._last_inside_map_y = nil
+
+    local cfg_size = CFG.size_px or { w = MAP_WIDTH, h = MAP_HEIGHT }
+    local frame_px = CFG.frame_px or 2
+    local inner_w = math.max(1, (cfg_size.w or MAP_WIDTH) - frame_px * 2)
+    local inner_h = math.max(1, (cfg_size.h or MAP_HEIGHT) - frame_px * 2)
+
+    self.panel_container = gui.new_box_node(v3(0, 0, 0), v3(cfg_size.w or MAP_WIDTH, cfg_size.h or MAP_HEIGHT, 0))
+    gui.set_pivot(self.panel_container, gui.PIVOT_NE)
+    gui.set_color(self.panel_container, v4(0, 0, 0, 0))
+
+    self.frame_node = gui.new_box_node(v3(0, 0, -0.02), v3(cfg_size.w or MAP_WIDTH, cfg_size.h or MAP_HEIGHT, 0))
+    gui.set_parent(self.frame_node, self.panel_container, false)
+    gui.set_pivot(self.frame_node, gui.PIVOT_CENTER)
+    gui.set_color(self.frame_node, CFG.frame_rgba or v4(0.80, 0.80, 0.80, 0.85))
+
+    self.clip_node = gui.new_box_node(v3(0, 0, -0.01), v3(inner_w, inner_h, 0))
+    gui.set_parent(self.clip_node, self.panel_container, false)
+    gui.set_pivot(self.clip_node, gui.PIVOT_CENTER)
+    gui.set_color(self.clip_node, v4(0, 0, 0, 0))
+    gui.set_clipping_mode(self.clip_node, (CFG.clip_panel ~= false) and gui.CLIPPING_MODE_STENCIL or gui.CLIPPING_MODE_NONE)
+
+    self.container = gui.new_box_node(v3(0, 0, 0), v3(MAP_WIDTH, MAP_HEIGHT, 0))
+    gui.set_parent(self.container, self.clip_node, false)
+    gui.set_pivot(self.container, gui.PIVOT_CENTER)
+    gui.set_color(self.container, v4(0, 0, 0, 0))
+
+    self.backdrop = gui.new_box_node(v3(0, 0, -0.005), v3(MAP_WIDTH, MAP_HEIGHT, 0))
+    gui.set_parent(self.backdrop, self.container, false)
+    gui.set_pivot(self.backdrop, gui.PIVOT_CENTER)
+    gui.set_color(self.backdrop, CFG.bg_rgba or v4(0, 0, 0, 0.5))
+
+    self.map_node = gui.new_box_node(v3(0, 0, 0.01), v3(MAP_WIDTH, MAP_HEIGHT, 0))
+    gui.set_parent(self.map_node, self.container, false)
+    gui.set_pivot(self.map_node, gui.PIVOT_CENTER)
+    gui.set_texture(self.map_node, TEXTURE_ID)
+    gui.play_flipbook(self.map_node, FLIP_ID)
+
+    local marker = CFG.player_px or 6
+    self.fog = Fog.create(self.map_node, gui.PIVOT_CENTER, "panel_fog")
+    self.fog_parent = self.map_node
+    self.player_node = gui.new_box_node(v3(0, 0, 0.02), v3(marker, marker, 0))
+    gui.set_parent(self.player_node, self.container, false)
+    gui.set_pivot(self.player_node, gui.PIVOT_CENTER)
+    gui.set_color(self.player_node, CFG.player_rgba or v4(1.0, 0.92, 0.20, 1.0))
+    gui.set_visible(self.player_node, false)
+    self.marker_nodes = {}
+    self._marker_version = -1
+
+    -- Place near top-right immediately to avoid any one-frame flash at origin
+    local sw, sh = screen_size()
+    local margin = CFG.margin_px or 32
+    gui.set_position(self.panel_container, v3(sw - margin, sh - margin, 0))
+
+    minimap_debug_log('[MINIMAP_DEBUG] Applying initial mode: PANEL')
+    apply_mode(self, MODE.PANEL, { source = "init", force = true })
+    minimap_debug_log('[MINIMAP_DEBUG] Init complete')
+end
+
+function update(self, dt)
+    local mode = self._mode or MODE.OFF
+    if mode ~= MODE.PANEL then
+        return
+    end
+
+    local sw, sh = screen_size()
+    if sw ~= self._screen_w or sh ~= self._screen_h then
+        layout_container(self, mode)
+    end
+
+    local mini = rawget(_G, "MINIMAP_MODULE")
+    local px, py
+    local pending_center_map_x, pending_center_map_y
+    local center_bounds = self._center_bounds
+    local snap  -- Declare snap outside mini block so it's accessible later
+
+    if mini then
+        if mini.snapshot then
+            snap = mini.snapshot()
+            if snap then
+                origin_shift_x = tonumber(snap.origin_shift and snap.origin_shift.x) or 0
+                origin_shift_y = tonumber(snap.origin_shift and snap.origin_shift.y) or 0
+                local center_id_raw = snap.center_id
+                local center_id_norm = normalize_room_id(center_id_raw)
+                local new_center_id = center_id_norm or center_id_raw
+
+                -- Detect center room changes for clean per-room tracking
+                local center_changed = (self._center_id ~= new_center_id)
+                if center_changed then
+                    local old_freeze_state = self._freeze_state
+                    if old_freeze_state and old_freeze_state.active then
+                        minimap_log(string.format('[MINIMAP_DBG] Center room changed from %s to %s',
+                            tostring(self._center_id), tostring(new_center_id)))
+                        old_freeze_state.room_changed = true
+                    end
+                    self._last_inside_room_id = nil
+                    self._last_inside_map_x = nil
+                    self._last_inside_map_y = nil
+                end
+                self._center_id = new_center_id
+
+                if CFG.debug and center_id_raw then
+                    minimap_log(string.format('[MINIMAP_DBG] Current room: %s (per-room positioning active)',
+                        tostring(center_id_norm or center_id_raw)))
+                elseif CFG.debug then
+                    minimap_log(string.format('[MINIMAP_DBG] NO CENTER ROOM for (raw=%s norm=%s)',
+                        tostring(center_id_norm or center_id_raw), tostring(center_id_raw), tostring(center_id_norm)))
+                end
+                self._room_bounds = snap.rooms
+                center_bounds = nil
+                local center_entry = nil
+                if not center_changed and self._center_source == snap.rooms then
+                    center_entry = self._center_entry
+                    center_bounds = center_entry and center_entry.r
+                elseif snap.rooms then
+                    for _, entry in ipairs(snap.rooms) do
+                        if entry and entry.r and (ids_match(entry.id, center_id_raw) or ids_match(entry.id, center_id_norm)) then
+                            center_bounds = entry.r
+                            center_entry = entry
+                            break
+                        end
+                    end
+                end
+                self._center_bounds = center_bounds
+                self._center_entry = center_entry
+                self._center_source = snap.rooms
+
+                local bounds = snap.world_bb
+                if bounds and (self._bounds_source ~= bounds or not self._live_world_bounds) then
+                    self._bounds_source = bounds
+                    local live_bounds = live_bounds_for_map(bounds)
+                    if CFG.debug then
+                        local dbg_bounds = live_bounds or bounds
+                        local w = (dbg_bounds.max_x or 0) - (dbg_bounds.min_x or 0)
+                        local h = (dbg_bounds.max_y or 0) - (dbg_bounds.min_y or 0)
+                        minimap_log(string.format('[MINIMAP_DBG] live world bounds min=(%.1f, %.1f) max=(%.1f, %.1f) size=(%.1f, %.1f) map_size=(%d, %d)',
+                            dbg_bounds.min_x or 0, dbg_bounds.min_y or 0, dbg_bounds.max_x or 0, dbg_bounds.max_y or 0, w, h, MAP_WIDTH, MAP_HEIGHT))
+                    end
+
+                    local prev = self._live_world_bounds
+                    local changed = true
+                    if live_bounds and prev then
+                        changed = math.abs((prev.min_x or 0) - (live_bounds.min_x or 0)) > 0.01
+                            or math.abs((prev.max_x or 0) - (live_bounds.max_x or 0)) > 0.01
+                            or math.abs((prev.min_y or 0) - (live_bounds.min_y or 0)) > 0.01
+                            or math.abs((prev.max_y or 0) - (live_bounds.max_y or 0)) > 0.01
+                    end
+                    if live_bounds and changed and apply_world_mapping(live_bounds, { self = self, source = "live_layout" }) then
+                        self._live_world_bounds = live_bounds
+                    end
+                end
+
+                if snap.player then
+                    local px_w = snap.player.x or 0
+                    local py_w = snap.player.y or 0
+                    -- Align player world position to tile center if requested (common for top-down/side-view)
+                    -- Matches the adjustment used by the runtime stream_manager.script implementation
+                    local apply_half = CFG.player_apply_tile_half_height
+                    if apply_half == nil or apply_half == true then
+                        py_w = py_w - ((Tile and Tile.half_height) or 0)
+                    end
+                    local margin = (CFG.shift_transition_margin_px or (Tile and Tile.width * 0.5) or 64)
+
+                    local center_entry = self._center_entry
+                    local center_margin = CFG.center_room_margin_px
+                    if not center_margin then
+                        local default_margin = CFG.door_player_room_margin_px or margin
+                        local tile_based = (Tile and Tile.width and Tile.width * 0.5) or 64
+                        center_margin = math.min(default_margin or tile_based, tile_based)
+                    end
+
+                    local player_room, player_room_meta = nil, nil
+                    local player_room_reason = nil
+                    if center_entry and center_entry.r then
+                        if in_bounds(center_entry.r, px_w, py_w, center_margin) then
+                            player_room = center_entry
+                            player_room_meta = {
+                                inside_actual = in_bounds(center_entry.r, px_w, py_w, 0),
+                                priority = math.huge,
+                                preferred_rank = 0,
+                                source = "center_margin",
+                            }
+                            player_room_reason = "center_margin"
+                        end
+                    end
+
+                    local preferred_ids = {}
+                    local function push_preferred(id)
+                        local nid = normalize_room_id(id)
+                        if not nid then return end
+                        for _, existing in ipairs(preferred_ids) do
+                            if existing == nid then return end
+                        end
+                        preferred_ids[#preferred_ids + 1] = nid
+                    end
+                    push_preferred(self._last_player_room_id)
+                    push_preferred(center_id_norm)
+                    push_preferred(center_id_raw)
+
+                    -- Find the room the player is currently in with tie-breaking on preferred ids
+                    if not player_room then
+                        player_room, player_room_meta = find_room_entry_for_point(px_w, py_w, snap.rooms, 0, {
+                            preferred_ids = preferred_ids,
+                        })
+                        player_room_reason = nil
+                    end
+                    -- Debug output disabled to reduce spam (player often starts outside room bounds)
+                    -- if not player_room and CFG.debug then
+                    --     minimap_log(string.format('[MINIMAP_DBG] Player at (%.1f, %.1f) is outside all room bounds!', px_w, py_w))
+                    -- end
+                    -- PER-ROOM RELATIVE POSITIONING: Calculate position within current room
+                    local map_x, map_y
+                    local normalized_room_id
+
+                    if player_room and player_room.r then
+                        local room_bounds = player_room.r
+                        local room_min_x = room_bounds.min_x or 0
+                        local room_max_x = room_bounds.max_x or room_min_x
+                        local room_min_y = room_bounds.min_y or 0
+                        local room_max_y = room_bounds.max_y or room_min_y
+
+                        -- Calculate player's relative position within the room (0-1)
+                        local room_width = math.max(1, room_max_x - room_min_x)
+                        local room_height = math.max(1, room_max_y - room_min_y)
+                        local rel_x_raw = (px_w - room_min_x) / room_width
+                        local rel_y_raw = (py_w - room_min_y) / room_height
+                        local rel_x = clamp(rel_x_raw, 0.0, 1.0)
+                        local rel_y = clamp(rel_y_raw, 0.0, 1.0)
+
+                        -- Choose positioning strategy
+                        local mode = CFG.player_position_mode or 'world'
+                        if mode == 'world' then
+                            -- Direct MapData world->map transform; no clamping/padding
+                            local player_offset = CFG.player_world_offset_px or { x = 0, y = 0 }
+                            local wx = px_w + (player_offset.x or 0)
+                            local wy = py_w + (player_offset.y or 0)
+
+                            -- Wall-contact remap: stretch X inside the current room so the
+                            -- dot's edge meets the baked wall line exactly when the player's
+                            -- collision box touches the wall. X only; Y is left untouched.
+                            local wall_cfg = CFG.player_wall_contact
+                            if wall_cfg and wall_cfg.enabled ~= false and scale_x > 0 then
+                                local phw = wall_cfg.player_half_width_px or 15
+                                local zoom = self._map_zoom or 1
+                                if zoom <= 0 then zoom = 1 end
+                                local dot_base = CFG.player_px or 6
+                                if self._mode == MODE.FULL then
+                                    dot_base = CFG.player_fullscreen_px or dot_base
+                                end
+                                -- Marker node is (dot_base / zoom) GUI px wide (apply_player_scale)
+                                -- and one world px covers (scale_x * zoom) GUI px, so:
+                                local dot_half_world = (dot_base / zoom) * 0.5 / (scale_x * zoom)
+                                local inset_world = (wall_cfg.outline_inset_sprite_px or 0) / scale_x
+                                local src_min = room_min_x + phw
+                                local src_max = room_max_x - phw
+                                local dst_min = room_min_x + dot_half_world + inset_world
+                                local dst_max = room_max_x - dot_half_world - inset_world
+                                local t = 0.5
+                                if src_max > src_min then
+                                    t = clamp((wx - src_min) / (src_max - src_min), 0.0, 1.0)
+                                end
+                                if dst_max >= dst_min then
+                                    wx = dst_min + t * (dst_max - dst_min)
+                                else
+                                    -- Degenerate narrow room: pin to room center
+                                    wx = (room_min_x + room_max_x) * 0.5
+                                end
+                                if CFG.debug then
+                                    minimap_log(string.format('[WALL_SNAP] t=%.3f wx=%.1f src=[%.1f..%.1f] dst=[%.1f..%.1f] dot_half_w=%.2f zoom=%.2f',
+                                        t, wx, src_min, src_max, dst_min, dst_max, dot_half_world, zoom))
+                                end
+                            end
+
+                            map_x, map_y = world_to_map(wx, wy)
+
+                            -- Optional fine calibration: apply a tiny scale bias around an anchor
+                            local bias_cfg = self._map_scale_bias_override or CFG.map_scale_bias
+                            local bx = bias_cfg and (bias_cfg.x or 1.0) or 1.0
+                            local by = bias_cfg and (bias_cfg.y or 1.0) or 1.0
+                            if bx ~= 1.0 or by ~= 1.0 then
+                                local ax = (bias_cfg and bias_cfg.anchor_x) or 'world_min'
+                                local ay = (bias_cfg and bias_cfg.anchor_y) or 'world_min'
+
+                                -- Compute anchor map positions using the same mapping
+                                local anchor_wx
+                                if ax == 'room_left' and player_room and player_room.r then
+                                    anchor_wx = (player_room.r.min_x or world_min_x)
+                                elseif ax == 'room_center' and player_room and player_room.r then
+                                    anchor_wx = ((player_room.r.min_x or 0) + (player_room.r.max_x or 0)) * 0.5
+                                else
+                                    anchor_wx = world_min_x
+                                end
+                                local anchor_wy
+                                if ay == 'room_center' and player_room and player_room.r then
+                                    anchor_wy = ((player_room.r.min_y or 0) + (player_room.r.max_y or 0)) * 0.5
+                                else
+                                    anchor_wy = world_min_y
+                                end
+
+                                local anchor_map_x = (anchor_wx - world_min_x) * scale_x
+                                local anchor_map_y = (anchor_wy - world_min_y) * scale_y
+                                map_x = anchor_map_x + (map_x - anchor_map_x) * bx
+                                map_y = anchor_map_y + (map_y - anchor_map_y) * by
+                                map_x = clamp(map_x, 0, MAP_WIDTH)
+                                map_y = clamp(map_y, 0, MAP_HEIGHT)
+                                if CFG.debug then
+                                    print(string.format('[CALIB] bias bx=%.6f by=%.6f ax=%.1f ay=%.1f -> map=(%.1f,%.1f)',
+                                        bx, by, anchor_map_x, anchor_map_y, map_x, map_y))
+                                end
+                            end
+                            if CFG.debug then
+                                minimap_log(string.format('[ROOM_PICK] world_mode map=(%.1f,%.1f) from world=(%.1f,%.1f)', map_x, map_y, wx, wy))
+                            end
+                        else
+                            -- Per-room relative positioning mapped into room rect
+                            -- Map room bounds to sprite coordinates
+                            local sprite_room_min_x = (room_min_x - world_min_x) * scale_x
+                            local sprite_room_min_y = (room_min_y - world_min_y) * scale_y
+                            local sprite_room_width = room_width * scale_x
+                            local sprite_room_height = room_height * scale_y
+                            map_x = sprite_room_min_x + rel_x * sprite_room_width
+                            map_y = sprite_room_min_y + rel_y * sprite_room_height
+                        end
+
+                        normalized_room_id = normalize_room_id(player_room.id)
+                        local outside_x = (px_w < room_min_x) or (px_w > room_max_x)
+                        local outside_y = (py_w < room_min_y) or (py_w > room_max_y)
+
+                        if mode ~= 'world' and player_room_meta and player_room_meta.inside_actual then
+                            self._last_inside_room_id = normalized_room_id or player_room.id
+                            self._last_inside_map_x = map_x
+                            self._last_inside_map_y = map_y
+                        elseif mode ~= 'world' then
+                            if normalized_room_id and self._last_inside_room_id and normalized_room_id == self._last_inside_room_id then
+                                local applied_hold = false
+                                local seam_release = CFG.door_release_distance_px or 128
+                                if outside_x and self._last_inside_map_x then
+                                    local seam_x = px_w < room_min_x and room_min_x or room_max_x
+                                    local delta_x = math.abs(px_w - seam_x)
+                                    if delta_x <= seam_release then
+                                        if CFG.debug then
+                                            minimap_log(string.format('[ROOM_PICK] hold_check_x wx=%.1f seam=%.1f delta=%.1f release=%.1f reason=%s',
+                                                px_w, seam_x or 0, delta_x, seam_release, tostring(player_room_reason)))
+                                        end
+                                        if CFG.debug and math.abs((self._last_inside_map_x or 0) - map_x) > 0.1 then
+                                            minimap_log(string.format('[ROOM_PICK] hold_x last=%.1f current=%.1f', self._last_inside_map_x or 0, map_x))
+                                        end
+                                        map_x = self._last_inside_map_x or map_x
+                                        applied_hold = true
+                                    else
+                                        self._last_inside_map_x = nil
+                                    end
+                                end
+                                if outside_y and self._last_inside_map_y then
+                                    local seam_y = py_w < room_min_y and room_min_y or room_max_y
+                                    local delta_y = math.abs(py_w - seam_y)
+                                    if delta_y <= seam_release then
+                                        if CFG.debug and math.abs((self._last_inside_map_y or 0) - map_y) > 0.1 then
+                                            minimap_log(string.format('[ROOM_PICK] hold_y last=%.1f current=%.1f', self._last_inside_map_y or 0, map_y))
+                                        end
+                                        map_y = self._last_inside_map_y or map_y
+                                        applied_hold = true
+                                    else
+                                        self._last_inside_map_y = nil
+                                    end
+                                end
+                                if CFG.debug and applied_hold then
+                                    minimap_log(string.format('[ROOM_PICK] hold applied id=%s outside_x=%s outside_y=%s',
+                                        tostring(normalized_room_id), tostring(outside_x), tostring(outside_y)))
+                                end
+                            end
+                        end
+
+                        if CFG.debug then
+                            local center_norm = center_entry and normalize_room_id(center_entry.id)
+                            local last_norm = normalize_room_id(self._last_player_room_id)
+                            local current_norm = normalize_room_id(player_room.id)
+                            if not player_room_reason or player_room_reason == "" then
+                                if center_norm and current_norm == center_norm then
+                                    player_room_reason = "center_match"
+                                elseif last_norm and current_norm == last_norm then
+                                    player_room_reason = "last_room_bias"
+                                elseif player_room_meta and player_room_meta.preferred_rank and player_room_meta.preferred_rank ~= math.huge then
+                                    player_room_reason = string.format("preferred_%d", player_room_meta.preferred_rank)
+                                else
+                                    player_room_reason = "nearest_bounds"
+                                end
+                            end
+                            minimap_log(string.format('[ROOM_PICK] room_bounds id=%s wx=[%.1f..%.1f] wy=[%.1f..%.1f] px=%.1f py=%.1f margin=%.1f',
+                                tostring(player_room.id),
+                                room_min_x, room_max_x, room_min_y, room_max_y,
+                                px_w, py_w, center_margin or 0))
+                            minimap_log(string.format('[ROOM_PICK] reason=%s id=%s inside=%s rel=(%.3f,%.3f) wx=(%.1f,%.1f) map=(%.1f,%.1f) margin=%.1f',
+                                tostring(player_room_reason), tostring(player_room.id), tostring(player_room_meta and player_room_meta.inside_actual),
+                                rel_x, rel_y, px_w, py_w, map_x, map_y, center_margin or 0))
+                            if rel_x ~= rel_x_raw or rel_y ~= rel_y_raw then
+                                minimap_log(string.format('[ROOM_PICK] clamp rel_raw=(%.3f,%.3f) -> rel=(%.3f,%.3f)',
+                                    rel_x_raw, rel_y_raw, rel_x, rel_y))
+                            end
+                        end
+
+                        if CFG.debug then
+                            minimap_log(string.format('[MINIMAP_DBG] Room %s: rel_pos=(%.2f,%.2f) room_bounds=(%.1f-%.1f,%.1f-%.1f) map=(%.1f,%.1f)',
+                                player_room.id or 'unknown', rel_x, rel_y, room_min_x, room_max_x, room_min_y, room_max_y, map_x, map_y))
+                        end
+                    else
+                        -- Fallback: use direct world-to-map if no room found
+                        local player_offset = CFG.player_world_offset_px or { x = 0, y = 0 }
+                        local offset_px_w = px_w + (player_offset.x or 0)
+                        local offset_py_w = py_w + (player_offset.y or 0)
+                        map_x = (offset_px_w - world_min_x) * scale_x
+                        map_y = (offset_py_w - world_min_y) * scale_y
+
+                        if CFG.debug then
+                            minimap_log(string.format('[ROOM_PICK] reason=fallback_world id=nil inside=false rel=(nan,nan) wx=(%.1f,%.1f) map=(%.1f,%.1f)',
+                                px_w, py_w, map_x, map_y))
+                            minimap_log('[MINIMAP_DBG] No player room found, using fallback world-to-map')
+                        end
+                    end
+
+                    map_x = clamp(map_x, 0, MAP_WIDTH)
+                    map_y = clamp(map_y, 0, MAP_HEIGHT)
+
+                        if player_room and normalized_room_id and player_room_meta and player_room_meta.inside_actual then
+                            self._last_player_room_id = normalized_room_id or player_room.id
+                        end
+
+                    -- Enhanced freeze logic for door transitions
+                    local freeze_state = self._freeze_state or {}
+                    local seam_contact = nil
+
+                    -- Master freeze disable switch
+                    if CFG.enable_freeze == false then
+                        freeze_state.active = false
+                    -- Disable seam-blend (not compatible with per-room positioning)
+                    elseif CFG.use_seam_blend then
+                        freeze_state.active = false
+                    else
+                    -- Use door-based freeze if enabled, otherwise fall back to room boundary detection
+                    if CFG.use_door_based_freeze then
+                        local door_contact = get_door_zone_contact(px_w, py_w, snap.rooms)
+                        if door_contact then
+                            if door_contact.type == "freeze" then
+                                seam_contact = {
+                                    axis = door_contact.axis,
+                                    seam = door_contact.seam,
+                                    side = door_contact.side,
+                                    signed_dist = door_contact.distance,
+                                    release_distance = door_contact.release_distance,
+                                    source = "door",
+                                    door = door_contact.door
+                                }
+                            elseif door_contact.type == "release" and freeze_state.active then
+                                -- Force release when in release zone
+                                freeze_state.force_release = true
+                            end
+                        end
+                        if not seam_contact then
+                            local freeze_activation_distance = CFG.freeze_activation_distance_px or margin
+                            seam_contact = center_bounds and get_seam_contact(px_w, py_w, center_bounds, freeze_activation_distance)
+
+                            if not seam_contact and snap.rooms then
+                                for _, entry in ipairs(snap.rooms) do
+                                    if entry and entry.r and not ids_match(entry.id, snap.center_id) then
+                                        local room_contact = get_seam_contact(px_w, py_w, entry.r, freeze_activation_distance * 0.75)
+                                        if room_contact then
+                                            seam_contact = room_contact
+                                            break
+                                        end
+                                    end
+                                end
+                            end
+                        end
+                    else
+                        -- Original room boundary detection
+                        local freeze_activation_distance = CFG.freeze_activation_distance_px or margin
+                        seam_contact = center_bounds and get_seam_contact(px_w, py_w, center_bounds, freeze_activation_distance)
+
+                        -- Also check proximity to ANY room boundary, not just center room
+                        if not seam_contact and snap.rooms then
+                            for _, entry in ipairs(snap.rooms) do
+                                if entry and entry.r and not ids_match(entry.id, snap.center_id) then
+                                    local room_contact = get_seam_contact(px_w, py_w, entry.r, freeze_activation_distance * 0.75)
+                                    if room_contact then
+                                        seam_contact = room_contact
+                                        break
+                                    end
+                                end
+                            end
+                        end
+                    end
+                    end -- seam_blend bypass
+
+                    if seam_contact then
+                        freeze_state = freeze_state or {}
+                        local was_frozen = freeze_state.active
+                        freeze_state.active = true
+                        freeze_state.axis = seam_contact.axis
+                        freeze_state.seam = seam_contact.seam
+                        freeze_state.side = seam_contact.side
+
+                        -- DEBUG: Show player position when at seam
+                        if CFG.debug then
+                            local temp_map_x, temp_map_y = world_to_map(px_w, py_w)
+                            print(string.format('[SEAM_DEBUG] Player at seam: world=(%.1f,%.1f) map=(%.1f,%.1f) axis=%s seam=%.1f side=%s',
+                                px_w, py_w, temp_map_x, temp_map_y,
+                                seam_contact.axis or 'nil', seam_contact.seam or 0, seam_contact.side or 'nil'))
+                        end
+                        if seam_contact.source == "door" then
+                            freeze_state.source = "door"
+                            freeze_state.release_distance_override = seam_contact.release_distance
+                            freeze_state.door = seam_contact.door
+                        else
+                            freeze_state.source = seam_contact.source
+                            freeze_state.release_distance_override = nil
+                            freeze_state.door = nil
+                        end
+                        -- Store the position and time where freeze was activated
+                        if not freeze_state.freeze_px then
+                            freeze_state.freeze_px = px_w
+                            freeze_state.freeze_py = py_w
+                            freeze_state.freeze_start_time = get_time()
+                            if not was_frozen then
+                                minimap_log(string.format('[MINIMAP_DBG] Freeze activated at seam %s (%.1f,%.1f) side=%s',
+                                    freeze_state.axis, freeze_state.seam or 0, 0, freeze_state.side or 'nil'))
+                            end
+                        end
+                        freeze_state.last_contact_time = get_time()
+                    elseif freeze_state.active then
+                        -- Check for door-based force release first
+                        if freeze_state.force_release then
+                            freeze_state.active = false
+                            freeze_state.freeze_px = nil
+                            freeze_state.freeze_py = nil
+                            freeze_state.freeze_start_time = nil
+                            freeze_state.room_changed = nil
+                            freeze_state.force_release = nil
+                            freeze_state.source = nil
+                            freeze_state.release_distance_override = nil
+                            freeze_state.door = nil
+                            minimap_log('[MINIMAP_DBG] Door-based force release activated')
+                        else
+                            -- Enhanced release logic using granular settings
+                            local current_time = get_time()
+                            local freeze_duration = current_time - (freeze_state.freeze_start_time or current_time)
+                            local min_duration = CFG.freeze_min_duration_sec or 1.0
+                            local release_distance = CFG.freeze_release_distance_px or 120
+                            local movement_distance = CFG.freeze_movement_distance_px or 100
+
+                            if freeze_state.source == "door" then
+                                local door_release = freeze_state.release_distance_override or CFG.door_release_distance_px
+                                if door_release then
+                                    if release_distance < door_release then
+                                        release_distance = door_release
+                                    end
+                                    local min_move = door_release * 0.5
+                                    if movement_distance < min_move then
+                                        movement_distance = min_move
+                                    end
+                                end
+                            end
+
+                            -- Adjust release criteria if room changed and quick release is enabled
+                            if freeze_state.room_changed and (CFG.freeze_quick_release_after_room_change ~= false) then
+                                release_distance = release_distance * 0.6  -- Reduce to 60% of normal distance
+                                movement_distance = movement_distance * 0.7  -- Reduce movement requirement
+                            end
+
+                            -- Don't even consider releasing until minimum time has passed
+                            if freeze_duration >= min_duration then
+                                local any_contact = false
+
+                                -- Check if still near center room boundary
+                                if center_bounds and get_seam_contact(px_w, py_w, center_bounds, release_distance) then
+                                    any_contact = true
+                                end
+
+                                -- Check if still near any other room boundary
+                                if not any_contact and snap.rooms then
+                                    for _, entry in ipairs(snap.rooms) do
+                                        if entry and entry.r then
+                                            if get_seam_contact(px_w, py_w, entry.r, release_distance) then
+                                                any_contact = true
+                                                break
+                                            end
+                                        end
+                                    end
+                                end
+
+                                -- Check if player has moved far enough from original freeze position
+                                local freeze_px = freeze_state.freeze_px or px_w
+                                local freeze_py = freeze_state.freeze_py or py_w
+                                local dist_from_freeze = math.sqrt((px_w - freeze_px)^2 + (py_w - freeze_py)^2)
+
+                                -- Release if: no seam contact AND moved far enough from freeze point
+                                if not any_contact and dist_from_freeze > movement_distance then
+                                    freeze_state.active = false
+                                    freeze_state.freeze_px = nil
+                                    freeze_state.freeze_py = nil
+                                    freeze_state.freeze_start_time = nil
+                                    freeze_state.room_changed = nil
+                                    freeze_state.source = nil
+                                    freeze_state.release_distance_override = nil
+                                    freeze_state.door = nil
+                                    minimap_log(string.format('[MINIMAP_DBG] Freeze released after %.1fs - clear of seams (dist=%.1f)', freeze_duration, dist_from_freeze))
+                                end
+                            end
+                        end
+                    end
+
+                    -- Use the per-room calculated map coordinates
+                    local freeze = freeze_state.active
+                    local base_map_x = map_x
+                    local base_map_y = map_y
+
+                    if freeze then
+                        local freeze_world_x = px_w
+                        local freeze_world_y = py_w
+                        local axis = freeze_state.axis
+                        local seam = freeze_state.seam
+                        local signed_delta
+                        if axis and seam then
+                            signed_delta = 0
+                            if axis == "x" then
+                                signed_delta = (px_w or 0) - seam
+                            else
+                                signed_delta = (py_w or 0) - seam
+                            end
+                            freeze_state.signed_dist = signed_delta
+
+                            local is_door_freeze = (freeze_state.source == "door")
+                            local release_cap = freeze_state.release_distance_override
+                                or (is_door_freeze and CFG.door_release_distance_px)
+                                or CFG.freeze_release_distance_px
+                                or 0
+                            release_cap = math.abs(release_cap)
+
+                            local clamped
+                            if is_door_freeze then
+                                clamped = 0
+                            elseif release_cap > 0 then
+                                if signed_delta > release_cap then
+                                    clamped = release_cap
+                                elseif signed_delta < -release_cap then
+                                    clamped = -release_cap
+                                else
+                                    clamped = signed_delta
+                                end
+                            else
+                                clamped = 0
+                            end
+
+                            if axis == "x" then
+                                freeze_world_x = seam + clamped
+                            else
+                                freeze_world_y = seam + clamped
+                            end
+                        end
+                        -- Per-room freeze position calculation
+                        local freeze_map_x, freeze_map_y
+                        if player_room and player_room.r then
+                            local room_bounds = player_room.r
+                            local room_min_x = room_bounds.min_x or 0
+                            local room_max_x = room_bounds.max_x or room_min_x
+                            local room_min_y = room_bounds.min_y or 0
+                            local room_max_y = room_bounds.max_y or room_min_y
+
+                            local room_width = math.max(1, room_max_x - room_min_x)
+                            local room_height = math.max(1, room_max_y - room_min_y)
+                            local freeze_rel_x = (freeze_world_x - room_min_x) / room_width
+                            local freeze_rel_y = (freeze_world_y - room_min_y) / room_height
+
+                            local sprite_room_min_x = (room_min_x - world_min_x) * scale_x
+                            local sprite_room_min_y = (room_min_y - world_min_y) * scale_y
+                            local sprite_room_width = room_width * scale_x
+                            local sprite_room_height = room_height * scale_y
+
+                            freeze_map_x = sprite_room_min_x + freeze_rel_x * sprite_room_width
+                            freeze_map_y = sprite_room_min_y + freeze_rel_y * sprite_room_height
+                        else
+                            freeze_map_x = (freeze_world_x - world_min_x) * scale_x
+                            freeze_map_y = (freeze_world_y - world_min_y) * scale_y
+                        end
+                        freeze_map_x = clamp(freeze_map_x, 0, MAP_WIDTH)
+                        freeze_map_y = clamp(freeze_map_y, 0, MAP_HEIGHT)
+                        -- Store both absolute frozen map coords and the legacy delta.
+                        -- The absolute coords let us compute a correct post-freeze
+                        -- offset relative to the new room's shift when releasing.
+                        freeze_state.freeze_map_x = freeze_map_x
+                        freeze_state.freeze_map_y = freeze_map_y
+                        freeze_state.offset_map_x = freeze_map_x - base_map_x
+                        freeze_state.offset_map_y = freeze_map_y - base_map_y
+                        self._freeze_state = freeze_state
+                        self._player_frozen = true
+                        self._player_frozen_px = freeze_map_x
+                        self._player_frozen_py = freeze_map_y
+                        px, py = freeze_map_x, freeze_map_y
+                    else
+                        self._freeze_state = freeze_state
+                        self._player_frozen = false
+                        self._player_frozen_px = map_x
+                        self._player_frozen_py = map_y
+                        px, py = map_x, map_y
+                    end
+                else
+                    -- No per-room data available - can't calculate minimap position
+                    self._player_frozen = false
+                end
+
+                if not pending_center_map_x and snap.view_center then
+                    -- No shift needed - use world coordinates directly
+                    local vcx, vcy = snap.view_center.x or 0, snap.view_center.y or 0
+                    pending_center_map_x, pending_center_map_y = world_to_map(vcx, vcy)
+                end
+            end
+        end
+        if mini.consume_view_center_world then
+            local pending_world = mini.consume_view_center_world()
+            if pending_world then
+                -- No shift needed - use world coordinates directly
+                local pwx, pwy = pending_world.x or 0, pending_world.y or 0
+                pending_center_map_x, pending_center_map_y = world_to_map(pwx, pwy)
+            end
+        end
+    end
+
+    local map_w = MAP_WIDTH
+    local map_h = MAP_HEIGHT
+    local view_half_w = self._view_half_w or (map_w * 0.5)
+    local view_half_h = self._view_half_h or (map_h * 0.5)
+
+    if self._view_dirty then
+        self._view_center_x = nil
+        self._view_center_y = nil
+        self._view_dirty = false
+    end
+
+    local center_x = self._view_center_x or (map_w * 0.5)
+    local center_y = self._view_center_y or (map_h * 0.5)
+
+    if pending_center_map_x then
+        center_x = pending_center_map_x
+        center_y = pending_center_map_y or center_y
+    end
+
+    local has_player = (px ~= nil and py ~= nil)
+    local follow_player = (CFG.follow_player ~= false)
+
+    if follow_player and has_player then
+        center_x = px
+        center_y = py
+    end
+
+    if CFG.clamp_to_world ~= false then
+        local min_cx = view_half_w
+        local max_cx = map_w - view_half_w
+        if max_cx < min_cx then
+            center_x = map_w * 0.5
+        else
+            center_x = clamp(center_x, min_cx, max_cx)
+        end
+
+        local min_cy = view_half_h
+        local max_cy = map_h - view_half_h
+        if max_cy < min_cy then
+            center_y = map_h * 0.5
+        else
+            center_y = clamp(center_y, min_cy, max_cy)
+        end
+    end
+
+    self._view_center_x = center_x
+    self._view_center_y = center_y
+
+    local map_offset_x = (MAP_WIDTH * 0.5 - center_x)
+    local map_offset_y = (MAP_HEIGHT * 0.5 - center_y)
+    local zoom = self._map_zoom or 1
+    if self.map_node then
+        local mx = map_offset_x * zoom
+        local my = map_offset_y * zoom
+        if CFG.pixel_snap then
+            mx = round_to_step(mx, 1)
+            my = round_to_step(my, 1)
+        end
+        if CFG.debug and has_player and mode ~= MODE.FULL then
+            minimap_log(string.format('[VIEW_DBG] px=%.2f center_x=%.2f map_offset_x=%.2f mx=%.2f',
+                px or 0, center_x, map_offset_x, mx))
+        end
+        gui.set_position(self.map_node, v3(mx, my, 0.01))
+    end
+
+    if mini then
+        -- No shift needed - use world coordinates directly
+        local world_cx, world_cy = map_to_world(center_x, center_y)
+        if mini.set_view_center_world then
+            mini.set_view_center_world(world_cx, world_cy)
+        end
+
+        if self._world_bounds_dirty then
+            local bounds = {
+                min_x = world_min_x,
+                min_y = world_min_y,
+                max_x = world_max_x,
+                max_y = world_max_y,
+            }
+            if mini.set_world_bounds then
+                mini.set_world_bounds(bounds)
+            end
+            self._world_bounds_dirty = false
+        end
+    end
+
+    local offset_cfg
+    if mode == MODE.FULL then
+        offset_cfg = CFG.player_offset_fullscreen_px or CFG.player_offset_px
+    else
+        offset_cfg = CFG.player_offset_px
+    end
+    offset_cfg = offset_cfg or { x = 0, y = 0 }
+    local offset_x = offset_cfg.x or 0
+    local offset_y = offset_cfg.y or 0
+    local marker_zoom = self._map_zoom or 1
+
+
+    if has_player then
+        local ox = offset_x
+        local oy = offset_y
+        local zoom = marker_zoom
+        local player_panel_x = (px or center_x)
+        local player_panel_y = (py or center_y)
+        player_panel_x = (player_panel_x - center_x) * zoom
+        player_panel_y = (player_panel_y - center_y) * zoom
+        if CFG.pixel_snap then
+            -- Snap to the map's pixel grid, compensating for zoom
+            local step = 1
+            player_panel_x = round_to_step(player_panel_x, step)
+            player_panel_y = round_to_step(player_panel_y, step)
+        end
+
+        gui.set_position(self.player_node, v3(player_panel_x + ox, player_panel_y + oy, 0.02))
+        gui.set_visible(self.player_node, true)
+        self._player_visible = true
+    else
+        gui.set_visible(self.player_node, false)
+        self._player_visible = false
+    end
+
+    if snap and snap.markers then
+        MarkerRenderer.ensure_state(self, CFG.custom_markers)
+        local converted = {}
+        for _, marker in ipairs(snap.markers) do
+            local wx = marker.x or 0
+            local wy = marker.y or 0
+            local map_x, map_y = world_to_map(wx, wy)
+            if Discovery.marker_visible(marker) then
+                converted[#converted + 1] = {
+                    x = wx,
+                    y = wy,
+                    map_x = map_x,
+                    map_y = map_y,
+                    facing = marker.facing,
+                }
+                end
+        end
+        MarkerRenderer.sync(self, converted, snap.marker_version or 0, center_x, center_y, marker_zoom, offset_x, offset_y, CFG.pixel_snap)
+    else
+        MarkerRenderer.hide(self)
+    end
+
+    if snap and snap.gate_markers and #snap.gate_markers > 0 then
+        GateMarkerRenderer.ensure_state(self, CFG.gate_markers)
+        local converted_gates = {}
+        for idx, marker in ipairs(snap.gate_markers) do
+            local map_x, map_y = world_to_map(marker.x or 0, marker.y or 0)
+            converted_gates[idx] = {
+                map_x = map_x,
+                map_y = map_y,
+                state = marker.state,
+                gate_id = marker.gate_id,
+            }
+        end
+        GateMarkerRenderer.sync(self, converted_gates, center_x, center_y, marker_zoom, offset_x, offset_y, CFG.pixel_snap, get_time())
+    else
+        GateMarkerRenderer.hide(self)
+    end
+    if self.map_node then
+        if self.fog_parent ~= self.map_node then
+            self.fog = Fog.create(self.map_node, gui.PIVOT_CENTER, "panel_fog")
+            self.fog_parent = self.map_node
+        end
+        self._fog_world = self._fog_world or {}
+        local bounds = self._fog_world
+        bounds.min_x, bounds.min_y = world_min_x - origin_shift_x, world_min_y - origin_shift_y
+        bounds.max_x, bounds.max_y = bounds.min_x + MAP_WIDTH / scale_x, bounds.min_y + MAP_HEIGHT / scale_y
+        Fog.update(self.fog, MAP_WIDTH, MAP_HEIGHT, bounds)
+    end
+end
+
+function on_message(self, message_id, message, sender)
+    minimap_debug_log(string.format("[MINIMAP_DEBUG] on_message: %s from %s", tostring(message_id), tostring(sender)))
+    if message_id == hash("set_minimap_mode") and message and message.mode ~= nil then
+        local desired = clamp(math.floor((message.mode or MODE.PANEL) + 0.5), MODE.OFF, MODE.FULL)
+        if message.source == "world_map" and desired ~= MODE.FULL then
+            if message.origin ~= "minimap" and self._world_map_restore_mode ~= nil then
+                desired = self._world_map_restore_mode
+            end
+        end
+        minimap_debug_log(string.format("[MINIMAP_DEBUG] set_minimap_mode: %d", desired))
+        apply_mode(self, desired, { source = message.source, force = message.force, handle_pause = message.handle_pause, origin = message.origin })
+        return
+    end
+    if message_id == hash("toggle_minimap") then
+        minimap_debug_log(string.format("[MINIMAP_DEBUG] toggle_minimap: current mode %d", self._mode or -1))
+        local current = self._mode or MODE.OFF
+        local next_mode = MODE_CYCLE[current] or MODE.PANEL
+        minimap_debug_log(string.format("[MINIMAP_DEBUG] toggle_minimap: switching to mode %d", next_mode))
+        apply_mode(self, next_mode, { source = "toggle" })
+    end
+    if message_id == hash("reload_minimap") or message_id == hash("minimap_reload_requested") then
+        minimap_log('[MINIMAP_LOAD] Reload request received from: ' .. tostring(sender))
+        reload_with_updated_atlas(self, message)
+        minimap_log('[MINIMAP_LOAD] Reload processing complete')
+        return
+    end
+    if message_id == hash("use_original_texture") then
+        minimap_log('[MINIMAP_LOAD] Unloading minimap - clearing texture and hiding')
+        if self.map_node then
+            -- Delete the map node completely to unload texture
+            gui.delete_node(self.map_node)
+            self.map_node = nil
+            minimap_log('[MINIMAP_LOAD] Map node deleted')
+        end
+        apply_mode(self, MODE.OFF, { source = "system", force = true })
+        return
+    end
+
+    if message_id == hash("recreate_map_node") then
+        minimap_log("[MINIMAP_LOAD] Recreating map node...")
+        if message and message.pos and message.size and message.scale and self.container then
+            self.map_node = gui.new_box_node(message.pos, message.size)
+            gui.set_parent(self.map_node, self.container, false)
+            gui.set_pivot(self.map_node, gui.PIVOT_SW)
+            gui.set_scale(self.map_node, message.scale)
+            gui.set_texture(self.map_node, TEXTURE_ID)
+            gui.play_flipbook(self.map_node, FLIP_ID)
+            minimap_log("[MINIMAP_LOAD] Map node recreated with fresh texture")
+
+            if reload_map_data(self, message and message.map) then
+                minimap_log('[MINIMAP_LOAD] Updated map data after node recreation')
+            end
+        end
+        return
+    end
+
+    -- Handle door data response from stream manager for 100% accurate door detection
+    if message_id == hash("door_data_response") then
+        handle_door_data_response(message)
+        return
+    end
+
+    -- Gate marker integration
+    if message_id == hash("refresh_gates") then
+        minimap_debug_log("[MINIMAP_DEBUG] refresh_gates message received")
+        if self._refresh_gate_markers then
+            self:_refresh_gate_markers()
+        end
+        return
+    end
+
+    if message_id == hash("gates_accessible") then
+        local count = (message and message.count) or 0
+        minimap_log(string.format("[MINIMAP_GATES] %d gates now accessible!", count))
+        if self._refresh_gate_markers then
+            self:_refresh_gate_markers()
+        end
+        -- Optional: Show notification or highlight
+        return
+    end
+
+    if message_id == hash("gate_unlocked") then
+        local gate_id = message and message.gate_id
+        minimap_debug_log(string.format("[MINIMAP_DEBUG] gate_unlocked: %s", tostring(gate_id)))
+        if self._refresh_gate_markers then
+            self:_refresh_gate_markers()
+        end
+        return
+    end
+
+    if message_id == hash("gate_locked") then
+        local gate_id = message and message.gate_id
+        minimap_debug_log(string.format("[MINIMAP_DEBUG] gate_locked: %s", tostring(gate_id)))
+        if self._refresh_gate_markers then
+            self:_refresh_gate_markers()
+        end
+        return
+    end
+end
+
+
+
+
+
+local function bias_source_cfg()
+    local cfg = CFG.map_scale_bias or {}
+    return {
+        x = cfg.x or 1.0,
+        y = cfg.y or 1.0,
+        anchor_x = cfg.anchor_x or 'world_min',
+        anchor_y = cfg.anchor_y or 'world_min',
+    }
+end
+
+local function adjust_bias(self, delta)
+    delta = delta or 0
+    local src = bias_source_cfg()
+    local current = self._map_scale_bias_override or src
+    local new_x = (current.x or src.x) + delta
+    self._map_scale_bias_override = {
+        x = new_x,
+        y = current.y or src.y,
+        anchor_x = current.anchor_x or src.anchor_x,
+        anchor_y = current.anchor_y or src.anchor_y,
+    }
+    print(string.format('[CALIB_LIVE] bias_x=%.6f (delta=%+.6f) anchor=%s  -> paste into config.map_scale_bias.x',
+        new_x, delta, tostring(self._map_scale_bias_override.anchor_x)))
+end
+
+function on_input(self, action_id, action)
+    if not action then return end
+
+    if action_id == hash("key_f9") and action.pressed then
+        debug_dump_nodes(self, "F9 dump")
+        return true
+    end
+
+    if not action.pressed then return end
+
+    if action_id == hash("key_r") then
+        minimap_log('[MINIMAP_LOAD] Manual reload request (key R)')
+        pcall(msg.post, msg.url("main:/main_go#script"), hash("minimap_reload_requested"), {})
+        return true
+    end
+
+    if CFG.debug then
+        if not self._debug_bias_instructions_printed then
+            print('[CALIB_LIVE] Press Z to decrement bias_x, X to increment, C to reset')
+            self._debug_bias_instructions_printed = true
+        end
+        if action_id == hash('key_z') then
+            adjust_bias(self, -0.0002)
+            return true
+        elseif action_id == hash('key_x') then
+            adjust_bias(self, 0.0002)
+            return true
+        elseif action_id == hash('key_c') then
+            self._map_scale_bias_override = nil
+            print('[CALIB_LIVE] bias reset to config default')
+            return true
+        end
+    end
+end

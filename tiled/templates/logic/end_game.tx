@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<template>
+ <object name="end_game" type="end_game" width="128" height="128">
+  <properties>
+   <property name="mvtk_template_version" value="2.8.0"/>
+   <property name="ending" type="class" propertytype="end_game_ending"><properties>
+    <property name="completion_id" type="string" value="ending"/>
+   </properties></property>
+   <property name="progression_area" value=""/>
+   <property name="progression_optional" type="bool" value="false"/>
+  </properties>
+ </object>
+</template>

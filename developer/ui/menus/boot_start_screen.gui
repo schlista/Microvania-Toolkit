@@ -1,0 +1,194 @@
+script: "/developer/ui/menus/boot_start_screen.gui_script"
+fonts {
+  name: "main"
+  font: "/builtins/fonts/default.font"
+}
+background_color {
+  x: 0.0
+  y: 0.0
+  z: 0.0
+}
+nodes {
+  position {
+    x: 960.0
+    y: 540.0
+  }
+  size {
+    x: 1920.0
+    y: 1080.0
+  }
+  color {
+    x: 0.06
+    y: 0.06
+    z: 0.10
+  }
+  type: TYPE_BOX
+  id: "root"
+  pivot: PIVOT_CENTER
+  adjust_mode: ADJUST_MODE_FIT
+  inherit_alpha: true
+}
+nodes {
+  position {
+    y: 200.0
+  }
+  size {
+    x: 600.0
+    y: 80.0
+  }
+  color {
+    x: 0.50
+    y: 0.75
+    z: 1.0
+  }
+  type: TYPE_TEXT
+  text: "METROIDVANIA TOOLKIT"
+  font: "main"
+  id: "title"
+  pivot: PIVOT_CENTER
+  outline {
+    x: 0.0
+    y: 0.0
+    z: 0.0
+  }
+  shadow {
+    x: 0.02
+    y: 0.02
+    z: 0.04
+  }
+  adjust_mode: ADJUST_MODE_FIT
+  parent: "root"
+  inherit_alpha: true
+  outline_alpha: 0.6
+  shadow_alpha: 0.4
+  size_mode: SIZE_MODE_AUTO
+}
+nodes {
+  position {
+    y: 80.0
+  }
+  size {
+    x: 400.0
+    y: 30.0
+  }
+  color {
+    x: 0.65
+    y: 0.65
+    z: 0.70
+  }
+  type: TYPE_TEXT
+  text: "A Framework for Building Great Games"
+  font: "main"
+  id: "subtitle"
+  pivot: PIVOT_CENTER
+  adjust_mode: ADJUST_MODE_FIT
+  parent: "root"
+  inherit_alpha: true
+  alpha: 0.9
+}
+nodes {
+  position {
+    y: -60.0
+  }
+  size {
+    x: 300.0
+    y: 60.0
+  }
+  color {
+    x: 0.22
+    y: 0.22
+    z: 0.28
+  }
+  type: TYPE_BOX
+  id: "btn_play"
+  pivot: PIVOT_CENTER
+  adjust_mode: ADJUST_MODE_FIT
+  parent: "root"
+  inherit_alpha: true
+  size_mode: SIZE_MODE_AUTO
+}
+nodes {
+  size {
+    x: 280.0
+    y: 50.0
+  }
+  color {
+    x: 0.88
+    y: 0.88
+    z: 0.90
+  }
+  type: TYPE_TEXT
+  text: "PLAY GAME"
+  font: "main"
+  id: "btn_play_label"
+  pivot: PIVOT_CENTER
+  adjust_mode: ADJUST_MODE_FIT
+  parent: "btn_play"
+  inherit_alpha: true
+  size_mode: SIZE_MODE_AUTO
+}
+nodes {
+  position {
+    y: -140.0
+  }
+  size {
+    x: 300.0
+    y: 60.0
+  }
+  color {
+    x: 0.22
+    y: 0.22
+    z: 0.28
+  }
+  type: TYPE_BOX
+  id: "btn_editor"
+  pivot: PIVOT_CENTER
+  adjust_mode: ADJUST_MODE_FIT
+  parent: "root"
+  inherit_alpha: true
+  size_mode: SIZE_MODE_AUTO
+}
+nodes {
+  size {
+    x: 280.0
+    y: 50.0
+  }
+  color {
+    x: 0.88
+    y: 0.88
+    z: 0.90
+  }
+  type: TYPE_TEXT
+  text: "LAYOUT EDITOR"
+  font: "main"
+  id: "btn_editor_label"
+  pivot: PIVOT_CENTER
+  adjust_mode: ADJUST_MODE_FIT
+  parent: "btn_editor"
+  inherit_alpha: true
+  size_mode: SIZE_MODE_AUTO
+}
+nodes {
+  position {
+    y: -360.0
+  }
+  size {
+    x: 720.0
+    y: 60.0
+  }
+  color {
+    x: 0.55
+    y: 0.55
+    z: 0.62
+  }
+  type: TYPE_TEXT
+  text: "Play Game opens save slots. Layout Editor builds the world."
+  font: "main"
+  id: "hint"
+  pivot: PIVOT_CENTER
+  adjust_mode: ADJUST_MODE_FIT
+  parent: "root"
+  inherit_alpha: true
+  alpha: 0.85
+}
+material: "/builtins/materials/gui.material"

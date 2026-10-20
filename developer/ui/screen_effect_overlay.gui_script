@@ -1,0 +1,28 @@
+local Viewport = require "mvtk.ui.viewport"
+-- developer/ui/screen_effect_overlay.gui_script
+
+local function clamp(x, a, b)
+    if x < a then return a end
+    if x > b then return b end
+    return x
+end
+
+function init(self)
+    self.overlay = gui.get_node("overlay")
+    local w, h = Viewport.design_size()
+    gui.set_size(self.overlay, vmath.vector3(w, h, 0))
+    gui.set_color(self.overlay, vmath.vector4(0, 0, 0, 0))
+end
+
+function on_message(self, message_id, message, sender)
+    if message_id == hash("set_effect") then
+        local color = message and message.color or vmath.vector4(0, 0, 0, 0)
+        local alpha = message and message.alpha
+        if alpha ~= nil then
+            color.w = clamp(tonumber(alpha) or color.w, 0, 1)
+        end
+        gui.set_color(self.overlay, color)
+    elseif message_id == hash("clear_effect") then
+        gui.set_color(self.overlay, vmath.vector4(0, 0, 0, 0))
+    end
+end

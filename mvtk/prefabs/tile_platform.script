@@ -1,0 +1,1268 @@
+-- mvtk/prefabs/tile_platform.script
+-- WYSIWYG moving platform that copies tiles from room tilemap
+-- Tiles drawn in Tiled ARE the tiles that move in-game
+
+go.property("platform_id", "")  -- Stable authored identity for diagnostics/messages
+go.property("object_id", 0)  -- Tiled object ID for exact authored-property lookup
+go.property("platform_type", "horizontal")  -- horizontal, vertical, path, circular
+go.property("path_name", "")  -- Path polyline/polygon name in Tiled
+go.property("path_dx", 0.0)  -- Linear X distance
+go.property("path_dy", 0.0)  -- Linear Y distance
+go.property("duration", 2.0)  -- Time for one cycle
+go.property("speed", 0.0)  -- Pixels per second (overrides duration when > 0)
+go.property("wait", 0.0)  -- Pause at endpoints
+go.property("wait_time", 0.0)  -- Delay (seconds) after player steps on before starting
+go.property("loop", false)  -- Run continuously
+go.property("one_way", false)  -- Only move forward (no pingpong)
+go.property("loop_mode", "pingpong")  -- pingpong, loop, once
+go.property("enabled", true)
+go.property("start_delay", 0.0)  -- Delay before the platform can begin moving
+go.property("trigger_id", "")  -- Optional external trigger gate
+go.property("player_parent", true)  -- Move the player with the platform when true
+go.property("radius", 0.0)  -- Radius for circular motion
+go.property("start_angle", 0.0)  -- Starting angle in degrees
+go.property("room_id", "")  -- Room ID for tilemap lookup
+go.property("width", 128)  -- Platform width in pixels
+go.property("height", 128)  -- Platform height in pixels
+go.property("platform_tilemap_url", msg.url("#tilemap"))
+-- Create Rooms sets these from painted Tiled cells. Baked art stays editable
+-- in the generated tilemap; runtime only removes its stationary room copy.
+go.property("tiles_baked", false)
+go.property("source_layer", "environment")
+
+local v3 = vmath.vector3
+local TWO_PI = math.pi * 2
+local C = require "mvtk.core.constants"
+local Util = require "mvtk.core.util"
+local Debug = require "developer.config.debug_config"
+local FrameClock = require "mvtk.core.frame_clock"
+local raw_print = print
+local TILE_PLATFORM_LOG_ENABLED = (Debug.global and Debug.global.enable) or
+    (Debug.rooms and Debug.rooms.loading)
+local function print(...)
+    if TILE_PLATFORM_LOG_ENABLED then
+        raw_print(...)
+    end
+end
+local PassengerCarrier = require "mvtk.prefabs.passenger_carrier"
+local ToggleMessages = require "mvtk.prefabs.toggle_messages"
+local MSG_SET_ENABLED = hash("set_enabled")
+local MSG_GET_PLATFORM_INFO = hash("get_platform_info")
+local MSG_PLATFORM_INFO = hash("platform_info")
+
+-- Load room manager for tilemap access
+local RoomManager = nil
+local ok_rm, rm_data = pcall(require, "mvtk.map.streaming.room_manager")
+if ok_rm then RoomManager = rm_data end
+
+local AuthoredObjectProps = require "mvtk.tiled.authored_object_props"
+local TiledPaths = require "mvtk.tiled.tiled_paths"
+local SurfaceClassifier = require "mvtk.core.surface_classifier"
+local TileTransfer = require "mvtk.prefabs.tile_transfer"
+
+-- Load tile settings
+local TileSettings = nil
+local ok_tile, tile_data = pcall(require, "developer.config.tile_settings")
+if ok_tile then TileSettings = tile_data end
+
+local TILE_W = TileSettings and TileSettings.width or 128
+local TILE_H = TileSettings and TileSettings.height or 128
+
+local hash_to_string = Util.normalize_hash_string
+
+local function normalize_path_name(path_name)
+    if not path_name or path_name == "" then
+        return nil
+    end
+    if type(path_name) == "string" and path_name:match("^<unknown:") then
+        return nil
+    end
+    return path_name
+end
+
+local function compute_path_length(waypoints, closed)
+    if not waypoints or #waypoints < 2 then
+        return 0
+    end
+    local total = 0
+    for i = 1, #waypoints - 1 do
+        total = total + vmath.length(waypoints[i + 1] - waypoints[i])
+    end
+    if closed and #waypoints > 2 then
+        total = total + vmath.length(waypoints[1] - waypoints[#waypoints])
+    end
+    return total
+end
+
+local function apply_speed_override(self, distance, label)
+    local speed = tonumber(self.speed) or 0
+    if speed <= 0 or not distance or distance <= 0 then
+        return
+    end
+    self.duration = distance / speed
+    print(string.format("[TILE_PLATFORM] Speed override (%s): speed=%.1f dist=%.1f duration=%.2f",
+        label or "unknown", speed, distance, self.duration))
+end
+
+local function get_platform_object_id()
+    local id_str = Util.go_id_text(go.get_id()) or ""
+    local match = id_str:match("platform_(%d+)")
+    if match then
+        return tonumber(match)
+    end
+    return nil
+end
+
+local function find_platform_object_in_map(self, map, room_name)
+    local authored_object = AuthoredObjectProps.get_object(room_name, self.object_id)
+    if authored_object then
+        return authored_object
+    end
+    if not map or not map.layers then
+        return nil
+    end
+
+    local platform_obj_id = get_platform_object_id()
+    local map_height = (map.height or 0) * (map.tileheight or 0)
+    local target_pos = self.spawn_pos or self.start
+    local best_obj = nil
+    local best_dist = math.huge
+    local tilemap_pos = v3(0, 0, 0)
+    if RoomManager and RoomManager.get_tilemap_url then
+        local _, tm_pos = RoomManager.get_tilemap_url(room_name)
+        if tm_pos then
+            tilemap_pos = tm_pos
+        end
+    end
+
+    for _, layer in ipairs(map.layers) do
+        if layer.type == "objectgroup" and layer.objects then
+            for _, obj in ipairs(layer.objects) do
+                if obj.type == "platform" or obj.type == "moving_platform" then
+                    if platform_obj_id and obj.id == platform_obj_id then
+                        return obj
+                    end
+
+                    if target_pos and map_height > 0 then
+                        local defold_y = map_height - (obj.y or 0) - (obj.height or 0)
+                        local defold_x = obj.x or 0
+                        defold_x = defold_x + tilemap_pos.x
+                        defold_y = defold_y + tilemap_pos.y
+                        local dx = math.abs(defold_x - target_pos.x)
+                        local dy = math.abs(defold_y - target_pos.y)
+                        local dist = dx + dy
+                        if dist < best_dist then
+                            best_dist = dist
+                            best_obj = obj
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    return best_obj
+end
+
+local function to_bool(value)
+    if type(value) == "boolean" then
+        return value
+    end
+    if type(value) == "number" then
+        return value ~= 0
+    end
+    if type(value) == "string" then
+        local lower = value:lower()
+        if lower == "true" or lower == "1" or lower == "yes" then
+            return true
+        end
+        if lower == "false" or lower == "0" or lower == "no" then
+            return false
+        end
+    end
+    return nil
+end
+
+local function apply_platform_props_from_map(self, room_name)
+    local map = AuthoredObjectProps.get_map(room_name)
+    if not map then
+        return
+    end
+
+    local obj = find_platform_object_in_map(self, map, room_name)
+    if not obj then
+        return
+    end
+
+    local props = obj.properties or {}
+    if props.platform_id ~= nil and tostring(props.platform_id) ~= "" then
+        self.platform_id = props.platform_id
+    end
+    self.loop_specified = props.loop ~= nil
+    self.one_way_specified = props.one_way ~= nil
+    self.wait_time_specified = props.wait_time ~= nil
+    self.use_new_controls = self.loop_specified or self.one_way_specified or self.wait_time_specified
+
+    local speed = tonumber(props.speed or props.path_speed or props.platform_speed)
+    if speed and speed > 0 then
+        self.speed = speed
+    end
+    local wait = tonumber(props.wait)
+    if wait ~= nil then
+        self.wait = wait
+    end
+    local wait_time = tonumber(props.wait_time)
+    if wait_time ~= nil then
+        self.wait_time = wait_time
+    end
+    local loop = to_bool(props.loop)
+    if loop ~= nil then
+        self.loop = loop
+    end
+    local one_way = to_bool(props.one_way)
+    if one_way ~= nil then
+        self.one_way = one_way
+    end
+    local duration = tonumber(props.duration)
+    if duration and duration > 0 and (self.speed or 0) <= 0 then
+        self.duration = duration
+    end
+    local start_delay = tonumber(props.start_delay)
+    if start_delay ~= nil then
+        self.start_delay = start_delay
+    end
+    if props.trigger_id ~= nil then
+        self.trigger_id = props.trigger_id
+    end
+    local player_parent = to_bool(props.player_parent)
+    if player_parent ~= nil then
+        self.player_parent = player_parent
+    end
+end
+
+local function resolve_path_name_from_map(self, room_name)
+    local map = AuthoredObjectProps.get_map(room_name)
+    if not map or not map.layers then
+        return nil
+    end
+
+    local obj = find_platform_object_in_map(self, map, room_name)
+    if not obj or not obj.properties then
+        return nil
+    end
+
+    local props = obj.properties or {}
+    return props.path_name or props.path_id
+end
+
+local function apply_waypoint_snap(self)
+    if self.waypoints_snapped or not self.waypoints or #self.waypoints == 0 then
+        return
+    end
+    local dx = self.snap_dx or 0
+    local dy = self.snap_dy or 0
+    if math.abs(dx) < 0.1 and math.abs(dy) < 0.1 then
+        return
+    end
+    for _, wp in ipairs(self.waypoints) do
+        wp.x = wp.x + dx
+        wp.y = wp.y + dy
+    end
+    self.waypoints_snapped = true
+    print(string.format("[TILE_PLATFORM] Applied waypoint snap offset (%.0f, %.0f)", dx, dy))
+end
+
+local function align_waypoints_to_start(self)
+    if self.waypoints_aligned or not self.waypoints or #self.waypoints == 0 then
+        return
+    end
+    local wp0 = self.waypoints[1]
+    if not wp0 then
+        return
+    end
+    local dx = (self.start and self.start.x or 0) - wp0.x
+    local dy = (self.start and self.start.y or 0) - wp0.y
+    if math.abs(dx) < 0.1 and math.abs(dy) < 0.1 then
+        self.waypoints_aligned = true
+        return
+    end
+    for _, wp in ipairs(self.waypoints) do
+        wp.x = wp.x + dx
+        wp.y = wp.y + dy
+    end
+    self.waypoints_aligned = true
+    print(string.format("[TILE_PLATFORM] Aligned waypoints to start (%.0f, %.0f)", dx, dy))
+end
+
+local function resolve_path_waypoints(self)
+    local room_name = hash_to_string(self.room_id)
+    if not room_name then
+        return false
+    end
+
+    apply_platform_props_from_map(self, room_name)
+
+    local path_name = self.path_name_str or normalize_path_name(hash_to_string(self.path_name))
+    if not path_name then
+        path_name = resolve_path_name_from_map(self, room_name)
+        if path_name then
+            self.path_name_str = path_name
+            self.path_name = path_name
+            print(string.format("[TILE_PLATFORM] Resolved missing path_name to '%s' from Tiled map", path_name))
+        end
+    end
+    if not path_name then
+        return false
+    end
+
+    local poly = TiledPaths.get_polyline(room_name, path_name)
+    if not poly then
+        return false
+    end
+
+    local points = poly.polyline or poly.polygon
+    if not points or #points < 2 then
+        print(string.format("[TILE_PLATFORM] Path '%s' has insufficient points", tostring(path_name)))
+        return false
+    end
+
+    local base_x = poly.x or 0
+    local base_y = poly.y or 0
+    local tilemap_pos = v3(0, 0, 0)
+    if RoomManager and RoomManager.get_tilemap_url then
+        local _, tm_pos = RoomManager.get_tilemap_url(room_name)
+        if tm_pos then
+            tilemap_pos = tm_pos
+        end
+    end
+    base_x = base_x + tilemap_pos.x
+    base_y = base_y + tilemap_pos.y
+    local z = (self.start and self.start.z) or 0
+    local waypoints = {}
+    for i, pt in ipairs(points) do
+        waypoints[i] = v3(base_x + (pt.x or 0), base_y - (pt.y or 0), z)
+    end
+
+    self.waypoints = waypoints
+    self.platform_type = "path"
+    apply_waypoint_snap(self)
+    self.path_loop = self.use_new_controls and self.loop and self.one_way
+    self.path_length = compute_path_length(waypoints, self.path_loop)
+    apply_speed_override(self, self.path_length, "path")
+    if self.tiles_ready then
+        align_waypoints_to_start(self)
+    end
+    print(string.format("[TILE_PLATFORM] Loaded %d waypoints from path '%s'", #waypoints, tostring(path_name)))
+    return true
+end
+
+local function try_resolve_path(self, attempt)
+    if resolve_path_waypoints(self) then
+        return
+    end
+
+    attempt = (attempt or 0) + 1
+    if attempt <= 10 then
+        timer.delay(0.1, false, function()
+            try_resolve_path(self, attempt)
+        end)
+    else
+        print(string.format("[TILE_PLATFORM] WARNING: Path '%s' not found after retries",
+            tostring(self.path_name_str or normalize_path_name(hash_to_string(self.path_name)) or "")))
+    end
+end
+
+local function ease_in_out(t)
+    return t < 0.5 and 2 * t * t or 1 - math.pow(-2 * t + 2, 2) / 2
+end
+
+local function move_linear(self, t01)
+    local eased = ease_in_out(t01)
+    local x = self.start.x + (self.path_dx or 0) * eased
+    local y = self.start.y + (self.path_dy or 0) * eased
+    return v3(x, y, self.start.z)
+end
+
+local function move_circular(self, t01)
+    local angle = math.rad(self.start_angle or 0) + t01 * TWO_PI
+    local x = self.center.x + self.radius * math.cos(angle)
+    local y = self.center.y + self.radius * math.sin(angle)
+    return v3(x, y, self.start.z)
+end
+
+local function move_path(self, t01)
+    if not self.waypoints or #self.waypoints < 2 then
+        return self.start
+    end
+
+    local waypoint_count = #self.waypoints
+    local loop_path = self.path_loop == true
+    local total_segments = loop_path and waypoint_count or (waypoint_count - 1)
+    local segment_progress = t01 * total_segments
+    local segment_index = math.floor(segment_progress)
+    local segment_t = segment_progress - segment_index
+
+    if loop_path then
+        segment_index = segment_index % waypoint_count
+        local wp1 = self.waypoints[segment_index + 1]
+        local wp2 = self.waypoints[(segment_index + 1) % waypoint_count + 1]
+        local x = wp1.x + (wp2.x - wp1.x) * segment_t
+        local y = wp1.y + (wp2.y - wp1.y) * segment_t
+        return v3(x, y, self.start.z)
+    end
+
+    if segment_index >= total_segments then
+        segment_index = total_segments - 1
+        segment_t = 1
+    elseif segment_index < 0 then
+        segment_index = 0
+        segment_t = 0
+    end
+
+    local wp1 = self.waypoints[segment_index + 1]
+    local wp2 = self.waypoints[segment_index + 2] or wp1
+
+    local x = wp1.x + (wp2.x - wp1.x) * segment_t
+    local y = wp1.y + (wp2.y - wp1.y) * segment_t
+    return v3(x, y, self.start.z)
+end
+
+local function move_to(self, target_pos)
+    local delta = target_pos - self.last_pos
+    go.set_position(target_pos)
+    self.last_pos = v3(target_pos)
+
+    self.passenger_carrier:apply_delta(delta.x, delta.y, {
+        carry_player = self.player_parent ~= false,
+    })
+end
+
+local function start_wait(self)
+    if (self.wait or 0) > 0 then
+        self.waiting = true
+        timer.delay(self.wait, false, function()
+            self.waiting = false
+        end)
+    end
+end
+
+local function start_motion(self)
+    self.pending_start = false
+    self.start_timer = nil
+    if self.completed then
+        move_to(self, v3(self.start))
+    end
+    self.t = 0
+    self.dir = 1
+    self.waiting = false
+    self.completed = false
+    self.active = true
+end
+
+local function cancel_start_timer(self)
+    if self.start_timer then
+        timer.cancel(self.start_timer)
+        self.start_timer = nil
+    end
+    self.pending_start = false
+end
+
+local function request_start(self)
+    if self.active then
+        return
+    end
+    local delay = tonumber(self.wait_time) or 0
+    if delay > 0 then
+        if self.pending_start then
+            return
+        end
+        self.pending_start = true
+        self.start_timer = timer.delay(delay, false, function()
+            if self.pending_start and not self.active then
+                start_motion(self)
+            end
+        end)
+    else
+        start_motion(self)
+    end
+end
+
+local function has_passengers(self)
+    return self.passenger_carrier and self.passenger_carrier:any() or false
+end
+
+local function has_trigger_gate(self)
+    local trigger_id = hash_to_string(self.trigger_id)
+    return trigger_id ~= nil and trigger_id ~= ""
+end
+
+local function movement_ready(self)
+    if not self.tiles_initialized or self.pending_room_tile_clear then
+        return false
+    end
+    if not self.enabled then
+        return false
+    end
+    if (tonumber(self.start_delay_remaining) or 0) > 0 then
+        return false
+    end
+    if self.trigger_armed == false then
+        return false
+    end
+    if self.use_new_controls and not self.active then
+        return false
+    end
+    return true
+end
+
+local function apply_enabled(self, enabled, message_id)
+    if message_id == MSG_SET_ENABLED and enabled == self.enabled then
+        return
+    end
+
+    self.enabled = enabled
+    if self.enabled then
+        self.active = not self.use_new_controls or (tonumber(self.wait_time) or 0) <= 0
+        if not self.trigger_armed or (tonumber(self.start_delay_remaining) or 0) > 0 then
+            self.active = false
+        end
+    else
+        self.active = false
+        self.pending_start = false
+        self.waiting = false
+    end
+end
+
+local function retry_room_tile_clear(self, force_log)
+    local room_tilemap_url = self.pending_room_tilemap
+    local clear_tiles = self.pending_room_tile_clear
+    if not room_tilemap_url or not clear_tiles or #clear_tiles == 0 then
+        self.pending_room_tilemap = nil
+        self.pending_room_tile_clear = nil
+        self.pending_room_tile_clear_attempts = 0
+        return true
+    end
+
+    self.pending_room_tile_clear_attempts = (self.pending_room_tile_clear_attempts or 0) + 1
+
+    local flush_result = TileTransfer.flush_clear_tiles(room_tilemap_url, clear_tiles)
+    local verify_result = TileTransfer.verify_clear_tiles(room_tilemap_url, clear_tiles)
+    if verify_result.cleared then
+        print(string.format("[TILE_PLATFORM] Cleared %d source room tiles after %d attempt(s)",
+            flush_result.applied or 0, self.pending_room_tile_clear_attempts))
+        self.pending_room_tilemap = nil
+        self.pending_room_tile_clear = nil
+        self.pending_room_tile_clear_attempts = 0
+        return true
+    end
+
+    if force_log or self.pending_room_tile_clear_attempts <= 3 or self.pending_room_tile_clear_attempts % 30 == 0 then
+        local sample = verify_result.uncleared_tiles[1]
+        if sample then
+            print(string.format("[TILE_PLATFORM] WARNING: %d room tiles still uncleared after attempt %d (sample layer=%s cell=%d,%d tile=%d)",
+                verify_result.remaining or 0,
+                self.pending_room_tile_clear_attempts,
+                tostring(sample.layer),
+                sample.x or 0,
+                sample.y or 0,
+                sample.tile_id or -1))
+        else
+            print(string.format("[TILE_PLATFORM] WARNING: Room tile clear still pending after attempt %d",
+                self.pending_room_tile_clear_attempts))
+        end
+    end
+
+    return false
+end
+
+local function initialize_baked_tiles(self)
+    if self.pending_room_tile_clear then return retry_room_tile_clear(self, false) end
+    if not RoomManager or not RoomManager.get_tilemap_url then return false end
+    local room_tilemap, room_pos = RoomManager.get_tilemap_url(self.room_id)
+    if not room_tilemap or not room_pos then return false end
+    local pos = self.spawn_pos
+    local clear_tiles = TileTransfer.collect_room_rectangle({
+        room_tilemap_url = room_tilemap,
+        source_layer = self.source_layer,
+        min_tx = math.floor((pos.x - room_pos.x) / TILE_W) + 1,
+        max_tx = math.ceil((pos.x + self.width - room_pos.x) / TILE_W),
+        min_ty = math.floor((pos.y - room_pos.y) / TILE_H) + 1,
+        max_ty = math.ceil((pos.y + self.height - room_pos.y) / TILE_H),
+    })
+    if not clear_tiles then return false end
+    self.pending_room_tilemap = room_tilemap
+    self.pending_room_tile_clear = clear_tiles
+    return retry_room_tile_clear(self, true)
+end
+
+--- Copy tiles from room tilemap to platform tilemap
+local function copy_tiles_from_room(self)
+    if not RoomManager or not RoomManager.get_tilemap_url then
+        print("[TILE_PLATFORM] WARNING: RoomManager not available")
+        return false
+    end
+
+    local room_id_str = type(self.room_id) == "userdata" and self.room_id or tostring(self.room_id)
+    local room_tilemap_url, tilemap_pos = RoomManager.get_tilemap_url(room_id_str)
+
+    if not room_tilemap_url then
+        print("[TILE_PLATFORM] WARNING: Could not find tilemap for room: " .. tostring(room_id_str))
+        return false
+    end
+
+    if not tilemap_pos then
+        print("[TILE_PLATFORM] WARNING: Tilemap position not available for room: " .. tostring(room_id_str))
+        tilemap_pos = v3(0, 0, 0)
+    end
+
+    print(string.format("[TILE_PLATFORM] Room tilemap: %s at (%.0f, %.0f)",
+        tostring(room_tilemap_url), tilemap_pos.x, tilemap_pos.y))
+
+    local room_name = hash_to_string(self.room_id)
+    local tiled_map = room_name and AuthoredObjectProps.get_map(room_name) or nil
+    local source_layer = self.source_layer
+    if tiled_map then
+        local pos = self.spawn_pos or self.start or go.get_world_position()
+        local art_layer = TileTransfer.find_platform_art_layer(tiled_map.layers, function(layer)
+            local cells = TileTransfer.collect_room_rectangle({
+                room_tilemap_url = room_tilemap_url, source_layer = hash(layer.name),
+                min_tx = math.floor((pos.x - tilemap_pos.x) / TILE_W) + 1,
+                max_tx = math.ceil((pos.x + self.width - tilemap_pos.x) / TILE_W),
+                min_ty = math.floor((pos.y - tilemap_pos.y) / TILE_H) + 1,
+                max_ty = math.ceil((pos.y + self.height - tilemap_pos.y) / TILE_H),
+            })
+            return cells and #cells > 0
+        end)
+        if not art_layer then
+            print(string.format("[TILE_PLATFORM] WARNING: Room '%s' has no art/player or environment tile layer", tostring(room_name)))
+            return false
+        end
+        source_layer = hash(art_layer.name)
+    end
+
+    local layer_priority = { source_layer }
+
+    -- Fill tiles to skip - transparent/starter tiles that shouldn't be copied
+    local fill_tiles = {}
+
+    -- Get environment-layer bounds to determine coordinate origin.
+    local room_bounds_x, room_bounds_y, room_bounds_w, room_bounds_h
+    local bounds_source = "layer:environment"
+    local ok_bounds, bx, by, bw, bh = pcall(tilemap.get_bounds, room_tilemap_url)
+    if ok_bounds then
+        room_bounds_x, room_bounds_y, room_bounds_w, room_bounds_h = bx, by, bw, bh
+    else
+        print("[TILE_PLATFORM] WARNING: Could not get environment layer bounds")
+        return false
+    end
+
+    if room_bounds_w then
+        print(string.format("[TILE_PLATFORM] Room tilemap bounds (%s): origin=(%d,%d) size=(%dx%d)",
+            bounds_source, room_bounds_x, room_bounds_y, room_bounds_w, room_bounds_h))
+    else
+        print(string.format("[TILE_PLATFORM] Room tilemap bounds (%s): origin=(%d,%d)",
+            bounds_source, room_bounds_x, room_bounds_y))
+    end
+
+
+    -- Get platform bounds in world coordinates
+    -- GO is positioned at bottom-left corner of platform rectangle
+    -- Use the spawn position to avoid copying from a moved platform (path platforms move immediately)
+    local pos = self.spawn_pos or self.start or go.get_world_position()
+    local current_pos = go.get_world_position()
+    if current_pos and (math.abs(current_pos.x - pos.x) > 0.1 or math.abs(current_pos.y - pos.y) > 0.1) then
+        go.set_position(pos)
+    end
+    local plat_left = pos.x
+    local plat_right = pos.x + self.width
+    local plat_bottom = pos.y
+    local plat_top = pos.y + self.height
+
+    print(string.format("[TILE_PLATFORM] Platform bounds: (%.0f,%.0f) to (%.0f,%.0f)",
+        plat_left, plat_bottom, plat_right, plat_top))
+
+    -- Convert world coords to room tilemap cell coordinates.
+    -- Defold tilemaps use 1-based cell coordinates: cell (1,1) renders at pixel (0,0)
+    -- relative to the GO. So world-to-cell is: cell = floor((world - go_pos) / tile_size) + 1
+    local min_tx = math.floor((plat_left - tilemap_pos.x) / TILE_W) + 1
+    local max_tx = math.ceil((plat_right - tilemap_pos.x) / TILE_W)
+    local min_ty = math.floor((plat_bottom - tilemap_pos.y) / TILE_H) + 1
+    local max_ty = math.ceil((plat_top - tilemap_pos.y) / TILE_H)
+
+    -- Ensure we have at least 1 tile in each dimension
+    if max_tx < min_tx then max_tx = min_tx end
+    if max_ty < min_ty then max_ty = min_ty end
+
+    if room_bounds_w and room_bounds_h then
+        local max_bounds_tx = room_bounds_x + room_bounds_w - 1
+        local max_bounds_ty = room_bounds_y + room_bounds_h - 1
+        if max_tx < room_bounds_x or min_tx > max_bounds_tx or max_ty < room_bounds_y or min_ty > max_bounds_ty then
+            print(string.format("[TILE_PLATFORM] WARNING: Platform bounds do not overlap environment layer bounds X[%d,%d] Y[%d,%d]",
+                room_bounds_x, max_bounds_tx, room_bounds_y, max_bounds_ty))
+            return false
+        end
+        min_tx = math.max(min_tx, room_bounds_x)
+        max_tx = math.min(max_tx, max_bounds_tx)
+        min_ty = math.max(min_ty, room_bounds_y)
+        max_ty = math.min(max_ty, max_bounds_ty)
+    end
+
+    print(string.format("[TILE_PLATFORM] Copying tiles from room (%d,%d) to (%d,%d)",
+        min_tx, min_ty, max_tx, max_ty))
+    
+    -- NOTE: We defer snapping until we know the actual tile bounds (after pass 1).
+    
+    -- Calculate actual tile dimensions and update self.width/height
+    local tiles_wide = max_tx - min_tx + 1
+    local tiles_tall = max_ty - min_ty + 1
+    local actual_width = tiles_wide * TILE_W
+    local actual_height = tiles_tall * TILE_H
+    
+    -- Update dimensions to match actual tiles
+    self.width = actual_width
+    self.height = actual_height
+    self.half_w = actual_width / 2
+    self.half_h = actual_height / 2
+    
+    -- Update center for circular motion (center of the platform, not bottom-left)
+    self.center = v3(self.start.x + self.half_w, self.start.y + self.half_h, self.start.z)
+    
+    print(string.format("[TILE_PLATFORM] Updated dimensions: %dx%d tiles = %dx%d pixels",
+        tiles_wide, tiles_tall, actual_width, actual_height))
+
+    -- NOTE: Skip initial collision/sensor resize here - they will be resized properly after
+    -- we determine the actual visible tile bounds (which may have an X offset).
+    -- The resize with correct offset happens in the "if tiles_copied > 0" block below.
+
+    -- The platform tilemap remains on this root GO after the collision split.
+    local platform_tilemap = self.platform_tilemap_url
+    local platform_layer = SurfaceClassifier.resolve_first_existing_layer(
+        platform_tilemap,
+        { SurfaceClassifier.GROUPS.SOLID, SurfaceClassifier.GROUPS.GROUND },
+        SurfaceClassifier.GROUPS.SOLID
+    )
+    TileTransfer.clear_tilemap_layer(platform_tilemap, platform_layer)
+    
+    -- Get platform tilemap bounds - CRITICAL for correct tile positioning
+    -- In Defold, cell (origin_x, origin_y) renders at pixel (0,0) relative to the GO
+    -- So we MUST write tiles starting at the origin, not at (0,0)
+    local bounds_ok, bounds_x, bounds_y, bounds_w, bounds_h = pcall(tilemap.get_bounds, platform_tilemap)
+    local plat_origin_x, plat_origin_y = 1, 1  -- Default to (1,1) for Defold tilemap API coords
+    if bounds_ok then
+        plat_origin_x = bounds_x
+        plat_origin_y = bounds_y
+        print(string.format("[TILE_PLATFORM] Platform tilemap bounds: origin=(%d,%d) size=(%dx%d)",
+            bounds_x, bounds_y, bounds_w, bounds_h))
+    else
+        print(string.format("[TILE_PLATFORM] WARNING: Could not get tilemap bounds, using default origin (1,1)"))
+    end
+
+    -- Debug: Show where tiles will visually appear
+    print(string.format("[TILE_PLATFORM] GO world pos: (%.0f, %.0f) - tiles will render from here",
+        pos.x, pos.y))
+    print(string.format("[TILE_PLATFORM] DEBUG: TILE_W=%d TILE_H=%d", TILE_W, TILE_H))
+
+    -- Copy tiles from room to platform, clear from room
+    -- Check layers in priority order: platform layer has visible platform tiles, ground may have fill/collision
+    -- Only copy ONE tile per position (the first non-empty one found)
+    -- But CLEAR tiles from ALL layers to prevent visual artifacts
+    local tiles_copied = 0
+    
+    -- Track actual bounds of visible tiles for accurate collision sizing
+    local actual_min_tx, actual_max_tx = nil, nil
+    local actual_min_ty, actual_max_ty = nil, nil
+
+    print(string.format("[TILE_PLATFORM] Scanning layers for tiles in range (%d,%d) to (%d,%d)",
+        min_tx, min_ty, max_tx, max_ty))
+
+    -- TWO-PASS APPROACH: Since physics.set_shape position doesn't work reliably,
+    -- we need to write tiles starting at local position (1,1) so they render at pixel (0,0).
+    -- This means the collision at center (half_w, half_h) will match the tiles.
+
+    local room_collision_layer = SurfaceClassifier.resolve_primary_collision_layer(
+        room_tilemap_url,
+        SurfaceClassifier.GROUPS.SOLID
+    )
+    local transfer = TileTransfer.transfer_room_tiles({
+        room_tilemap_url = room_tilemap_url,
+        source_layer = layer_priority[1],
+        room_collision_layer = room_collision_layer,
+        platform_tilemap = platform_tilemap,
+        platform_layer = platform_layer,
+        platform_origin_x = plat_origin_x,
+        platform_origin_y = plat_origin_y,
+        min_tx = min_tx,
+        max_tx = max_tx,
+        min_ty = min_ty,
+        max_ty = max_ty,
+        fill_tiles = fill_tiles,
+        clear_source_on_success = false,
+    })
+    local tiles_to_copy = transfer.tiles_to_copy
+    local room_tiles_to_clear = transfer.clear_tiles
+    actual_min_tx = transfer.actual_min_tx
+    actual_max_tx = transfer.actual_max_tx
+    actual_min_ty = transfer.actual_min_ty
+    actual_max_ty = transfer.actual_max_ty
+
+    -- Calculate snap position based on actual tile bounds (if found)
+    if actual_min_tx and actual_min_ty then
+        local snap_min_tx = actual_min_tx
+        local snap_min_ty = actual_min_ty
+        -- 1-based cell to world: cell N renders at pixel (N-1)*tile_size + tilemap_pos
+        local source_tile_world_x = tilemap_pos.x + ((snap_min_tx - 1) * TILE_W)
+        local source_tile_world_y = tilemap_pos.y + ((snap_min_ty - 1) * TILE_H)
+        local offset_x = source_tile_world_x - pos.x
+        local offset_y = source_tile_world_y - pos.y
+
+        print(string.format("[TILE_PLATFORM] Source tiles start at world (%.0f, %.0f), GO at (%.0f, %.0f), offset=(%.0f, %.0f)",
+            source_tile_world_x, source_tile_world_y, pos.x, pos.y, offset_x, offset_y))
+
+        -- Snap GO position to align with tile grid so tiles render at correct position
+        self.snap_dx = 0
+        self.snap_dy = 0
+        if math.abs(offset_x) > 0.1 or math.abs(offset_y) > 0.1 then
+            local snapped_pos = vmath.vector3(source_tile_world_x, source_tile_world_y, pos.z)
+            go.set_position(snapped_pos)
+
+            local snap_dx = snapped_pos.x - pos.x
+            local snap_dy = snapped_pos.y - pos.y
+            self.snap_dx = snap_dx
+            self.snap_dy = snap_dy
+            pos = snapped_pos
+
+            -- Update movement origin to snapped position
+            self.start = v3(snapped_pos)
+            self.last_pos = v3(snapped_pos)
+            self.spawn_pos = v3(snapped_pos)
+
+            -- Update center for circular motion if needed
+            self.center = v3(self.start.x + self.width / 2, self.start.y + self.height / 2, self.start.z)
+
+            print(string.format("[TILE_PLATFORM] SNAPPED GO position to (%.0f, %.0f) to align with tile grid",
+                snapped_pos.x, snapped_pos.y))
+        end
+    end
+
+    -- Tile transfer helper writes to the platform tilemap after scanning.
+    tiles_copied = transfer.tiles_copied or 0
+
+    -- Verify tiles were actually written to the platform tilemap
+    if tiles_copied > 0 and actual_min_tx and actual_min_ty then
+        local verified = 0
+        for _, tile_data in ipairs(tiles_to_copy) do
+            local local_tx = (tile_data.tx - actual_min_tx) + plat_origin_x
+            local local_ty = (tile_data.ty - actual_min_ty) + plat_origin_y
+            local ok_v, read_tile = pcall(tilemap.get_tile, platform_tilemap, platform_layer, local_tx, local_ty)
+            if ok_v and read_tile == tile_data.tile_id then
+                verified = verified + 1
+            end
+        end
+        if verified < tiles_copied then
+            print(string.format("[TILE_PLATFORM] WARNING: Only %d/%d tiles verified on platform tilemap! Re-writing...",
+                verified, tiles_copied))
+            -- Re-write tiles directly
+            local rewritten = 0
+            for _, tile_data in ipairs(tiles_to_copy) do
+                local local_tx = (tile_data.tx - actual_min_tx) + plat_origin_x
+                local local_ty = (tile_data.ty - actual_min_ty) + plat_origin_y
+                local ok_current, current_tile = pcall(
+                    tilemap.get_tile,
+                    platform_tilemap,
+                    platform_layer,
+                    local_tx,
+                    local_ty
+                )
+                local ok_set = ok_current and current_tile == tile_data.tile_id
+                if not ok_set then
+                    ok_set = pcall(
+                        tilemap.set_tile,
+                        platform_tilemap,
+                        platform_layer,
+                        local_tx,
+                        local_ty,
+                        tile_data.tile_id
+                    )
+                end
+                if ok_set then
+                    rewritten = rewritten + 1
+                else
+                    print(string.format("[TILE_PLATFORM] ERROR: Failed to write tile %d to (%d,%d)",
+                        tile_data.tile_id, local_tx, local_ty))
+                end
+            end
+            tiles_copied = rewritten
+            print(string.format("[TILE_PLATFORM] Re-write result: %d tiles", rewritten))
+        else
+            print(string.format("[TILE_PLATFORM] Verified %d tiles on platform tilemap", verified))
+        end
+    elseif #tiles_to_copy > 0 and tiles_copied == 0 then
+        print(string.format("[TILE_PLATFORM] ERROR: Found %d tiles to copy but none were written! Bounds: actual_min=(%s,%s)",
+            #tiles_to_copy, tostring(actual_min_tx), tostring(actual_min_ty)))
+    end
+    
+    -- If we found actual visible tiles, update stored dimensions for movement calculations
+    -- NOTE: Collision shapes are now generated at build time by hooks.editor_script
+    -- so we don't need to resize them at runtime
+    if tiles_copied > 0 and actual_min_tx and actual_max_tx then
+        local visible_tiles_wide = actual_max_tx - actual_min_tx + 1
+        local visible_tiles_tall = actual_max_ty - actual_min_ty + 1
+        local visible_width = visible_tiles_wide * TILE_W
+        local visible_height = visible_tiles_tall * TILE_H
+
+        print(string.format("[TILE_PLATFORM] Visible tiles: %d x %d = %d x %d pixels",
+            visible_tiles_wide, visible_tiles_tall, visible_width, visible_height))
+
+        -- Update stored dimensions for movement calculations
+        self.half_w = visible_width / 2
+        self.half_h = visible_height / 2
+
+        -- Debug: Show world-space bounds
+        local world_pos = go.get_world_position()
+        print(string.format("[TILE_PLATFORM] WORLD: GO=(%.0f,%.0f), size=(%dx%d)",
+            world_pos.x, world_pos.y, visible_width, visible_height))
+    end
+
+    if tiles_copied > 0 and self.waypoints and #self.waypoints > 0 then
+        align_waypoints_to_start(self)
+    end
+
+    if tiles_copied > 0 then
+        self.cleared_tiles = room_tiles_to_clear
+        self.pending_room_tilemap = room_tilemap_url
+        self.pending_room_tile_clear = room_tiles_to_clear
+        self.pending_room_tile_clear_attempts = 0
+        pcall(require("mvtk.core.util").post_component_enabled, platform_tilemap, true)
+        retry_room_tile_clear(self, true)
+    else
+        -- Hide the single-layer platform component without broadcasting a
+        -- tile-grid visibility message to its sibling collision components.
+        pcall(require("mvtk.core.util").post_component_enabled, platform_tilemap, false)
+        local platform_id = hash_to_string(self.platform_id) or tostring(go.get_id())
+        print(string.format(
+            "[TILE_PLATFORM] WARNING: moving_platform '%s': no tiles found under its rectangle on the 'environment' layer — draw platform tiles there in Tiled or the platform will be invisible.",
+            tostring(platform_id)
+        ))
+    end
+
+    -- Store original tile positions for potential restoration
+    self.source_tilemap = room_tilemap_url
+    self.source_tile_min_x = min_tx
+    self.source_tile_min_y = min_ty
+    self.source_tilemap_pos = tilemap_pos
+    
+    print(string.format("[TILE_PLATFORM] Copied %d tiles from room tilemap", tiles_copied))
+    return tiles_copied > 0
+end
+
+function init(self)
+    self.start = go.get_position()
+    self.spawn_pos = v3(self.start)
+    -- For circular motion, center is at platform center (offset from bottom-left corner)
+    self.center = v3(self.start.x + self.width/2, self.start.y + self.height/2, self.start.z)
+    self.t = 0
+    self.dir = 1
+    self.last_pos = v3(self.start)
+    self.waiting = false
+    self.waypoints = nil
+    self.waypoints_snapped = false
+    self.waypoints_aligned = false
+    self.snap_dx = 0
+    self.snap_dy = 0
+    self.current_waypoint = 1
+    self.tiles_initialized = false
+    self.tiles_ready = false
+    self.passenger_carrier = PassengerCarrier.new()
+    self.active = true
+    self.pending_start = false
+    self.completed = false
+    self.start_timer = nil
+    self.use_new_controls = false
+    self.loop_specified = false
+    self.one_way_specified = false
+    self.wait_time_specified = false
+    self.pending_room_tilemap = nil
+    self.pending_room_tile_clear = nil
+    self.pending_room_tile_clear_attempts = 0
+
+    local room_name = hash_to_string(self.room_id)
+    if room_name then
+        apply_platform_props_from_map(self, room_name)
+    end
+    self.trigger_armed = not has_trigger_gate(self)
+    self.start_delay_remaining = tonumber(self.start_delay) or 0
+    if not self.enabled then
+        self.active = false
+    elseif self.use_new_controls then
+        self.active = (tonumber(self.wait_time) or 0) <= 0
+    end
+    if not self.trigger_armed or self.start_delay_remaining > 0 then
+        self.active = false
+    end
+
+    -- Debug: Log all received factory properties
+    print(string.format("[TILE_PLATFORM] ===== INIT ====="))
+    print(string.format("[TILE_PLATFORM] platform_id: %s", tostring(self.platform_id)))
+    print(string.format("[TILE_PLATFORM] Position: (%.0f, %.0f)", self.start.x, self.start.y))
+    print(string.format("[TILE_PLATFORM] platform_type: %s (hash: %s)", tostring(self.platform_type), type(self.platform_type)))
+    print(string.format("[TILE_PLATFORM] path_dx: %.1f, path_dy: %.1f", self.path_dx or 0, self.path_dy or 0))
+    print(string.format("[TILE_PLATFORM] duration: %.2f, wait: %.2f", self.duration or 0, self.wait or 0))
+    print(string.format("[TILE_PLATFORM] size: %dx%d, room: %s", self.width, self.height, tostring(self.room_id)))
+    print(string.format("[TILE_PLATFORM] loop_mode: %s", tostring(self.loop_mode)))
+
+    -- Collision objects are baked into a parented child GO by the editor. Its
+    -- relay script forwards collision/trigger responses back to this root.
+
+    -- Store half-sizes for collision and tile calculations
+    self.half_w = self.width / 2
+    self.half_h = self.height / 2
+
+    -- Configure movement based on platform_type (only set defaults if not provided)
+    local platform_type_str = self.platform_type
+    if platform_type_str == "horizontal" and (self.path_dx == 0 or self.path_dx == nil) then
+        self.path_dx = 200
+        print("[TILE_PLATFORM] Using default horizontal distance: 200")
+    elseif platform_type_str == "vertical" and (self.path_dy == 0 or self.path_dy == nil) then
+        self.path_dy = 200
+        print("[TILE_PLATFORM] Using default vertical distance: 200")
+    elseif platform_type_str == "circular" then
+        if self.radius == 0 then self.radius = 100 end
+        -- center already set above
+    end
+
+    if platform_type_str ~= "path" then
+        local distance = math.sqrt((self.path_dx or 0) * (self.path_dx or 0) + (self.path_dy or 0) * (self.path_dy or 0))
+        apply_speed_override(self, distance, "linear")
+    end
+
+    print(string.format("[TILE_PLATFORM] Final movement: dx=%.0f dy=%.0f dur=%.2f",
+        self.path_dx or 0, self.path_dy or 0, self.duration or 0))
+
+    local path_name = self.path_name_str or normalize_path_name(hash_to_string(self.path_name))
+    local wants_path = self.platform_type == "path"
+    self.is_path = wants_path
+    if wants_path or path_name then
+        try_resolve_path(self)
+        if wants_path and not path_name then
+            print("[TILE_PLATFORM] WARNING: platform_type is path but path_name is empty")
+        end
+    end
+
+    if self.tiles_baked then
+        -- Painted cells are already in the platform resource. Clear the room
+        -- copy when streaming has made the room available, before any motion.
+        return
+    end
+
+    -- Legacy resources contain tile:0 capacity cells, which render real art.
+    -- Clear them immediately; runtime tile id 0 is the documented empty value.
+    TileTransfer.clear_tilemap_layer(self.platform_tilemap_url, hash("solid"))
+
+    -- Delay tile copying to ensure room tilemap is loaded
+    timer.delay(0.1, false, function()
+        local success = copy_tiles_from_room(self)
+        self.tiles_initialized = success
+        self.tiles_ready = success
+        if not success then
+            -- Retry once more with a longer delay
+            timer.delay(0.5, false, function()
+                success = copy_tiles_from_room(self)
+                self.tiles_initialized = success
+                self.tiles_ready = success
+                if success then
+                    print("[TILE_PLATFORM] Tile copy succeeded on retry")
+                else
+                    print("[TILE_PLATFORM] ERROR: Tile copy failed after retry")
+                end
+            end)
+        end
+    end)
+end
+
+function update(self, dt)
+    dt = FrameClock.snap(dt)
+    if self.tiles_baked and not self.tiles_initialized then
+        self.tiles_initialized = initialize_baked_tiles(self)
+        self.tiles_ready = self.tiles_initialized
+        if not self.tiles_initialized then return end
+        align_waypoints_to_start(self)
+    end
+    if self.pending_room_tile_clear then
+        retry_room_tile_clear(self, false)
+    end
+    if self.start_delay_remaining and self.start_delay_remaining > 0 then
+        self.start_delay_remaining = math.max(0, self.start_delay_remaining - dt)
+        if self.start_delay_remaining > 0 then
+            return
+        end
+        if self.use_new_controls and self.trigger_armed then
+            self.active = (tonumber(self.wait_time) or 0) <= 0
+        end
+    end
+    if not movement_ready(self) then
+        return
+    end
+    if self.waiting then
+        return
+    end
+    if self.is_path and not self.tiles_ready then
+        return
+    end
+
+    local dur = math.max(0.0001, self.duration or 2.0)
+
+    if self.use_new_controls then
+        if not self.active then
+            return
+        end
+
+        if self.loop then
+            if self.one_way then
+                self.t = self.t + dt
+                if self.t >= dur then
+                    self.t = self.t % dur
+                end
+            else
+                if self.dir > 0 then
+                    self.t = self.t + dt
+                    if self.t >= dur then
+                        self.t = dur
+                        self.dir = -1
+                        start_wait(self)
+                    end
+                else
+                    self.t = self.t - dt
+                    if self.t <= 0 then
+                        self.t = 0
+                        self.dir = 1
+                        start_wait(self)
+                    end
+                end
+            end
+        else
+            if self.one_way then
+                self.t = self.t + dt
+                if self.t >= dur then
+                    self.t = dur
+                    self.active = false
+                    self.completed = true
+                end
+            else
+                if self.dir > 0 then
+                    self.t = self.t + dt
+                    if self.t >= dur then
+                        self.t = dur
+                        self.dir = -1
+                        start_wait(self)
+                    end
+                else
+                    self.t = self.t - dt
+                    if self.t <= 0 then
+                        self.t = 0
+                        self.dir = 1
+                        self.active = false
+                        self.completed = true
+                    end
+                end
+            end
+        end
+    else
+        -- Update time based on legacy loop mode
+        if self.loop_mode == "loop" or self.platform_type == "circular" then
+            self.t = self.t + dt
+            if self.t >= dur then
+                self.t = self.t - dur
+            end
+        elseif self.loop_mode == "once" then
+            if self.dir > 0 then
+                self.t = math.min(self.t + dt, dur)
+            end
+        else  -- pingpong (default)
+            if self.dir > 0 then
+                self.t = self.t + dt
+                if self.t >= dur then
+                    self.t = dur
+                    self.dir = -1
+                    start_wait(self)
+                end
+            else
+                self.t = self.t - dt
+                if self.t <= 0 then
+                    self.t = 0
+                    self.dir = 1
+                    start_wait(self)
+                end
+            end
+        end
+    end
+
+    local t01 = self.t / dur
+    local target_pos
+
+    -- Calculate position based on platform type
+    local is_circular = self.platform_type == "circular"
+    local is_path = self.platform_type == "path" and self.waypoints
+
+    if is_circular then
+        target_pos = move_circular(self, t01)
+    elseif is_path then
+        target_pos = move_path(self, t01)
+    else
+        -- Linear (horizontal/vertical) - default fallback
+        target_pos = move_linear(self, t01)
+    end
+
+    move_to(self, target_pos)
+end
+
+function on_message(self, message_id, message, sender)
+    if message_id == hash("trigger_response") then
+        local entity = message.other_id or sender
+        local other_group = message.other_group or message.group
+        if other_group == C.GROUPS.PLAYER or other_group == C.GROUPS.ENEMY then
+            if message.enter then
+                self.passenger_carrier:add(entity, other_group)
+                if self.use_new_controls then
+                    request_start(self)
+                end
+            else
+                self.passenger_carrier:remove(entity)
+                if self.use_new_controls and self.pending_start and not has_passengers(self) then
+                    cancel_start_timer(self)
+                end
+            end
+        end
+    elseif message_id == hash("collision_response") then
+        -- handled by trigger_response
+    elseif ToggleMessages.handle(self, message_id, message, apply_enabled, { truthy = true }) then
+    elseif message_id == hash("trigger") or message_id == hash("activate") then
+        if has_trigger_gate(self) then
+            self.trigger_armed = true
+            if self.use_new_controls and (tonumber(self.start_delay_remaining) or 0) <= 0 then
+                self.active = (tonumber(self.wait_time) or 0) <= 0
+            end
+        end
+    elseif message_id == hash("deactivate") then
+        if has_trigger_gate(self) then
+            self.trigger_armed = false
+            self.active = false
+        end
+    elseif message_id == hash("set_waypoints") then
+        if message.waypoints and type(message.waypoints) == "table" then
+            self.waypoints = message.waypoints
+            self.platform_type = "path"
+            print(string.format("[TILE_PLATFORM] Set %d waypoints for path motion", #self.waypoints))
+        end
+    elseif message_id == hash("set_center") then
+        if message.x and message.y then
+            self.center = v3(message.x, message.y, self.start.z)
+        end
+    elseif message_id == MSG_GET_PLATFORM_INFO then
+        pcall(msg.post, sender, MSG_PLATFORM_INFO, {
+            platform_id = self.platform_id,
+            room_id = self.room_id,
+            enabled = self.enabled,
+            active = self.active,
+        })
+    end
+end

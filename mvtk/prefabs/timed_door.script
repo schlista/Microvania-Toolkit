@@ -1,0 +1,205 @@
+-- mvtk/prefabs/timed_door.script
+-- Door that opens temporarily when activated.
+
+local TriggerBus = require "mvtk.world.trigger_bus"
+local PU = require "mvtk.prefabs.prefab_utils"
+local Util = require "mvtk.core.util"
+local ok_debug, Debug = pcall(require, "developer.config.debug_config")
+if not ok_debug or type(Debug) ~= "table" then
+    Debug = { global = {}, rooms = {} }
+end
+
+local DEFAULT_ON = "activate"
+local DEFAULT_OFF = "deactivate"
+local MSG_FORCE_OFF = hash("mvtk_force_off")
+
+local function door_log(...)
+    if (Debug.global and Debug.global.enable) or (Debug.rooms and Debug.rooms.door_debug) then
+        print("[TIMED_DOOR]", ...)
+    end
+end
+
+local function to_bool(value, default)
+    if value == nil then return default end
+    if value == true or value == false then return value end
+    if type(value) == "number" then
+        return value ~= 0
+    end
+    local s = PU.normalize_hash_string(value)
+    if s then
+        local lower = s:lower()
+        if lower == "true" or lower == "1" or lower == "yes" or lower == "on" then
+            return true
+        end
+        if lower == "false" or lower == "0" or lower == "no" or lower == "off" then
+            return false
+        end
+    end
+    return default
+end
+
+local function resolve_message_id(value, fallback)
+    local s = PU.normalize_hash_string(value)
+    return hash(s or fallback)
+end
+
+go.property("door_id", "")
+go.property("open_duration", 2.5)
+go.property("starts_open", false)
+go.property("auto_close", true)
+go.property("close_on_release", false)
+go.property("message_on", "")
+go.property("message_off", "")
+go.property("sound_open", "")
+go.property("sound_close", "")
+go.property("hide_when_open", true)
+go.property("room_id", "")
+go.property("show_sprite", true) -- false when the Tiled layer owns the visible art
+
+local function set_collision_enabled(on)
+    local url = msg.url(nil, go.get_id(), hash("co"))
+    -- Recorded so a room hide/show cannot re-enable an open door's collision.
+    pcall(Util.post_component_enabled, url, on)
+end
+
+local function set_sprite_enabled(self, on)
+    require("mvtk.tiled.object_presentation").visible(on)
+    local url = msg.url(nil, go.get_id(), hash("sprite"))
+    Util.set_component_enabled(url, on and self.show_sprite)
+end
+
+local close_after
+
+local function open(self, reason)
+    if self.is_open then
+        if self.auto_close and (tonumber(self.open_duration) or 0) > 0 then
+            close_after(self, tonumber(self.open_duration) or 0)
+        end
+        door_log(string.format("open(ignored): id=%s reason=%s auto_close=%s duration=%.2f",
+            tostring(self.door_id_key), tostring(reason), tostring(self.auto_close), tonumber(self.open_duration) or 0))
+        return
+    end
+    self.is_open = true
+    if reason == "init" then
+        require("mvtk.tiled.object_presentation").restore("opened")
+    else
+        require("mvtk.tiled.object_presentation").emit("opened", "opened")
+    end
+    door_log(string.format("open: id=%s reason=%s auto_close=%s duration=%.2f",
+        tostring(self.door_id_key), tostring(reason), tostring(self.auto_close), tonumber(self.open_duration) or 0))
+    set_collision_enabled(false)
+    if self.hide_when_open then
+        set_sprite_enabled(self, false)
+    end
+    PU.play_sound(self.sound_open, { room_id = self.room_id })
+
+    if self.auto_close then
+        close_after(self, tonumber(self.open_duration) or 0)
+    end
+end
+
+local function close(self, reason)
+    if not self.is_open then return end
+    self.is_open = false
+    require("mvtk.tiled.object_presentation").restore("closed")
+    door_log(string.format("close: id=%s reason=%s close_on_release=%s",
+        tostring(self.door_id_key), tostring(reason), tostring(self.close_on_release)))
+    if self._close_timer then
+        timer.cancel(self._close_timer)
+        self._close_timer = nil
+    end
+    set_collision_enabled(true)
+    if self.hide_when_open then
+        set_sprite_enabled(self, true)
+    end
+    PU.play_sound(self.sound_close, { room_id = self.room_id })
+
+    if reason ~= "timer" then
+        self.last_lever_sender = nil
+    end
+
+    -- If this door auto-closed from its timer after lever activation,
+    -- tell that lever to reset its visual/logical state.
+    if reason == "timer" and self.last_lever_sender then
+        pcall(msg.post, self.last_lever_sender, MSG_FORCE_OFF, {
+            door_id = self.door_id_key,
+            reason = "timed_door_auto_close",
+        })
+        self.last_lever_sender = nil
+    end
+end
+
+close_after = function(self, duration)
+    if self._close_timer then
+        timer.cancel(self._close_timer)
+        self._close_timer = nil
+    end
+    if duration <= 0 then return end
+    self._close_timer = timer.delay(duration, false, function()
+        self._close_timer = nil
+        close(self, "timer")
+    end)
+end
+
+function init(self)
+    self.door_id_key = PU.resolve_id(self.door_id) or tostring(go.get_id())
+    self.msg_on = resolve_message_id(self.message_on, DEFAULT_ON)
+    self.msg_off = resolve_message_id(self.message_off, DEFAULT_OFF)
+    self.open_duration = tonumber(self.open_duration) or 2.5
+    self.starts_open = to_bool(self.starts_open, false)
+    self.auto_close = to_bool(self.auto_close, true)
+    self.close_on_release = to_bool(self.close_on_release, false)
+    self.hide_when_open = to_bool(self.hide_when_open, true)
+    self.is_open = false
+    self.last_lever_sender = nil
+
+    TriggerBus.register(self.door_id_key, msg.url())
+    door_log(string.format("init: id=%s auto_close=%s close_on_release=%s starts_open=%s duration=%.2f",
+        tostring(self.door_id_key), tostring(self.auto_close), tostring(self.close_on_release),
+        tostring(self.starts_open), tonumber(self.open_duration) or 0))
+
+    if self.starts_open then
+        open(self, "init")
+    else
+        require("mvtk.tiled.object_presentation").restore("closed")
+        close(self, "init")
+    end
+end
+
+function final(self)
+    TriggerBus.unregister(self.door_id_key, msg.url())
+    if self._close_timer then
+        timer.cancel(self._close_timer)
+        self._close_timer = nil
+    end
+end
+
+function on_message(self, message_id, message, sender)
+    if message_id == self.msg_on or message_id == hash("open") then
+        door_log(string.format("on_message: id=%s msg=on sender=%s",
+            tostring(self.door_id_key), tostring(sender)))
+        if message and message.lever_id then
+            self.last_lever_sender = sender
+        else
+            self.last_lever_sender = nil
+        end
+        open(self, "signal")
+    elseif message_id == self.msg_off or message_id == hash("close") then
+        door_log(string.format("on_message: id=%s msg=off sender=%s",
+            tostring(self.door_id_key), tostring(sender)))
+        -- A lever switched off is an explicit request: a toggle lever's door
+        -- follows it. Pressure plates only close it when close_on_release.
+        local lever_off = message and message.lever_id ~= nil and message.state == "off"
+        if self.close_on_release or lever_off then
+            close(self, "signal")
+        end
+    elseif message_id == hash("toggle") then
+        door_log(string.format("on_message: id=%s msg=toggle sender=%s",
+            tostring(self.door_id_key), tostring(sender)))
+        if self.is_open then
+            close(self, "toggle")
+        else
+            open(self, "toggle")
+        end
+    end
+end

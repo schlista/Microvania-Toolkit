@@ -1,0 +1,143 @@
+local Viewport = require "mvtk.ui.viewport"
+local C = require "mvtk.core.constants"
+
+local MSG_PLAY = hash("play_test_clip")
+local MSG_STOP = hash("stop_test_clip")
+local MSG_DONE = hash("video_done")
+
+local function clamp01(v)
+    if v < 0 then return 0 end
+    if v > 1 then return 1 end
+    return v
+end
+
+local function set_alpha(node, a)
+    local c = gui.get_color(node)
+    c.w = clamp01(a)
+    gui.set_color(node, c)
+end
+
+local function set_visible(self, visible)
+    gui.set_enabled(self.overlay, visible)
+    gui.set_enabled(self.band, visible)
+    gui.set_enabled(self.title, visible)
+    gui.set_enabled(self.subtitle, visible)
+end
+
+local function layout(self)
+    local w, h = Viewport.design_size()
+    self._w = w
+    self._h = h
+
+    gui.set_position(self.overlay, vmath.vector3(w * 0.5, h * 0.5, 0))
+    gui.set_size(self.overlay, vmath.vector3(w, h, 0))
+
+    gui.set_size(self.band, vmath.vector3(math.max(120, w * 0.28), math.max(20, h * 0.03), 0))
+    gui.set_position(self.band, vmath.vector3(-w * 0.2, h * 0.35, 0))
+
+    gui.set_position(self.title, vmath.vector3(w * 0.5, h * 0.68, 0))
+    gui.set_position(self.subtitle, vmath.vector3(w * 0.5, h * 0.18, 0))
+end
+
+local function finish_clip(self, canceled)
+    if not self.active then
+        return
+    end
+    self.active = false
+    set_visible(self, false)
+
+    local done_target = self.done_target or msg.url("main:/cutscene_manager#cutscene")
+    pcall(msg.post, done_target, MSG_DONE, {
+        clip_id = self.clip_id or "",
+        canceled = canceled and true or false,
+    })
+end
+
+function init(self)
+    self.overlay = gui.new_box_node(vmath.vector3(0, 0, 0), vmath.vector3(1, 1, 0))
+    self.band = gui.new_box_node(vmath.vector3(0, 0, 0), vmath.vector3(1, 1, 0))
+    self.title = gui.new_text_node(vmath.vector3(0, 0, 0), "CUTSCENE TEST CLIP")
+    self.subtitle = gui.new_text_node(vmath.vector3(0, 0, 0), "Trigger auto-play validation")
+
+    gui.set_pivot(self.overlay, gui.PIVOT_CENTER)
+    gui.set_color(self.overlay, vmath.vector4(0, 0, 0, 0.0))
+
+    gui.set_pivot(self.band, gui.PIVOT_CENTER)
+    gui.set_color(self.band, vmath.vector4(1.0, 0.75, 0.2, 0.0))
+
+    gui.set_pivot(self.title, gui.PIVOT_CENTER)
+    gui.set_font(self.title, "system")
+    gui.set_color(self.title, vmath.vector4(1, 1, 1, 0.0))
+    gui.set_scale(self.title, vmath.vector3(1.5, 1.5, 1))
+
+    gui.set_pivot(self.subtitle, gui.PIVOT_CENTER)
+    gui.set_font(self.subtitle, "system")
+    gui.set_color(self.subtitle, vmath.vector4(0.95, 0.95, 0.95, 0.0))
+    gui.set_scale(self.subtitle, vmath.vector3(1.0, 1.0, 1))
+
+    self.active = false
+    self.t = 0
+    self.duration = 2.4
+    self.done_target = nil
+    self.clip_id = ""
+
+    layout(self)
+    set_visible(self, false)
+
+    if C and C.set_url then
+        C.set_url("CUTSCENE_VIDEO", msg.url())
+    end
+end
+
+function update(self, dt)
+    if not self.active then
+        return
+    end
+
+    self.t = self.t + dt
+    local p = clamp01(self.t / math.max(0.01, self.duration))
+
+    local fade = 1.0
+    if p < 0.14 then
+        fade = p / 0.14
+    elseif p > 0.86 then
+        fade = (1.0 - p) / 0.14
+    end
+    fade = clamp01(fade)
+
+    set_alpha(self.overlay, 0.84 * fade)
+    set_alpha(self.band, 0.94 * fade)
+    set_alpha(self.title, 1.00 * fade)
+    set_alpha(self.subtitle, 0.92 * fade)
+
+    local w = self._w or 1280
+    local h = self._h or 720
+    local x = (-w * 0.20) + (w * 1.40 * p)
+    local y = (h * 0.35) + math.sin(self.t * 6.0) * (h * 0.012)
+    gui.set_position(self.band, vmath.vector3(x, y, 0))
+
+    if p > 0.45 then
+        gui.set_text(self.subtitle, "Video step finished -> controls should return")
+    end
+
+    if p >= 1.0 then
+        finish_clip(self, false)
+    end
+end
+
+function on_message(self, message_id, message, sender)
+    if message_id == MSG_PLAY then
+        layout(self)
+        self.t = 0
+        self.active = true
+        self.duration = math.max(0.4, tonumber(message and (message.duration or message.t)) or 2.4)
+        self.done_target = (message and (message.done or message.done_url)) or sender or msg.url("main:/cutscene_manager#cutscene")
+        self.clip_id = tostring((message and (message.id or message.clip_id)) or "cutscene_test_clip")
+
+        gui.set_text(self.title, tostring((message and message.title) or "CUTSCENE TEST CLIP"))
+        gui.set_text(self.subtitle, tostring((message and (message.subtitle or message.caption)) or "Trigger auto-play validation"))
+        set_visible(self, true)
+    elseif message_id == MSG_STOP then
+        finish_clip(self, true)
+    end
+end

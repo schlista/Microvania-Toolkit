@@ -1,0 +1,24 @@
+script: "/mvtk/ui/letterbox_bars.gui_script"
+nodes {
+  type: TYPE_BOX
+  id: "left"
+  enabled: false
+}
+nodes {
+  type: TYPE_BOX
+  id: "right"
+  enabled: false
+}
+nodes {
+  type: TYPE_BOX
+  id: "bottom"
+  enabled: false
+}
+nodes {
+  type: TYPE_BOX
+  id: "top"
+  enabled: false
+}
+material: "/builtins/materials/gui.material"
+adjust_reference: ADJUST_REFERENCE_DISABLED
+max_nodes: 4

@@ -1,0 +1,238 @@
+-- boot/simple_manager.script
+-- Minimal two-mode loader (Game / Editor) using collectionproxy
+
+-- Consume a pending editor reset before any boot GUI can load settings, save
+-- slots, or Layout Editor autosave state. Keeping this ahead of every other
+-- require is intentional: both collection proxies are launched from here.
+local ResetMarker = require "mvtk.core.reset_marker"
+local reset_call_ok, reset_consumed_or_error, reset_report = pcall(ResetMarker.consume, {
+  max_slots = ResetMarker.DEFAULT_MAX_SLOTS,
+})
+if not reset_call_ok then
+  error("[RESET] Could not consume the pending project reset marker: "
+    .. tostring(reset_consumed_or_error), 0)
+end
+if reset_report and #(reset_report.failed or {}) > 0 then
+  error("[RESET] Saved project state could not be cleared; the reset marker was retained: "
+    .. tostring(reset_report.failed[1]), 0)
+end
+
+print("[BOOT] simple_manager.script loading...")
+
+local Debug = require('developer.config.debug_config')
+local Util = require('mvtk.core.util')
+local Pause = require "mvtk.core.pause"
+-- Register completion before any slot is loaded, including completed Continue.
+local Completion=require "mvtk.game.completion"
+
+-- Apply debug_config.lua to the Logger module-level filters at boot.
+-- This is what makes Logger.get_logger("FOO").debug() actually respect
+-- developer/config/debug_config.lua flags. Failures are silent and
+-- non-fatal -- Logger keeps its INFO-level defaults.
+local _logger_ok, Logger = pcall(require, "mvtk.core.logger")
+if _logger_ok and Logger and Logger.configure_from_debug_config then
+    pcall(Logger.configure_from_debug_config, Debug)
+end
+
+print("[BOOT] Debug.boot.skip_menu =", tostring(Debug.boot and Debug.boot.skip_menu))
+
+local GAME_CP   = hash("game_cp")
+local EDITOR_CP = hash("editor_cp")
+
+local function L(...)
+  if Debug.global.enable or Debug.boot.simple_manager then
+    print('[BOOT_SIMPLE]', ...)
+  end
+end
+
+local function cp_url(id)
+  return msg.url(nil, go.get_id(), id)
+end
+
+local function hide_start_screen()
+  L("Hiding start screen")
+  pcall(msg.post, "/start_screen#gui", hash("hide_start_screen"), {})
+end
+
+local function show_start_screen()
+  L("Showing start screen")
+  pcall(msg.post, "/start_screen#gui", hash("show_start_screen"), {})
+end
+
+local function hide_save_slots()
+  L("Hiding save slots")
+  pcall(msg.post, "/save_slots#gui", hash("hide_save_slots"), {})
+end
+
+local function show_save_slots()
+  L("Showing save slots")
+  pcall(msg.post, "/save_slots#gui", hash("show_save_slots"), {})
+end
+
+local function show_home_screen()
+  hide_save_slots()
+  show_start_screen()
+end
+
+local function show_boot_menu()
+  print("[BOOT_SIMPLE] show_boot_menu() redirected to home screen")
+  show_home_screen()
+end
+
+local function request_load(self, which)
+  if self.active then return end
+  self.target = which
+  -- Watchdog: stamp the time we asked the proxy to load. update() compares
+  -- elapsed time against LOAD_TIMEOUT_S and logs a warning if we never see
+  -- the matching `proxy_loaded` message (e.g. asset hung, missing collection).
+  self._load_started_at = (socket and socket.gettime and socket.gettime()) or os.clock()
+  self._load_warned = false
+  L("Loading", which == GAME_CP and "Game" or "Editor")
+  msg.post(cp_url(which), "load")
+end
+
+local function enable(self, which)
+  self.active = which
+  L("Enabling", which == GAME_CP and "Game" or "Editor")
+  msg.post(cp_url(which), "enable")
+  if which == GAME_CP then
+    Completion.begin_session()
+    Pause.reset()
+    Pause.bind_proxy(cp_url(which))
+  end
+end
+
+local function disable_and_unload(self)
+  Completion.active=false
+  if not self.active then return end
+  Pause.reset()
+  Pause.bind_proxy(nil)
+  local u = cp_url(self.active)
+  msg.post(u, "disable")
+  msg.post(u, "unload")
+  self.active = nil
+end
+
+function init(self)
+  self.active = nil
+  self.game_proxy = GAME_CP
+  msg.post(".", "acquire_input_focus")
+  -- Load persisted gameplay settings and apply to Gamefeel
+  local Settings = Util.require_module('mvtk.core.settings')
+  if Settings then Settings.load(); Settings.apply_gamefeel() end
+
+  -- Cache the menu manager (if loaded) so the watchdog tick below stays
+  -- on the hot path. Optional dependency: missing module just disables the
+  -- watchdog without affecting boot.
+  self._menu_manager = nil
+  local ok_mm, MenuManager = pcall(require, "mvtk.ui.menu_manager")
+  if ok_mm and type(MenuManager) == "table" and type(MenuManager.tick) == "function" then
+    self._menu_manager = MenuManager
+  end
+
+  -- Check for skip_menu debug option
+  if Debug.boot and Debug.boot.skip_menu then
+    L("Skipping menu - auto-starting game")
+    request_load(self, self.game_proxy or GAME_CP)
+  else
+    show_home_screen()
+    timer.delay(0, false, function()
+      show_home_screen()
+      L("Home screen reasserted after init")
+    end)
+    L("Home screen ready")
+  end
+end
+
+-- Drive the MenuManager stuck-menu watchdog. Cheap when no menu is open
+-- (early-return inside MenuManager.tick), so safe to call every frame.
+-- Also drives the load-timeout watchdog: if a proxy `load` was posted and
+-- the matching `proxy_loaded` never arrived inside LOAD_TIMEOUT_S, log a
+-- one-shot warning so the developer sees that the boot is stuck rather
+-- than staring at a blank screen.
+local LOAD_TIMEOUT_S = 15.0
+function update(self, dt)
+  if self.active == GAME_CP then Pause.update(dt, true) end
+  if self._menu_manager then
+    pcall(self._menu_manager.tick, dt)
+  end
+  if self.target and self._load_started_at and not self._load_warned then
+    local now = (socket and socket.gettime and socket.gettime()) or os.clock()
+    if (now - self._load_started_at) >= LOAD_TIMEOUT_S then
+      self._load_warned = true
+      L(string.format("WARN: proxy '%s' did not finish loading after %.1fs (no proxy_loaded received)",
+        tostring(self.target), LOAD_TIMEOUT_S))
+    end
+  end
+end
+
+function on_message(self, message_id, message, sender)
+  if message_id==hash("completion_freeze") then
+    -- Freeze physics/timers while the boot GUI and sound mixer keep running.
+    Pause.bind_proxy(nil)
+    if self.active then msg.post(cp_url(self.active),"set_time_step",{factor=0,mode=0}) end
+    return
+  elseif message_id==hash("completion_resume") then
+    if self.active then
+      msg.post(cp_url(self.active),"set_time_step",{factor=1,mode=0})
+      Pause.bind_proxy(cp_url(self.active))
+    end
+    return
+  end
+  if message_id == hash("start_game") then
+    hide_start_screen()
+    show_save_slots()
+
+  elseif message_id == hash("start_game_now") then
+    -- Actually load the game (from save slot selection)
+    hide_save_slots()
+    hide_start_screen()
+    request_load(self, self.game_proxy or GAME_CP)
+
+  elseif message_id == hash("back_to_main_menu") then
+    print("[BOOT_SIMPLE] on_message back_to_main_menu")
+    show_home_screen()
+
+  elseif message_id == hash("show_boot_menu") then
+    print("[BOOT_SIMPLE] on_message show_boot_menu")
+    show_boot_menu()
+
+  elseif message_id == hash("start_editor") then
+    hide_save_slots()
+    hide_start_screen()
+    request_load(self, EDITOR_CP)
+
+  elseif message_id == hash("menu_show") then
+    print("[BOOT_SIMPLE] on_message menu_show")
+    disable_and_unload(self)
+    show_home_screen()
+  elseif message_id == hash("menu_hide") then
+    print("[BOOT_SIMPLE] on_message menu_hide")
+    show_home_screen()
+
+  elseif message_id == hash("back_to_menu") then
+    disable_and_unload(self)
+    show_home_screen()
+
+  elseif message_id == hash("proxy_loaded") then
+    if sender and sender.fragment == (self.target or hash("") ) then
+      enable(self, self.target)
+      -- Make sure the title screen and save slots are hidden after enabling
+      hide_start_screen()
+      hide_save_slots()
+      self.target = nil
+      self._load_started_at = nil
+      self._load_warned = false
+    end
+  elseif message_id == hash("proxy_unloaded") then
+    if sender and sender.fragment == (self.active or hash("") ) then
+      self.active = nil
+      show_home_screen()
+    end
+  end
+end
+
+function final(self)
+  Pause.bind_proxy(nil)
+  msg.post(".", "release_input_focus")
+end

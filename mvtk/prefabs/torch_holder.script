@@ -1,0 +1,155 @@
+-- mvtk/prefabs/torch_holder.script
+-- Lightable torch that registers a light source when lit.
+
+local Flags = require "mvtk.core.flags"
+local PU = require "mvtk.prefabs.prefab_utils"
+
+local LIGHT_URL = msg.url("main:/light_manager#script")
+
+go.property("torch_id", "")
+go.property("room_id", "")
+go.property("starts_lit", false)
+go.property("require_interact", true)
+go.property("allow_extinguish", false)
+
+go.property("light_radius", 220)
+go.property("light_intensity", 1.0)
+
+go.property("label", "")
+go.property("label_lit", "")
+go.property("set_flag", "")
+
+go.property("lit_animation", "")
+go.property("unlit_animation", "")
+
+go.property("sound_on", "")
+go.property("sound_off", "")
+
+local DEFAULT_LABEL = "Light Torch"
+local DEFAULT_LABEL_LIT = "Extinguish"
+
+local function update_sprite(self, lit)
+    local anim_hash = lit and self.lit_animation or self.unlit_animation
+    local anim = PU.normalize_hash_string(anim_hash)
+    if anim then
+        pcall(sprite.play_flipbook, "#sprite", hash(anim))
+    end
+end
+
+local function register_light(self)
+    local pos = go.get_world_position()
+    pcall(msg.post, LIGHT_URL, hash("register_light_source"), {
+        id = self.torch_id_key,
+        position = pos,
+        radius = self.light_radius,
+        intensity = self.light_intensity,
+        enabled = self.lit,
+        room_id = self.room_id_key,
+    })
+end
+
+local function update_light(self)
+    local pos = go.get_world_position()
+    pcall(msg.post, LIGHT_URL, hash("update_light_source"), {
+        id = self.torch_id_key,
+        position = pos,
+        radius = self.light_radius,
+        intensity = self.light_intensity,
+        enabled = self.lit,
+    })
+end
+
+local function update_interaction(self)
+    if not self.require_interact then return end
+
+    if self.lit and not self.allow_extinguish then
+        PU.unregister_interaction()
+        return
+    end
+
+    local label = nil
+    if self.lit and self.allow_extinguish then
+        label = PU.normalize_hash_string(self.label_lit) or DEFAULT_LABEL_LIT
+    else
+        label = PU.normalize_hash_string(self.label) or DEFAULT_LABEL
+    end
+
+    PU.update_interaction_label(label)
+end
+
+local function set_lit(self, lit, silent)
+    if self.lit == lit then return end
+    self.lit = lit and true or false
+
+    if self.lit then
+        if self.flag_id_str then
+            Flags.set(self.flag_id_str, true)
+        end
+        PU.play_sound(self.sound_on)
+    else
+        PU.play_sound(self.sound_off)
+    end
+
+    update_sprite(self, self.lit)
+    update_light(self)
+    update_interaction(self)
+end
+
+function init(self)
+    self.torch_id_key = PU.resolve_id(self.torch_id) or tostring(go.get_id())
+    self.room_id_key = PU.normalize_hash_string(self.room_id)
+    self.flag_id_str = PU.normalize_hash_string(self.set_flag)
+
+    local lit = self.starts_lit
+    if self.flag_id_str and Flags.has(self.flag_id_str) then
+        lit = true
+    end
+
+    self.lit = lit and true or false
+    register_light(self)
+    update_sprite(self, self.lit)
+
+    if self.lit and self.flag_id_str then
+        Flags.set(self.flag_id_str, true)
+    end
+
+    if self.require_interact then
+        local label = PU.normalize_hash_string(self.label) or DEFAULT_LABEL
+        PU.register_interaction(label, 96, 4)
+    end
+
+    update_interaction(self)
+end
+
+function final(self)
+    if self.torch_id_key then
+        pcall(msg.post, LIGHT_URL, hash("unregister_light_source"), { id = self.torch_id_key })
+    end
+    PU.unregister_interaction()
+end
+
+function on_message(self, message_id, message, sender)
+    if message_id == hash("mvtk_interact") then
+        if self.lit then
+            if self.allow_extinguish then
+                set_lit(self, false)
+            end
+        else
+            set_lit(self, true)
+        end
+    elseif message_id == hash("set_lit") then
+        set_lit(self, message and message.lit)
+    elseif message_id == hash("ignite") then
+        set_lit(self, true)
+    elseif message_id == hash("extinguish") then
+        if self.allow_extinguish then
+            set_lit(self, false)
+        end
+    elseif message_id == hash("update_light") then
+        if message then
+            if message.radius ~= nil then self.light_radius = message.radius end
+            if message.intensity ~= nil then self.light_intensity = message.intensity end
+        end
+        update_light(self)
+    end
+end

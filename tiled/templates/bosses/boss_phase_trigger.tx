@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<template>
+ <object name="Boss Phase Trigger" type="boss_phase_trigger" width="128" height="128">
+  <properties>
+   <property name="boss_ref" type="object" value="0"/>
+   <property name="arena_ref" type="object" value="0"/>
+   <property name="boss_type" type="string" value=""/>
+   <property name="phase" type="int" value="2"/>
+   <property name="trigger_id" type="string" value=""/>
+   <property name="links" type="class" propertytype="boss_phase_trigger_links">
+    <properties>
+     <property name="boss_id" type="string" value=""/>
+     <property name="arena_id" type="string" value=""/>
+    </properties>
+   </property>
+   <property name="triggering" type="class" propertytype="boss_phase_trigger_triggering">
+    <properties>
+     <property name="trigger_once" type="bool" value="true"/>
+     <property name="requires_flag" type="string" value=""/>
+    </properties>
+   </property>
+   <property name="timing" type="class" propertytype="boss_phase_trigger_timing">
+    <properties>
+     <property name="delay" type="float" value="0"/>
+     <property name="transition_time" type="float" value="0"/>
+    </properties>
+   </property>
+   <property name="outcome" type="class" propertytype="boss_phase_trigger_outcome">
+    <properties>
+     <property name="set_flag" type="string" value=""/>
+    </properties>
+   </property>
+   <property name="mvtk_template_version" type="string" value="2.7.0"/>
+  </properties>
+ </object>
+</template>

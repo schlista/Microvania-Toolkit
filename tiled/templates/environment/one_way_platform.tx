@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<template>
+ <object name="One Way Platform" type="one_way_platform" width="128" height="16">
+  <properties>
+   <property name="direction" propertytype="one_way_directions" value="down"/>
+  <property name="mvtk_template_version" type="string" value="2.6.0"/>
+  </properties>
+ </object>
+</template>

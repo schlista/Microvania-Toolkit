@@ -1,0 +1,106 @@
+-- mvtk/prefabs/dialogue_trigger.script
+-- Baked, editor-selectable dialogue volume. The main game script owns overlap
+-- checks and firing semantics; this component only registers its authored data.
+
+local TriggerPayloads = require "mvtk.shared.trigger_payloads"
+local Util = require "mvtk.core.util"
+
+go.property("trigger_id", "")
+go.property("dialogue_id", "")
+go.property("npc_id", "")
+go.property("trigger_once", true)
+go.property("persist_once", true)
+go.property("once_flag", "")
+go.property("consume_on_fire", true)
+go.property("auto_play", true)
+go.property("delay", 0)
+go.property("requires_flag", "")
+go.property("skip_if_flag", "")
+go.property("set_flag", "")
+go.property("width", 64)
+go.property("height", 64)
+go.property("room_id", "")
+
+-- Internal bake metadata. Keeping the Tiled numeric ID as a property avoids
+-- relying on reverse-hash names when constructing the stable registration ID.
+go.property("object_id", 0)
+
+local MAIN_URL = "main:/main_go#script"
+local MSG_REGISTER = hash("register_dialogue_trigger")
+local MSG_UNREGISTER = hash("unregister_dialogue_trigger")
+
+local function resolve_object_id(self)
+    local object_id = tonumber(self.object_id) or 0
+    return tostring(math.max(0, math.floor(object_id)))
+end
+
+local function resolve_room_id(self)
+    local room_id = Util.normalize_hash_string(self.room_id)
+    if room_id and room_id ~= "" then
+        return room_id
+    end
+    return "room"
+end
+
+local function normalized_id(value)
+    return Util.normalize_hash_string(value) or ""
+end
+
+local function build_properties(self)
+    return {
+        trigger_id = normalized_id(self.trigger_id),
+        dialogue_id = normalized_id(self.dialogue_id),
+        npc_id = normalized_id(self.npc_id),
+        trigger_once = self.trigger_once,
+        persist_once = self.persist_once,
+        once_flag = normalized_id(self.once_flag),
+        consume_on_fire = self.consume_on_fire,
+        auto_play = self.auto_play,
+        delay = self.delay,
+        requires_flag = normalized_id(self.requires_flag),
+        skip_if_flag = normalized_id(self.skip_if_flag),
+        set_flag = normalized_id(self.set_flag),
+    }
+end
+
+function init(self)
+    self.room_id_str = resolve_room_id(self)
+    self.object_id_str = resolve_object_id(self)
+    self.register_id = string.format(
+        "%s_dialogue_%s",
+        Util.room_key(self.room_id_str),
+        tostring(self.object_id_str)
+    )
+
+    local properties = build_properties(self)
+
+    pcall(msg.post, MAIN_URL, MSG_REGISTER, TriggerPayloads.dialogue({
+        id = self.register_id,
+        owner = msg.url(),
+        -- TriggerPayloads falls back to the stable register ID when the
+        -- optional authored trigger_id is blank, matching the runtime handler.
+        trigger_id = properties.trigger_id,
+        dialogue_id = properties.dialogue_id,
+        npc_id = properties.npc_id,
+        trigger_once = self.trigger_once,
+        persist_once = self.persist_once,
+        once_flag = properties.once_flag,
+        consume_on_fire = self.consume_on_fire,
+        auto_play = self.auto_play,
+        delay = self.delay,
+        requires_flag = properties.requires_flag,
+        skip_if_flag = properties.skip_if_flag,
+        set_flag = properties.set_flag,
+        position = go.get_world_position(),
+        width = self.width,
+        height = self.height,
+        room_id = self.room_id_str,
+        properties = properties,
+    }))
+end
+
+function final(self)
+    if self.register_id then
+        pcall(msg.post, MAIN_URL, MSG_UNREGISTER, { id = self.register_id })
+    end
+end

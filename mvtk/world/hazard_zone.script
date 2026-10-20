@@ -1,0 +1,580 @@
+-- mvtk/world/hazard_zone.script
+-- Hazard zone component for damage areas (lava, spikes, acid, etc.)
+-- Spawned from Tiled objects or detected from hazard layer
+-- Loads defaults from developer/config/hazard_types.lua
+
+-- Per-instance properties baked from Tiled; identifiers remain text.
+go.property("hazard_id", "")
+go.property("hazard_type", "spikes")          -- "spikes", "lava", etc.
+go.property("damage", 1)                            -- damage per tick
+go.property("damage_interval", 0.5)                 -- seconds between damage ticks
+go.property("knockback_force", 300)                 -- knockback on contact
+go.property("stun_t", -1)                          -- recovery seconds; -1 inherits config, 0 disables
+go.property("required_resistance", "")        -- Optional ability ID; empty uses the hazard config
+go.property("instant_kill", false)                  -- true = one-hit kill (bottomless pits)
+go.property("enabled", true)                        -- can be toggled by triggers/arena
+go.property("sound_on_hit", "")               -- optional per-instance SFX override
+go.property("retractable", false)                   -- spikes that retract
+go.property("retract_time", 2.0)                    -- time spikes stay retracted
+go.property("extend_time", 2.0)                     -- time spikes stay extended
+go.property("start_retracted", false)               -- start in retracted state
+go.property("arena_id", "")                   -- link to arena for phase control
+go.property("active_phases", "")              -- phases when active (set via message)
+go.property("pattern", "")                    -- activation pattern
+go.property("pattern_speed", 1.0)                   -- pattern speed multiplier
+go.property("room_id", "")
+-- Retract visuals: painted tiles under the hazard rectangle on this layer are
+-- hidden while retracted and restored when extended (baked from Tiled
+-- motion.retract_visual_layer / motion.retract_hides_tiles; zone size baked).
+go.property("zone_width", 0)
+go.property("zone_height", 0)
+go.property("retract_visual_layer", "player")
+go.property("retract_hides_tiles", true)
+
+local EMPTY_HASH = hash("")
+local FX_MANAGER_URL = msg.url("main:/fx_manager#fx_manager")
+local Util = require "mvtk.core.util"
+local TriggerBus = require "mvtk.world.trigger_bus"
+-- Normalize hazard payloads through HazardRegistry so the player handler
+-- sees the same shape used by combat / boss attacks (Phase 2/3 hazard
+-- contract fix).
+local HazardRegistry = require "mvtk.hazards.hazard_registry"
+local ToggleMessages = require "mvtk.prefabs.toggle_messages"
+local Presentation = require "mvtk.tiled.object_presentation"
+local ArtAnimation = require "mvtk.tiled.art_animation"
+local apply_damage
+
+local function update_authored_animation(self, dt)
+    local frames = Presentation.animation and Presentation.animation()
+    if not frames or not frames[1] or frames[1].hazard_active == nil then return false end
+    if self._art_time == nil then
+        self._art_time = ArtAnimation.hazard_start(frames, not self.start_retracted)
+        self._pending_retract_visual = nil
+        Presentation.visible(true)
+    end
+    self._art_time = (self._art_time + dt) % ArtAnimation.duration(frames)
+    local frame = ArtAnimation.sample(frames, self._art_time)
+    local retracted = frame.hazard_active ~= true
+    if self.is_retracted ~= retracted then
+        self.is_retracted = retracted
+        Util.set_component_enabled("#collision", not retracted, "mass")
+        if retracted then self.players_inside = {} end
+    end
+    Presentation.animate(self._art_time)
+    return true
+end
+
+-- Painted tiles under the hazard rectangle, captured the first time they are
+-- needed (the streamed room's tilemap may not be registered at init).
+-- Returns { url, cells }, false when there is nothing to hide, or nil when the
+-- room is not ready yet (try again later).
+local function capture_retract_tiles(self)
+    if self._retract_cells ~= nil then return self._retract_cells end
+    if not (self.retractable and self.retract_hides_tiles) then
+        self._retract_cells = false
+        return false
+    end
+    local w, h = tonumber(self.zone_width) or 0, tonumber(self.zone_height) or 0
+    if w <= 0 or h <= 0 then
+        self._retract_cells = false
+        return false
+    end
+    local ok_rm, RoomManager = pcall(require, "mvtk.map.streaming.room_manager")
+    if not (ok_rm and RoomManager and RoomManager.get_room_for_position and RoomManager.get_tilemap_url) then
+        return nil
+    end
+    local pos = go.get_world_position()
+    -- Resolve the room from position: baked room_id hashes are not reversible
+    -- in release builds.
+    local room = RoomManager.get_room_for_position(pos)
+    local tm, tm_pos = RoomManager.get_tilemap_url(room)
+    if not tm or not tm_pos then
+        return nil
+    end
+    local layer = self.retract_visual_layer
+    local ok_tl, TilemapLayers = pcall(require, "mvtk.rooms.tilemap_layers")
+    if ok_tl and TilemapLayers then
+        local _, lookup = TilemapLayers.for_url(tm, room)
+        if lookup and not lookup[layer] then
+            self._retract_cells = false
+            return false
+        end
+    end
+    local TileSettings = Util.require_config("developer.config.tile_settings") or {}
+    local tw, th = tonumber(TileSettings.width) or 128, tonumber(TileSettings.height) or 128
+    -- Same cell convention as crumble_platform (cell 1,1 at the tilemap origin).
+    local cells = require("mvtk.prefabs.tile_transfer").collect_room_rectangle({
+        room_tilemap_url = tm,
+        source_layer = layer,
+        min_tx = math.floor((pos.x - w * 0.5 - tm_pos.x) / tw) + 1,
+        max_tx = math.ceil((pos.x + w * 0.5 - tm_pos.x) / tw),
+        min_ty = math.floor((pos.y - h * 0.5 - tm_pos.y) / th) + 1,
+        max_ty = math.ceil((pos.y + h * 0.5 - tm_pos.y) / th),
+    })
+    if cells == nil then
+        return nil
+    end
+    self._retract_cells = (#cells > 0) and { url = tm, cells = cells } or false
+    return self._retract_cells
+end
+
+-- Show or hide the hazard art for its retract state: object art through the
+-- presentation holder, painted tiles through the room tilemap. Returns true
+-- when the tile state is settled (applied, or nothing to apply).
+local function set_retract_visual(self, retracted)
+    require("mvtk.tiled.object_presentation").visible(not retracted)
+    local data = capture_retract_tiles(self)
+    if not data then
+        return data == false
+    end
+    for _, cell in ipairs(data.cells) do
+        pcall(tilemap.set_tile, data.url, cell.layer, cell.x, cell.y, retracted and 0 or cell.tile_id)
+    end
+    return true
+end
+
+-- Load hazard type configurations
+local HazardTypes = Util.require_config("developer.config.hazard_types")
+if not next(HazardTypes) then HazardTypes = nil end
+
+local BossArena = Util.require_module("mvtk.bosses.boss_arena")
+
+local function hazard_log(msg)
+    print("[HAZARD_ZONE]", msg)
+end
+
+-- Keep text ids readable and convert engine hashes to stable hex for logging
+local function hstr(h)
+    if type(h) == "string" then return h end
+    if h == nil or h == EMPTY_HASH then return "" end
+    if hash_to_hex then return hash_to_hex(h) end
+    return tostring(h)
+end
+
+local normalize_hash_string = Util.normalize_hash_string
+local resolve_id = Util.resolve_id
+
+-- Find matching hazard config by authored text id
+local function get_hazard_config(hazard_type_id)
+    if not HazardTypes then return nil end
+    for type_name, config in pairs(HazardTypes) do
+        if type_name == hazard_type_id then
+            return config, type_name
+        end
+    end
+    return nil
+end
+
+local function normalize_pattern(pattern_value)
+    if not pattern_value then return "" end
+    local s = hstr(pattern_value)
+    if s == "" then return "" end
+    s = tostring(s):lower()
+    if s == "none" or s == "static" then return "" end
+    return s
+end
+
+local function refresh_enabled(self)
+    local was = self.is_enabled
+    local base = self.base_enabled ~= false
+    local phase = self.pattern_active ~= false
+    local pattern = self.pattern_enabled ~= false
+    self.is_enabled = base and phase and pattern
+    if not self.is_enabled then
+        self.players_inside = {}
+        self.collision_cooldowns = {}
+    end
+    if was ~= self.is_enabled then
+        hazard_log(string.format("Hazard %s %s", hstr(self.hazard_id), self.is_enabled and "enabled" or "disabled"))
+    end
+end
+
+local function apply_base_enabled(self, enabled)
+    self.base_enabled = enabled == true
+    refresh_enabled(self)
+end
+
+local function update_pattern(self, dt)
+    if not self.pattern_mode or self.pattern_mode == "" then
+        return false
+    end
+    local before = self.pattern_enabled
+    local speed = tonumber(self.pattern_speed) or 1.0
+    if speed <= 0 then speed = 1.0 end
+
+    if self.pattern_mode == "wave" or self.pattern_mode == "pulse" then
+        self.pattern_timer = (self.pattern_timer or 0) + dt * speed
+        local phase = math.sin(self.pattern_timer * math.pi * 2)
+        self.pattern_enabled = phase >= 0
+    elseif self.pattern_mode == "random" then
+        local interval = 1 / speed
+        self.pattern_timer = (self.pattern_timer or 0) + dt
+        if self.pattern_timer >= interval then
+            self.pattern_timer = self.pattern_timer - interval
+            self.pattern_enabled = (math.random() > 0.5)
+        end
+    elseif self.pattern_mode == "toggle" then
+        local interval = 1 / speed
+        self.pattern_timer = (self.pattern_timer or 0) + dt
+        if self.pattern_timer >= interval then
+            self.pattern_timer = self.pattern_timer - interval
+            self.pattern_enabled = not self.pattern_enabled
+        end
+    elseif self.pattern_mode == "off" or self.pattern_mode == "disabled" then
+        self.pattern_enabled = false
+    else
+        self.pattern_enabled = true
+    end
+
+    return before ~= self.pattern_enabled
+end
+
+function init(self)
+    go.update_world_transform()
+    if self.required_resistance == "none" then
+        self.required_resistance = ""
+    end
+    local prop_sound_on_hit = normalize_hash_string(self.sound_on_hit)
+
+    -- Load defaults from hazard_types.lua if available
+    local config, type_name = get_hazard_config(self.hazard_type)
+    if config then
+        -- Apply config defaults (property values override if explicitly set via Tiled)
+        self.damage_value = self.damage > 0 and self.damage or (config.damage or 1)
+        self.damage_interval_value = self.damage_interval > 0 and self.damage_interval or (config.damage_interval or 0.5)
+        self.knockback_value = self.knockback_force > 0 and self.knockback_force or (config.knockback or 300)
+        self.is_instant_kill = self.instant_kill or (config.instant_kill or false)
+        self.knockback_direction = config.knockback_direction or "up"
+
+        -- Apply resistance from config if not set
+        if self.required_resistance == "" then
+            if config.immunity_ability then
+                self.required_resistance = config.immunity_ability
+            end
+            self.immunity_item = config.immunity_item
+        end
+
+        -- Sound/particle references (allow Tiled property override)
+        self.sound_on_hit = prop_sound_on_hit or config.sound_on_hit or ""
+        self.particle_on_hit = config.particle_on_hit
+
+        hazard_log(string.format("Loaded config for hazard type '%s'", type_name))
+    else
+        -- Use property values directly
+        self.damage_value = self.damage or 1
+        self.damage_interval_value = self.damage_interval or 0.5
+        self.knockback_value = self.knockback_force or 300
+        self.is_instant_kill = self.instant_kill or false
+        self.knockback_direction = "up"
+        self.sound_on_hit = prop_sound_on_hit or ""
+    end
+
+    -- The template's duration overrides its hazard type's default. If both
+    -- inherit, player recovery comes from combat_config.feedback.hurt.stun_t.
+    self.stun_value = HazardRegistry.stun_duration(self.stun_t, config and config.stun_t)
+
+    self.damage_timer = 0
+    self.players_inside = {}
+    self.base_enabled = self.enabled ~= false
+    self.pattern_active = true
+    self.pattern_enabled = true
+    self.pattern_mode = normalize_pattern(self.pattern)
+    self.pattern_timer = 0
+    self.is_enabled = self.base_enabled
+    self.hazard_id_key = resolve_id(self.hazard_id) or tostring(go.get_id())
+    self.has_trigger_responses = false
+    self.collision_cooldowns = {}
+    TriggerBus.register(self.hazard_id_key, msg.url())
+
+    -- Retractable spike logic
+    self.is_retracted = self.start_retracted
+    self.retract_timer = 0
+    if self.retractable then
+        -- Start timer based on initial state
+        self.retract_timer = self.is_retracted and self.retract_time or self.extend_time
+        if self.is_retracted then
+            -- Start hidden
+            Util.set_component_enabled("#sprite", false)
+            Util.set_component_enabled("#collision", false, "mass")
+            -- Tiles are hidden once the room tilemap is available (update).
+            self._pending_retract_visual = true
+        end
+    end
+
+    -- Arena phase tracking
+    self.current_arena_phase = 0
+    self.active_phase_set = {}
+    -- Parse active_phases string if set via message later
+
+    require("mvtk.player.safe_ground").register_blocker(go.get_id(), self,
+        go.get_world_position(), self.zone_width, self.zone_height)
+
+    hazard_log(string.format("Hazard zone initialized: %s (type: %s, damage: %d every %.1fs, enabled: %s)",
+        hstr(self.hazard_id), hstr(self.hazard_type),
+        self.damage_value, self.damage_interval_value, tostring(self.is_enabled)))
+end
+
+function update(self, dt)
+    HazardRegistry.tick_cooldowns(self.collision_cooldowns, dt)
+
+    if self.arena_id ~= "" and BossArena and BossArena.get_active_arena then
+        self._arena_poll_t = (self._arena_poll_t or 0) - dt
+        if self._arena_poll_t <= 0 then
+            self._arena_poll_t = 0.25
+            local phase = 0
+            local active = BossArena.get_active_arena()
+            if active and active.id then
+                local active_id = active.id
+                if self.arena_id == "" or active_id == self.arena_id then
+                    phase = BossArena.get_current_phase and BossArena.get_current_phase() or 0
+                end
+            end
+            if phase ~= self.current_arena_phase then
+                self.current_arena_phase = phase
+                local should_be_active = false
+                if next(self.active_phase_set) then
+                    should_be_active = self.active_phase_set[phase] or false
+                else
+                    should_be_active = phase > 0
+                end
+                self.pattern_active = should_be_active
+                refresh_enabled(self)
+            end
+        end
+    end
+
+    if update_pattern(self, dt) then
+        refresh_enabled(self)
+    end
+
+    -- Skip if disabled
+    if not self.is_enabled then
+        return
+    end
+
+    -- Handle retractable spikes
+    if self.retractable then
+        if update_authored_animation(self, dt) then
+            if self.is_retracted then return end
+        else
+            if self._pending_retract_visual and set_retract_visual(self, self.is_retracted) then
+                self._pending_retract_visual = nil
+            end
+            self.retract_timer = self.retract_timer - dt
+            if self.retract_timer <= 0 then
+                -- Toggle state
+                self.is_retracted = not self.is_retracted
+                if self.is_retracted then
+                    -- Retract: hide and disable collision
+                    Util.set_component_enabled("#sprite", false)
+                    Util.set_component_enabled("#collision", false, "mass")
+                    set_retract_visual(self, true)
+                    self.retract_timer = self.retract_time
+                    self.players_inside = {}  -- Clear contacts when retracting
+                    hazard_log("Spikes retracted: " .. hstr(self.hazard_id))
+                else
+                    -- Extend: show and enable collision
+                    Util.set_component_enabled("#sprite", true)
+                    Util.set_component_enabled("#collision", true, "mass")
+                    set_retract_visual(self, false)
+                    self.retract_timer = self.extend_time
+                    hazard_log("Spikes extended: " .. hstr(self.hazard_id))
+                end
+            end
+
+            -- Don't damage while retracted
+            if self.is_retracted then
+                return
+            end
+        end
+    end
+
+    -- Tick damage for players inside the zone
+    self.damage_timer = self.damage_timer + dt
+
+    if self.damage_timer >= self.damage_interval_value then
+        self.damage_timer = 0
+
+        for player_url, _ in pairs(self.players_inside) do
+            apply_damage(self, player_url)
+        end
+    end
+end
+
+function on_message(self, message_id, message, sender)
+    -- Debug: log all incoming messages
+    hazard_log(string.format("DEBUG: Received message '%s' from %s", tostring(message_id), tostring(sender)))
+
+    if message_id == hash("trigger_response") then
+        if not self.is_enabled then
+            return
+        end
+        self.has_trigger_responses = true
+        local other_group = message.other_group
+        hazard_log(string.format("DEBUG: trigger_response - other_group=%s, enter=%s, other_id=%s",
+            tostring(other_group), tostring(message.enter), tostring(message.other_id)))
+
+        if other_group == hash("player") then
+            if message.enter then
+                -- Player entered hazard zone
+                self.players_inside[message.other_id] = true
+                hazard_log(string.format("Player ENTERED hazard %s - will apply damage", hstr(self.hazard_id)))
+
+                -- Immediate first damage tick
+                apply_damage(self, message.other_id)
+                self.damage_timer = 0
+
+            else
+                -- Player left hazard zone
+                local player_id = message.other_id
+                self.players_inside[player_id] = nil
+                hazard_log(string.format("Player LEFT hazard %s", hstr(self.hazard_id)))
+
+
+            end
+        else
+            hazard_log(string.format("DEBUG: Ignoring trigger from non-player group: %s", tostring(other_group)))
+        end
+
+    elseif message_id == hash("collision_response") then
+        -- Fallback for non-trigger hazards. If trigger messages are active,
+        -- ignore collision spam so damage stays on configured intervals.
+        hazard_log(string.format("DEBUG: collision_response - group=%s, other_id=%s",
+            tostring(message.group), tostring(message.other_id)))
+        if message.group == hash("player") and self.is_enabled and not self.is_retracted then
+            if self.has_trigger_responses then
+                return
+            end
+
+            local other_id = message.other_id
+            if not other_id then
+                return
+            end
+
+            if HazardRegistry.cooldown_ready(self.collision_cooldowns, other_id) then
+                apply_damage(self, other_id)
+                HazardRegistry.mark_cooldown(self.collision_cooldowns, other_id, self.damage_interval_value)
+            end
+        end
+
+    elseif ToggleMessages.handle(self, message_id, message, apply_base_enabled, { field = "base_enabled", truthy = true }) then
+
+    elseif message_id == hash("activate") then
+        self.base_enabled = true
+        refresh_enabled(self)
+
+    elseif message_id == hash("deactivate") then
+        self.base_enabled = false
+        refresh_enabled(self)
+
+    elseif message_id == hash("arena_phase_changed") then
+        -- Arena phase changed - check if this hazard should be active
+        local msg_arena = message.arena_id
+        if self.arena_id ~= "" then
+            if msg_arena == nil then
+                return
+            end
+            if msg_arena ~= self.arena_id then
+                return
+            end
+        end
+        local new_phase = message.phase or 0
+        self.current_arena_phase = new_phase
+
+        -- Check if this phase is in our active phases
+        local should_be_active = false
+        if next(self.active_phase_set) then
+            should_be_active = self.active_phase_set[new_phase] or false
+        else
+            should_be_active = true  -- No phase restriction = always active
+        end
+
+        self.pattern_active = should_be_active
+        refresh_enabled(self)
+        hazard_log(string.format("Hazard %s phase %d: %s",
+            hstr(self.hazard_id), new_phase, should_be_active and "active" or "inactive"))
+
+    elseif message_id == hash("set_active_phases") then
+        -- Set which phases this hazard is active during
+        -- message.phases can be a string "1,2,3" or a table {1, 2, 3}
+        self.active_phase_set = {}
+        local phases = message.phases
+        if type(phases) == "string" then
+            for phase in string.gmatch(phases, "(%d+)") do
+                self.active_phase_set[tonumber(phase)] = true
+            end
+        elseif type(phases) == "table" then
+            for _, phase in ipairs(phases) do
+                self.active_phase_set[tonumber(phase)] = true
+            end
+        end
+        if self.current_arena_phase and self.current_arena_phase > 0 and next(self.active_phase_set) then
+            self.pattern_active = self.active_phase_set[self.current_arena_phase] or false
+            refresh_enabled(self)
+        end
+        hazard_log(string.format("Hazard %s active phases set", hstr(self.hazard_id)))
+    end
+end
+
+function final(self)
+    require("mvtk.player.safe_ground").unregister_blocker(go.get_id())
+    if self.hazard_id_key then
+        TriggerBus.unregister(self.hazard_id_key, msg.url())
+    end
+end
+
+apply_damage = function(self, player_url)
+    -- Check the kept ability/item immunity settings
+    local has_resistance = false
+    
+    -- Check ability-based immunity
+    if self.required_resistance ~= "" then
+        pcall(function()
+            local AbilityManager = require "mvtk.abilities.ability_manager"
+            has_resistance = AbilityManager.has_ability(self.required_resistance)
+        end)
+    end
+    
+    -- Check item-based immunity
+    if not has_resistance and self.immunity_item then
+        pcall(function()
+            local Inventory = require "mvtk.core.inventory"
+            has_resistance = Inventory.has_item(self.immunity_item)
+        end)
+    end
+    
+    if has_resistance then
+        hazard_log(string.format("Player has resistance to %s, no damage", hstr(self.hazard_type)))
+        return
+    end
+    
+    -- Apply damage
+    local damage_amount = HazardRegistry.amount(self.damage_value, self.is_instant_kill, 9999)
+    
+    -- Send damage to player
+    local damage_msg = {
+        amount = damage_amount,
+        source_actor = go.get_id(),
+        source_attack = "hazard_zone",
+        knockback = self.knockback_value,
+        knockback_direction = self.knockback_direction,
+        stun_t = self.stun_value,
+    }
+    
+    HazardRegistry.post_damage(player_url, damage_msg)
+    
+    -- Play hit sound
+    if self.sound_on_hit ~= "" then
+        pcall(msg.post, "main:/audio#controller", hash("play_sfx"), { sound_id = self.sound_on_hit })
+    end
+    
+    -- Spawn hit particle
+    if self.particle_on_hit then
+        pcall(msg.post, FX_MANAGER_URL, hash("spawn_effect"), {
+            effect_type = self.particle_on_hit,
+            position = go.get_position(player_url)
+        })
+    end
+    
+    hazard_log(string.format("Applied %d %s damage to player", damage_amount, hstr(self.hazard_type)))
+end

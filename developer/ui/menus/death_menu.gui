@@ -1,0 +1,83 @@
+script: "/developer/ui/menus/death_menu.gui_script"
+fonts {
+  name: "main"
+  font: "/builtins/fonts/default.font"
+}
+nodes {
+  type: TYPE_BOX
+  id: "overlay"
+  adjust_mode: ADJUST_MODE_FIT
+  pivot: PIVOT_CENTER
+  position {
+    x: 960.0
+    y: 540.0
+  }
+  size {
+    x: 1920.0
+    y: 1080.0
+  }
+  color {
+    x: 0.0
+    y: 0.0
+    z: 0.0
+  }
+  alpha: 0.85
+  enabled: false
+}
+nodes {
+  type: TYPE_TEXT
+  text: "YOU DIED"
+  font: "main"
+  id: "title"
+  pivot: PIVOT_CENTER
+  position {
+    x: 960.0
+    y: 690.0
+  }
+  scale {
+    x: 2.5
+    y: 2.5
+  }
+  color {
+    x: 0.90
+    y: 0.25
+    z: 0.20
+  }
+  outline {
+    x: 0.0
+    y: 0.0
+    z: 0.0
+  }
+  shadow {
+    x: 0.02
+    y: 0.02
+    z: 0.04
+  }
+  outline_alpha: 0.5
+  shadow_alpha: 0.3
+  enabled: false
+}
+nodes {
+  type: TYPE_TEXT
+  text: "A: Try Again   B: Quit"
+  font: "main"
+  id: "hint"
+  pivot: PIVOT_CENTER
+  position {
+    x: 960.0
+    y: 490.0
+  }
+  scale {
+    x: 1.5
+    y: 1.5
+  }
+  color {
+    x: 0.55
+    y: 0.55
+    z: 0.62
+  }
+  alpha: 0.85
+  enabled: false
+}
+material: "/builtins/materials/gui.material"
+adjust_reference: ADJUST_REFERENCE_PARENT

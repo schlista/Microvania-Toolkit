@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<template>
+ <object name="Torch Holder" type="torch_holder" width="64" height="128">
+  <properties>
+   <property name="torch_id" type="string" value=""/>
+   <property name="ignition" type="class" propertytype="torch_holder_ignition">
+    <properties>
+     <property name="starts_lit" type="bool" value="false"/>
+     <property name="require_interact" type="bool" value="true"/>
+     <property name="allow_extinguish" type="bool" value="false"/>
+     <property name="set_flag" type="string" value=""/>
+    </properties>
+   </property>
+   <property name="light" type="class" propertytype="torch_holder_light">
+    <properties>
+     <property name="light_radius" type="float" value="220"/>
+     <property name="light_intensity" type="float" value="1"/>
+    </properties>
+   </property>
+   <property name="feedback" type="class" propertytype="torch_holder_feedback">
+    <properties>
+     <property name="label" type="string" value=""/>
+     <property name="label_lit" type="string" value=""/>
+     <property name="sound_on" type="string" propertytype="sound_effects" value="none"/>
+     <property name="sound_off" type="string" propertytype="sound_effects" value="none"/>
+    </properties>
+   </property>
+   <property name="mvtk_template_version" type="string" value="2.7.0"/>
+  </properties>
+ </object>
+</template>

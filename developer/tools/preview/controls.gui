@@ -1,0 +1,5 @@
+script: "/developer/tools/preview/controls.gui_script"
+fonts { name: "main" font: "/builtins/fonts/default.font" }
+material: "/builtins/materials/gui.material"
+adjust_reference: ADJUST_REFERENCE_PARENT
+max_nodes: 16

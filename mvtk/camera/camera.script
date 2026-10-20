@@ -1,0 +1,1819 @@
+-- mvtk/camera/camera.script
+-- Pull + Push follow with safe bounds handling.
+-- All tunables come from developer/config/game_config.lua via resolved_config.lua.
+
+local C = require("mvtk.core.constants")
+local Config = require("developer.config.resolved_config")
+local Debug = require("developer.config.debug_config")
+local CameraZones = require("mvtk.camera.camera_zones")
+local CameraMath = require("mvtk.camera.camera_math")
+local CameraState = require("mvtk.camera.camera_state")
+local FrameClock = require("mvtk.core.frame_clock")
+local Util = require("mvtk.core.util")
+local CAMERA_DEBUG = (Debug.global and Debug.global.enable) or
+    (Debug.gameplay and Debug.gameplay.camera) or false
+
+local function camera_log(...)
+    if CAMERA_DEBUG then
+        print(...)
+    end
+end
+local input_controller = require "mvtk.rooms.input_controller"
+local Pause = require "mvtk.core.pause"
+local Feel = require "mvtk.core.gamefeel"
+
+go.property("camera_id", "camera")
+
+-- Expose key camera follow tunables as properties
+go.property("deadzone_x", 80.0)
+go.property("deadzone_y", 40.0)
+go.property("lookahead_x", 0.0)
+go.property("offset_x", 0.0)
+go.property("offset_y", 0.0)
+go.property("speed_x", 4.0)
+go.property("speed_y", 4.0)
+go.property("snap_on_respawn", 0.0)
+go.property("respawn_lerp_time", 0.20)
+go.property("pull_from_go", 0.0)
+go.property("parent_to_player", 0.0)
+go.property("enable_zones", true)
+
+-- Optional: look up/down offset applied from input_controller camera_y
+
+go.property("look_y_amount", 64.0)
+
+local function lerp(a, b, t) return a + (b - a) * t end
+
+local function bounds_valid(b)
+    if not b then return false end
+    if b.max_x == nil or b.min_x == nil or b.max_y == nil or b.min_y == nil then return false end
+    -- Treat zero/negative size as invalid (prevents clamping to 0,0)
+    if (b.max_x <= b.min_x) or (b.max_y <= b.min_y) then return false end
+    return true
+end
+
+local function clamp(v, lo, hi)
+    if lo == nil or hi == nil then return v end
+    return math.max(lo, math.min(hi, v))
+end
+
+-- Reuse shared Util.normalize_hash_string instead of duplicating it locally.
+local normalize_hash_string = Util.normalize_hash_string
+
+local function boolish(value, default)
+    if value == nil then
+        return default and true or false
+    end
+    if type(value) == "boolean" then
+        return value
+    end
+    if type(value) == "number" then
+        return value ~= 0
+    end
+    local s = tostring(value):lower()
+    if s == "true" or s == "1" or s == "yes" or s == "on" then
+        return true
+    end
+    if s == "false" or s == "0" or s == "no" or s == "off" then
+        return false
+    end
+    return default and true or false
+end
+
+local function zone_contains_point(zone, point)
+    if not zone or not point or not zone.position then
+        return false
+    end
+    local width = tonumber(zone.width) or 0
+    local height = tonumber(zone.height) or 0
+    if width <= 0 then width = 64 end
+    if height <= 0 then height = 64 end
+
+    local min_x = zone.position.x
+    local max_x = min_x + width
+    local min_y = zone.position.y
+    local max_y = min_y + height
+
+    return point.x >= min_x and
+           point.x <= max_x and
+           point.y >= min_y and
+           point.y <= max_y
+end
+
+local CAMERA_MODE_TO_PRESET = {
+    follow = "exploration",
+    exploration = "exploration",
+    boss_arena = "boss_arena",
+    platforming = "platforming",
+    tight_corridor = "tight_corridor",
+    cutscene = "cutscene",
+    fixed = "cutscene",
+    cinematic = "cutscene",
+    bounded = "tight_corridor",
+    bounds = "tight_corridor",
+    pan = "exploration",
+}
+
+local function transition_duration_from_speed(speed, fallback)
+    local s = tonumber(speed)
+    if s == nil then
+        return fallback
+    end
+    if s <= 0 then
+        return 0
+    end
+    return clamp(1.0 / s, 0.05, 2.0)
+end
+
+local function get_render_window_size()
+    local width = tonumber(Config.window and Config.window.target_width) or 1920
+    local height = tonumber(Config.window and Config.window.target_height) or 1080
+    if width <= 0 then width = 1920 end
+    if height <= 0 then height = 1080 end
+    return width, height
+end
+
+local function get_current_room_fit_size(self)
+    local room_id = normalize_hash_string(self.current_room_id)
+    local room_manager = self.room_manager
+    if not room_id or type(room_manager) ~= "table" or type(room_manager.get_room_data) ~= "function" then
+        return nil, nil
+    end
+
+    local ok_room, room_data = pcall(room_manager.get_room_data, room_id)
+    if not ok_room or type(room_data) ~= "table" then
+        return nil, nil
+    end
+
+    local width = tonumber(room_data.w) or 0
+    local height = tonumber(room_data.h) or 0
+    if width <= 0 or height <= 0 then
+        return nil, nil
+    end
+    return width, height
+end
+
+local function get_current_room_center(self)
+    local room_id = normalize_hash_string(self.current_room_id)
+    local room_manager = self.room_manager
+    if not room_id or type(room_manager) ~= "table" or type(room_manager.get_room_data) ~= "function" then
+        return nil, nil
+    end
+
+    local ok_room, room_data = pcall(room_manager.get_room_data, room_id)
+    if not ok_room or type(room_data) ~= "table" then
+        return nil, nil
+    end
+
+    local x = tonumber(room_data.x)
+    local y = tonumber(room_data.y)
+    local width = tonumber(room_data.w)
+    local height = tonumber(room_data.h)
+    if not x or not y or not width or not height or width <= 0 or height <= 0 then
+        return nil, nil
+    end
+    local offset_x = tonumber(room_data.ox) or 0
+    local offset_y = tonumber(room_data.oy) or 0
+    return x + offset_x + width * 0.5, y + offset_y + height * 0.5
+end
+
+-- A room smaller than the view shows empty space past its edges. With
+-- camera.fill_small_rooms, zoom in just enough for the room to cover the view,
+-- up to camera.small_room_max_zoom x the default zoom. Returns nil to keep `zoom`.
+local function fill_small_room_zoom(self, zoom)
+    local cfg = Config.camera or {}
+    if cfg.fill_small_rooms ~= true or not zoom or zoom <= 0 then return nil end
+    local room_w, room_h = get_current_room_fit_size(self)
+    if not room_w then return nil end
+    local window_w, window_h = get_render_window_size()
+    local cover = math.max(window_w / room_w, window_h / room_h)
+    if cover <= zoom then return nil end
+    local cap = (tonumber(self.base_zoom) or 1.0) * (tonumber(cfg.small_room_max_zoom) or 2.0)
+    return math.min(cover, math.max(zoom, cap))
+end
+
+local function resolve_auto_fit_zoom(self, settings)
+    if type(settings) ~= "table" or not boolish(settings.auto_fit, false) then
+        return nil
+    end
+
+    local area_w = tonumber(settings.fit_width) or 0
+    local area_h = tonumber(settings.fit_height) or 0
+
+    if area_w <= 0 or area_h <= 0 then
+        if bounds_valid(self.bounds) then
+            area_w = (self.bounds.max_x or 0) - (self.bounds.min_x or 0)
+            area_h = (self.bounds.max_y or 0) - (self.bounds.min_y or 0)
+        else
+            local room_w, room_h = get_current_room_fit_size(self)
+            area_w = room_w or 0
+            area_h = room_h or 0
+        end
+    end
+
+    if area_w <= 0 or area_h <= 0 then
+        return nil
+    end
+
+    local padding = tonumber(settings.fit_padding)
+    if padding == nil then
+        padding = tonumber(settings.bounds_padding) or 0
+    end
+    if padding < 0 then
+        padding = 0
+    end
+
+    local target_w = area_w + (padding * 2)
+    local target_h = area_h + (padding * 2)
+    if target_w <= 0 or target_h <= 0 then
+        return nil
+    end
+
+    local window_w, window_h = get_render_window_size()
+    local zoom_x = window_w / target_w
+    local zoom_y = window_h / target_h
+    local fit_zoom = math.min(zoom_x, zoom_y)
+    if not fit_zoom or fit_zoom <= 0 then
+        return nil
+    end
+
+    local min_zoom = tonumber(Config.camera and Config.camera.min_zoom) or 0.05
+    local max_zoom
+    if boolish(settings.arena_auto_fit, false) then
+        max_zoom = tonumber(Config.camera and Config.camera.arena_max_zoom)
+        if not max_zoom or max_zoom <= 0 then
+            max_zoom = math.max(tonumber(self.base_zoom) or 1.0,
+                tonumber(Config.camera and Config.camera.max_zoom) or 0)
+        else
+            max_zoom = (tonumber(self.base_zoom) or 1.0) * max_zoom
+        end
+    else
+        max_zoom = tonumber(Config.camera and Config.camera.max_zoom)
+        if not max_zoom or max_zoom <= 0 then
+            max_zoom = tonumber(self.base_zoom) or 1.0
+        end
+    end
+    if max_zoom <= 0 then max_zoom = tonumber(self.base_zoom) or 1.0 end
+    if max_zoom < min_zoom then
+        max_zoom = min_zoom
+    end
+
+    return clamp(fit_zoom, min_zoom, max_zoom)
+end
+
+-- The zoom a camera zone asks for. Arenas keep their auto-fit. Otherwise the
+-- zone's zoom_level multiplies the base zoom (1.0 = default), and a room that
+-- is still smaller than the view zooms in until it covers it. Sample room
+-- zones declare zoom_level = 1.0, so the fill must follow the multiplier.
+local function resolve_zone_zoom(self, settings)
+    local auto_fit_zoom = resolve_auto_fit_zoom(self, settings)
+    if auto_fit_zoom and auto_fit_zoom > 0 then
+        return auto_fit_zoom
+    end
+    local zone_zoom = tonumber(self.base_zoom) or 1.0
+    local explicit_zoom = tonumber(type(settings) == "table" and settings.zoom_level or nil)
+    if explicit_zoom and explicit_zoom > 0 then
+        zone_zoom = (self.base_zoom or 1.0) * explicit_zoom
+    end
+    return fill_small_room_zoom(self, zone_zoom) or zone_zoom
+end
+
+local function resolve_mode_settings(self, mode_value)
+    local mode = (normalize_hash_string(mode_value) or "follow"):lower()
+    local preset = CAMERA_MODE_TO_PRESET[mode] or mode
+
+    if self.zone_named_configs and self.zone_named_configs[preset] then
+        return CameraZones.create_custom_zone("exploration", self.zone_named_configs[preset]), mode
+    end
+
+    local preset_settings = CameraZones.get_preset(preset)
+    if preset_settings then
+        return CameraZones.create_custom_zone(preset, nil), mode
+    end
+
+    return CameraZones.create_custom_zone("exploration", nil), mode
+end
+
+local function build_object_zone(self, message)
+    if type(message) ~= "table" then
+        return nil
+    end
+
+    local zone_id = normalize_hash_string(message.id) or normalize_hash_string(message.zone_id)
+    if not zone_id then
+        return nil
+    end
+
+    local room_id = normalize_hash_string(message.room_id)
+    local raw_pos = message.position
+    local position = vmath.vector3(0, 0, 0)
+    if raw_pos and raw_pos.x and raw_pos.y then
+        position = vmath.vector3(raw_pos)
+    end
+
+    local width = tonumber(message.width) or 256
+    local height = tonumber(message.height) or 256
+    if width <= 0 then width = 64 end
+    if height <= 0 then height = 64 end
+
+    local settings, mode = resolve_mode_settings(self, message.camera_mode)
+    settings = settings or CameraZones.create_custom_zone("exploration", nil)
+    settings.fit_width = width
+    settings.fit_height = height
+
+    local deadzone_w = tonumber(message.deadzone_width) or 0
+    local deadzone_h = tonumber(message.deadzone_height) or 0
+    if deadzone_w > 0 or deadzone_h > 0 then
+        local current_deadzone = settings.deadzone or vmath.vector3(0, 0, 0)
+        settings.deadzone = vmath.vector3(
+            deadzone_w > 0 and deadzone_w or (current_deadzone.x or 0),
+            deadzone_h > 0 and deadzone_h or (current_deadzone.y or 0),
+            0
+        )
+    end
+
+    -- Fixed mode is explicitly locked to the zone center.
+    if mode == "fixed" then
+        settings.lock_x = true
+        settings.lock_y = true
+        settings.allow_look_around = false
+        settings.smooth_transition = false
+    elseif mode == "cinematic" then
+        settings.allow_look_around = false
+    end
+
+    if message.lock_x ~= nil then
+        settings.lock_x = boolish(message.lock_x, settings.lock_x == true)
+    end
+    if message.lock_y ~= nil then
+        settings.lock_y = boolish(message.lock_y, settings.lock_y == true)
+    end
+    if mode == "fixed" then
+        settings.lock_x = true
+        settings.lock_y = true
+    end
+
+    local center_x = position.x + width * 0.5
+    local center_y = position.y + height * 0.5
+    local focus_x = tonumber(message.focus_x) or 0
+    local focus_y = tonumber(message.focus_y) or 0
+    if settings.lock_x then
+        settings.focus_x = center_x + focus_x
+    end
+    if settings.lock_y then
+        settings.focus_y = center_y + focus_y
+    end
+
+    local zoom_level = tonumber(message.zoom_level)
+    if zoom_level and zoom_level > 0 then
+        settings.zoom_level = zoom_level
+    end
+
+    local fit_padding = tonumber(message.fit_padding)
+    if fit_padding == nil then
+        fit_padding = tonumber(message.bounds_padding)
+    end
+    if fit_padding == nil and type(message.properties) == "table" then
+        fit_padding = tonumber(message.properties.fit_padding or message.properties.bounds_padding)
+    end
+    if fit_padding ~= nil then
+        if fit_padding < 0 then fit_padding = 0 end
+        settings.fit_padding = fit_padding
+    end
+
+    local auto_fit = message.auto_fit
+    if auto_fit == nil and type(message.properties) == "table" then
+        auto_fit = message.properties.auto_fit
+    end
+    if auto_fit ~= nil then
+        settings.auto_fit = boolish(auto_fit, mode == "fixed")
+    elseif mode == "fixed" then
+        settings.auto_fit = true
+    end
+    settings.arena_auto_fit = boolish(message.arena_auto_fit, false)
+
+    if message.smooth_follow ~= nil then
+        settings.smooth_transition = boolish(message.smooth_follow, settings.smooth_transition ~= false)
+    end
+
+    local priority = tonumber(message.priority)
+    if priority == nil and type(message.properties) == "table" then
+        priority = tonumber(message.properties.priority or message.properties.zone_priority)
+    end
+    priority = priority or 0
+
+    local transition_duration = transition_duration_from_speed(message.transition_speed, 0.2)
+
+    return {
+        id = zone_id,
+        key = zone_id,
+        room_id = room_id,
+        position = position,
+        width = width,
+        height = height,
+        area = width * height,
+        priority = priority,
+        transition_duration = transition_duration,
+        settings = settings,
+    }
+end
+
+local function pick_active_object_zone(self, player_pos)
+    if not self.object_camera_zones or not player_pos then
+        return nil
+    end
+
+    local current_room = self.current_room_id
+    local best_zone = nil
+    for _, zone in pairs(self.object_camera_zones) do
+        if zone_contains_point(zone, player_pos) and
+           (not zone.room_id or not current_room or zone.room_id == current_room) then
+            if not best_zone or
+               zone.priority > best_zone.priority or
+               (zone.priority == best_zone.priority and zone.area < best_zone.area) then
+                best_zone = zone
+            end
+        end
+    end
+    return best_zone
+end
+
+local function activate_camera_zone(self, zone_key, instant, transition_duration, force)
+    local key = normalize_hash_string(zone_key) or "exploration"
+    if self.active_zone_key == key and not force then
+        return
+    end
+    local key_changed = self.active_zone_key ~= key
+    self._follow_target_x, self._follow_target_y = nil, nil
+
+    CameraZones.set_transition_duration(transition_duration or self.zone_transition_duration or 0.2)
+    CameraZones.activate_zone(key, instant == true)
+    self.active_zone_key = key
+    if key_changed then
+        self.zone_lock_entry_focus_x = nil
+        self.zone_lock_entry_focus_y = nil
+        self.warned_zone_entry_focus_fallback = false
+    end
+    camera_log(string.format("[CAMERA_ZONES] active=%s instant=%s", tostring(key), tostring(instant == true)))
+end
+
+local function move_towards(current, target, max_delta)
+    local c = tonumber(current) or 0
+    local t = tonumber(target) or 0
+    local d = tonumber(max_delta) or 0
+    if d <= 0 then
+        return t
+    end
+    if c < t then
+        return math.min(t, c + d)
+    end
+    if c > t then
+        return math.max(t, c - d)
+    end
+    return t
+end
+
+local function get_lock_anchor(self, axis)
+    local fallback = (axis == "x") and self.pos.x or self.pos.y
+    if self.have_target and self.target_pos then
+        if axis == "x" then
+            return (tonumber(self.target_pos.x) or fallback) - ((self.offset and tonumber(self.offset.x)) or 0)
+        end
+        return (tonumber(self.target_pos.y) or fallback) - ((self.offset and tonumber(self.offset.y)) or 0)
+    end
+    return fallback
+end
+
+local function apply_zone_settings(self, dt)
+    dt = CameraMath.clamp_dt(dt)
+    if not self.enable_zones then
+        self.deadzone.x = self.base_deadzone.x
+        self.deadzone.y = self.base_deadzone.y
+        self.speedx = self.base_speedx
+        self.speedy = self.base_speedy
+        self.lookahead.x = self.base_lookahead_x
+        self.zone_lock_x = false
+        self.zone_lock_y = false
+        self.zone_lock_camera = false
+        self.zone_focus_x = nil
+        self.zone_focus_y = nil
+        self.zone_effective_focus_x = nil
+        self.zone_effective_focus_y = nil
+        self.zone_lock_weight_x = 0
+        self.zone_lock_weight_y = 0
+        self.zone_lock_target_x = 0
+        self.zone_lock_target_y = 0
+        self.zone_lock_entry_focus_x = nil
+        self.zone_lock_entry_focus_y = nil
+        self.zone_allow_look_around = true
+        self.zone_zoom_target = self.base_zoom
+        self.zone_zoom = self.base_zoom
+        return
+    end
+
+    CameraZones.update(dt)
+
+    local settings = CameraZones.get_settings() or {}
+    local dz = settings.deadzone
+    local sp = settings.speed
+
+    self.deadzone.x = (dz and tonumber(dz.x)) or self.base_deadzone.x
+    self.deadzone.y = (dz and tonumber(dz.y)) or self.base_deadzone.y
+    self.speedx = (sp and tonumber(sp.x)) or self.base_speedx
+    self.speedy = (sp and tonumber(sp.y)) or self.base_speedy
+    self.lookahead.x = tonumber(settings.lookahead) or self.base_lookahead_x
+
+    self.zone_lock_x = boolish(settings.lock_x, false)
+    self.zone_lock_y = boolish(settings.lock_y, false)
+    self.zone_focus_x = tonumber(settings.focus_x)
+    self.zone_focus_y = tonumber(settings.focus_y)
+    self.zone_lock_camera = boolish(settings.lock_camera, false)
+    self.zone_allow_look_around = boolish(settings.allow_look_around, true)
+    self.zone_bounds_padding = tonumber(settings.bounds_padding) or 0
+    if settings.clamp_to_room ~= nil then
+        self.zone_clamp_to_room = boolish(settings.clamp_to_room, false)
+    elseif self.active_object_zone_id then
+        local room_zone = CameraZones.get_registered_zone(normalize_hash_string(self.current_room_id))
+        self.zone_clamp_to_room = boolish(room_zone and room_zone.clamp_to_room, false)
+        if room_zone then
+            self.zone_bounds_padding = tonumber(room_zone.bounds_padding) or 0
+        end
+    else
+        self.zone_clamp_to_room = false
+    end
+
+    if self.zone_lock_camera then
+        self.zone_lock_x = true
+        self.zone_lock_y = true
+    end
+
+    local missing_focus_x = self.zone_lock_x and self.zone_focus_x == nil
+    local missing_focus_y = self.zone_lock_y and self.zone_focus_y == nil
+    local room_center_x, room_center_y
+    if missing_focus_x or missing_focus_y then
+        room_center_x, room_center_y = get_current_room_center(self)
+    end
+    local used_entry_fallback = false
+    if missing_focus_x then
+        if bounds_valid(self.bounds) then
+            self.zone_focus_x = (self.bounds.min_x + self.bounds.max_x) * 0.5
+            self.zone_lock_entry_focus_x = nil
+        elseif room_center_x ~= nil then
+            self.zone_focus_x = room_center_x
+            self.zone_lock_entry_focus_x = nil
+        else
+            if self.zone_lock_entry_focus_x == nil then
+                self.zone_lock_entry_focus_x = self.pos.x
+            end
+            self.zone_focus_x = self.zone_lock_entry_focus_x
+            used_entry_fallback = true
+        end
+    else
+        self.zone_lock_entry_focus_x = nil
+    end
+    if missing_focus_y then
+        if bounds_valid(self.bounds) then
+            self.zone_focus_y = (self.bounds.min_y + self.bounds.max_y) * 0.5
+            self.zone_lock_entry_focus_y = nil
+        elseif room_center_y ~= nil then
+            self.zone_focus_y = room_center_y
+            self.zone_lock_entry_focus_y = nil
+        else
+            if self.zone_lock_entry_focus_y == nil then
+                self.zone_lock_entry_focus_y = self.pos.y
+            end
+            self.zone_focus_y = self.zone_lock_entry_focus_y
+            used_entry_fallback = true
+        end
+    else
+        self.zone_lock_entry_focus_y = nil
+    end
+    if used_entry_fallback then
+        if not self.warned_zone_entry_focus_fallback then
+            camera_log("WARNING: Locked camera zone has no focus, bounds, or room geometry; using camera entry position")
+            self.warned_zone_entry_focus_fallback = true
+        end
+    end
+
+    local target_lock_x = self.zone_lock_x and 1 or 0
+    local target_lock_y = self.zone_lock_y and 1 or 0
+    self.zone_lock_target_x = target_lock_x
+    self.zone_lock_target_y = target_lock_y
+
+    local blend_duration = tonumber(self.zone_transition_duration) or 0.2
+    if target_lock_x > 0 or target_lock_y > 0 or boolish(settings.auto_fit, false) then
+        blend_duration = clamp(blend_duration, 0.25, 0.6)
+    end
+    local blend_step = (blend_duration <= 0) and 1 or clamp(dt / blend_duration, 0, 1)
+
+    self.zone_lock_weight_x = move_towards(self.zone_lock_weight_x or 0, target_lock_x, blend_step)
+    self.zone_lock_weight_y = move_towards(self.zone_lock_weight_y or 0, target_lock_y, blend_step)
+
+    if target_lock_x > 0 and self.zone_focus_x ~= nil then
+        local from_x = get_lock_anchor(self, "x")
+        local focus_mix_x = clamp((self.zone_lock_weight_x or 0) * (self.zone_lock_weight_x or 0), 0, 1)
+        self.zone_effective_focus_x = lerp(from_x, self.zone_focus_x, focus_mix_x)
+    else
+        self.zone_effective_focus_x = nil
+    end
+
+    if target_lock_y > 0 and self.zone_focus_y ~= nil then
+        local from_y = get_lock_anchor(self, "y")
+        local focus_mix_y = clamp((self.zone_lock_weight_y or 0) * (self.zone_lock_weight_y or 0), 0, 1)
+        self.zone_effective_focus_y = lerp(from_y, self.zone_focus_y, focus_mix_y)
+    else
+        self.zone_effective_focus_y = nil
+    end
+
+    local target_zoom = resolve_zone_zoom(self, settings)
+
+    self.zone_zoom_target = target_zoom
+    local zoom_blend_duration = math.max(0.12, blend_duration * 0.55)
+    local zoom_blend_step = (zoom_blend_duration <= 0) and 1 or clamp(dt / zoom_blend_duration, 0, 1)
+    if zoom_blend_duration <= 0 then
+        self.zone_zoom = target_zoom
+    else
+        self.zone_zoom = lerp(self.zone_zoom or self.base_zoom, target_zoom, zoom_blend_step)
+    end
+end
+
+local function apply_bounds(self, p)
+    if not bounds_valid(self.bounds) then return p end
+    p.x = clamp(p.x, self.bounds.min_x, self.bounds.max_x)
+    p.y = clamp(p.y, self.bounds.min_y, self.bounds.max_y)
+    return p
+end
+
+local function get_follow_position(self, url)
+    if not (url and go.exists(url)) then return nil end
+    -- go.get_world_position returns the transform computed at the end of the
+    -- PREVIOUS frame (documented). Refresh the cached world transform first so
+    -- the camera targets where the player is this frame, not where it was.
+    pcall(go.update_world_transform, url)
+    local ok, p = pcall(go.get_world_position, url)
+    if ok and p then return p end
+    -- Fallback to cached position only if go.get_world_position fails
+    if C and C.URL and C.URL.PLAYER and url == C.URL.PLAYER then
+        local cached = rawget(_G, "PLAYER_WORLD_POS")
+        if cached and cached.x then return cached end
+    end
+    return go.get_position(url)
+end
+
+local function fmt_vec(p)
+    if not p then return "nil" end
+    return string.format("(%.1f, %.1f)", p.x or 0, p.y or 0)
+end
+
+local function debug_state(self, dt, reason)
+    if not (Debug.global.enable or Debug.gameplay.camera) then return end
+    self._dbg_timer = (self._dbg_timer or 0) - (dt or 0)
+    if self._dbg_timer > 0 then return end
+    self._dbg_timer = 0.5
+
+    local fu = self.follow_url
+    local exists = fu and go.exists(fu) or false
+    local cached = rawget(_G, "PLAYER_WORLD_POS")
+    local actual = go.get_position()
+    local wp = nil
+    if fu and exists then
+        local ok, p = pcall(go.get_world_position, fu)
+        if ok then wp = p end
+    end
+
+    camera_log(string.format(
+        "[CAMERA DBG] reason=%s follow=%s exists=%s pull=%s have=%s pos=%s go=%s tgt=%s cached=%s world=%s bounds=%s",
+        tostring(reason or "tick"),
+        tostring(fu),
+        tostring(exists),
+        tostring(self.pull_from_go ~= 0),
+        tostring(self.have_target),
+        fmt_vec(self.pos),
+        fmt_vec(actual),
+        fmt_vec(self.target_pos),
+        fmt_vec(cached),
+        fmt_vec(wp),
+        self.bounds and string.format("x[%.1f..%.1f] y[%.1f..%.1f]", self.bounds.min_x or 0, self.bounds.max_x or 0, self.bounds.min_y or 0, self.bounds.max_y or 0) or "nil"
+    ))
+end
+
+local function pull_player_pos(self)
+    local p = get_follow_position(self, self.follow_url)
+    if p then
+        self.target_pos.x = p.x + self.offset.x
+        self.target_pos.y = p.y + self.offset.y
+        self.have_target = true
+        self.last_valid_target.x = self.target_pos.x
+        self.last_valid_target.y = self.target_pos.y
+        self.last_valid_target.z = self.target_pos.z
+        if CAMERA_DEBUG then
+            camera_log(string.format("[CAMERA] pull_follow -> target=(%.1f, %.1f)", self.target_pos.x, self.target_pos.y))
+        end
+    end
+end
+
+local function render_camera(self, dt, reason, render_offset_x, render_offset_y, zoom_override)
+    local zoom = tonumber(zoom_override) or self.zone_zoom or self.base_zoom or 1.0
+    pcall(go.set, self.cam_url, "orthographic_zoom", zoom)
+
+    local render_x, render_y = CameraMath.render_xy(
+        self.pos.x + (tonumber(render_offset_x) or 0),
+        self.pos.y + (tonumber(render_offset_y) or 0),
+        zoom,
+        self.pixel_snap)
+    local render_pos = self.render_pos
+    if not render_pos then
+        render_pos = vmath.vector3()
+        self.render_pos = render_pos
+    end
+    render_pos.x, render_pos.y, render_pos.z = render_x, render_y, self.pos.z or 0
+
+    local pos_before_set = nil
+    if CAMERA_DEBUG then
+        pos_before_set = go.get_position()
+    end
+    go.set_position(render_pos)
+    if CAMERA_DEBUG then
+        local actual = go.get_position()
+        local dx = math.abs((render_pos.x or 0) - (actual.x or 0))
+        local dy = math.abs((render_pos.y or 0) - (actual.y or 0))
+        if dx > 1 or dy > 1 then
+            print(string.format("[CAMERA SET FAILED] expected=%s actual=%s before=%s",
+                fmt_vec(render_pos), fmt_vec(actual), fmt_vec(pos_before_set)))
+        end
+    end
+
+    local window_width, window_height = get_render_window_size()
+    local half_w = (window_width * 0.5) / zoom
+    local half_h = (window_height * 0.5) / zoom
+    local proj = vmath.matrix4_orthographic(
+        render_pos.x - half_w,
+        render_pos.x + half_w,
+        render_pos.y - half_h,
+        render_pos.y + half_h,
+        -1,
+        1)
+    msg.post("@render:", "set_view_projection", {
+        -- The renderer must retain this exact view over the focused camera
+        -- component's later, window-sized projection.
+        id = hash("mvtk_camera_projection"),
+        view = vmath.matrix4(),
+        projection = proj,
+    })
+    CameraState.publish(render_pos.x, render_pos.y, zoom, half_w, half_h)
+    debug_state(self, dt, reason)
+    return true
+end
+
+-- Temporary camera focuses are owner-scoped and token-addressed.  They are
+-- deliberately layered over the normal room/zone camera: room handoffs keep
+-- updating current_room_id and CameraZones while the highest-priority focus
+-- controls only the final simulated camera position.
+local function focus_token_key(token)
+    if token == nil then return nil end
+    return tostring(token)
+end
+
+local function focus_owner_key(message, sender)
+    local owner = message and (message.owner or message.elevator_id or message.owner_url) or nil
+    if owner == nil then owner = sender end
+    if owner == nil then return nil end
+    return tostring(owner)
+end
+
+local function focus_owner_url(message, sender)
+    if message and message.owner_url ~= nil then
+        return message.owner_url
+    end
+    local owner = message and message.owner or nil
+    if owner ~= nil and type(owner) ~= "string" and type(owner) ~= "number"
+        and type(owner) ~= "boolean" then
+        return owner
+    end
+    return sender
+end
+
+local function url_exists(url)
+    if url == nil then return false end
+    local ok, exists = pcall(go.exists, url)
+    return ok and exists == true
+end
+
+local function copy_point(value)
+    if type(value) ~= "table" and type(value) ~= "userdata" then
+        return nil
+    end
+    if value.x == nil and value.y == nil then
+        return nil
+    end
+    return vmath.vector3(tonumber(value.x) or 0, tonumber(value.y) or 0, tonumber(value.z) or 0)
+end
+
+local function focus_position_from_message(message)
+    if not message then return nil end
+    local p = copy_point(message.anchor or message.position or message.pos)
+    if p then return p end
+    if message.x ~= nil or message.y ~= nil then
+        return vmath.vector3(tonumber(message.x) or 0, tonumber(message.y) or 0, tonumber(message.z) or 0)
+    end
+    return nil
+end
+
+local function copy_corridor(message, previous)
+    if not message then return previous end
+    if message.corridor == false or message.corridor_bounds == false then
+        return nil
+    end
+
+    local source = message.corridor_bounds or message.corridor or message.bounds
+    local has_direct = message.min_x ~= nil or message.max_x ~= nil or
+        message.min_y ~= nil or message.max_y ~= nil
+    if type(source) ~= "table" and not has_direct then
+        return previous
+    end
+    source = type(source) == "table" and source or message
+
+    local result = {}
+    if type(previous) == "table" then
+        result.min_x = previous.min_x
+        result.max_x = previous.max_x
+        result.min_y = previous.min_y
+        result.max_y = previous.max_y
+        result.camera_centers = previous.camera_centers
+    end
+    if source.min_x ~= nil then result.min_x = tonumber(source.min_x) end
+    if source.max_x ~= nil then result.max_x = tonumber(source.max_x) end
+    if source.min_y ~= nil then result.min_y = tonumber(source.min_y) end
+    if source.max_y ~= nil then result.max_y = tonumber(source.max_y) end
+
+    local center_bounds = source.camera_centers
+    if center_bounds == nil then center_bounds = source.center_bounds end
+    if center_bounds == nil then center_bounds = message.corridor_is_camera_bounds end
+    if center_bounds ~= nil then
+        result.camera_centers = boolish(center_bounds, false)
+    end
+    return result
+end
+
+local function focus_generation_is_older(incoming, current)
+    if incoming == nil or current == nil then return false end
+    local incoming_number = tonumber(incoming)
+    local current_number = tonumber(current)
+    if incoming_number and current_number then
+        return incoming_number < current_number
+    end
+    -- Opaque generations can still be protected by their token, but they have
+    -- no meaningful ordering.  Treat a different opaque value as a new epoch.
+    return false
+end
+
+local function focus_owner_matches(focus, message, sender)
+    if not focus then return false end
+    if focus.owner_key ~= focus_owner_key(message, sender) then
+        return false
+    end
+    if focus.sender_key ~= nil and sender ~= nil and
+       focus.sender_key ~= tostring(sender) then
+        return false
+    end
+    if message and message.generation ~= nil and focus.generation ~= nil and
+       tostring(message.generation) ~= tostring(focus.generation) then
+        return false
+    end
+    return true
+end
+
+local function apply_focus_room(self, message, use_source_room)
+    if not message then return end
+    local room_value = message.room_id
+    if room_value == nil and use_source_room then
+        room_value = message.source_room_id
+    end
+    local room_id = normalize_hash_string(room_value)
+    if not room_id then return end
+
+    self.current_room_id = room_id
+    self.pending_room_zone_instant = message.instant == true
+    if not self.active_object_zone_id then
+        activate_camera_zone(self, room_id, self.pending_room_zone_instant, self.zone_transition_duration)
+        self.pending_room_zone_instant = false
+    end
+end
+
+local function select_camera_focus(self)
+    local best = nil
+    for _, focus in pairs(self.camera_focuses or {}) do
+        if not best or focus.priority > best.priority or
+           (focus.priority == best.priority and focus.order > best.order) then
+            best = focus
+        end
+    end
+
+    local next_token = best and best.token_key or nil
+    if self.active_camera_focus_token ~= next_token then
+        self.active_camera_focus_token = next_token
+        if best then
+            best.blend_from = vmath.vector3(self.pos)
+            best.blend_elapsed = 0
+        end
+    end
+    return best
+end
+
+local function active_camera_focus(self)
+    local token = self.active_camera_focus_token
+    if token == nil then return nil end
+    return self.camera_focuses and self.camera_focuses[token] or nil
+end
+
+local function remove_camera_focus(self, token_key)
+    if not (self.camera_focuses and token_key and self.camera_focuses[token_key]) then
+        return false
+    end
+    self.camera_focuses[token_key] = nil
+    select_camera_focus(self)
+    return true
+end
+
+local function remove_owner_focuses(self, owner_key, except_token)
+    local changed = false
+    for token_key, focus in pairs(self.camera_focuses or {}) do
+        if focus.owner_key == owner_key and token_key ~= except_token then
+            self.camera_focuses[token_key] = nil
+            self.closed_camera_focus_tokens[token_key] = true
+            changed = true
+        end
+    end
+    if changed then select_camera_focus(self) end
+end
+
+local function prune_camera_focuses(self)
+    local changed = false
+    for token_key, focus in pairs(self.camera_focuses or {}) do
+        if focus.owner_url ~= nil and not url_exists(focus.owner_url) then
+            self.camera_focuses[token_key] = nil
+            self.camera_focus_owner_generations[focus.owner_key] = nil
+            self.closed_camera_focus_tokens[token_key] = nil
+            changed = true
+        end
+    end
+    if changed then select_camera_focus(self) end
+end
+
+local function focus_zoom(self, focus)
+    local zoom = tonumber(focus and focus.zoom)
+    if not zoom or zoom <= 0 then
+        zoom = self.zone_zoom or self.base_zoom or 1.0
+    end
+    return zoom
+end
+
+local function clamp_focus_axis(value, min_value, max_value, half_extent, center_bounds)
+    local lo = tonumber(min_value)
+    local hi = tonumber(max_value)
+    if not center_bounds then
+        if lo ~= nil then lo = lo + half_extent end
+        if hi ~= nil then hi = hi - half_extent end
+    end
+    if lo ~= nil and hi ~= nil and lo > hi then
+        return ((tonumber(min_value) or 0) + (tonumber(max_value) or 0)) * 0.5
+    end
+    if lo ~= nil and value < lo then value = lo end
+    if hi ~= nil and value > hi then value = hi end
+    return value
+end
+
+local function clamp_focus_position(self, focus, position)
+    local corridor = focus and focus.corridor
+    if not corridor then return position end
+    local zoom = focus_zoom(self, focus)
+    local width, height = get_render_window_size()
+    local center_bounds = corridor.camera_centers == true
+    position.x = clamp_focus_axis(position.x, corridor.min_x, corridor.max_x,
+        (width * 0.5) / zoom, center_bounds)
+    position.y = clamp_focus_axis(position.y, corridor.min_y, corridor.max_y,
+        (height * 0.5) / zoom, center_bounds)
+    return position
+end
+
+local function focus_target_position(self, focus)
+    local target = focus.anchor and vmath.vector3(focus.anchor) or vmath.vector3(self.pos)
+    if focus.target_url ~= nil then
+        local followed = get_follow_position(self, focus.target_url)
+        if followed then
+            target.x = followed.x + (focus.follow_offset_x or 0)
+            target.y = followed.y + (focus.follow_offset_y or 0)
+            target.z = followed.z or target.z
+        end
+    end
+    if focus.shaft_x ~= nil then
+        target.x = focus.shaft_x
+    end
+    if not focus.lock_x then target.x = self.pos.x end
+    if not focus.lock_y then target.y = self.pos.y end
+    return clamp_focus_position(self, focus, target)
+end
+
+local function apply_exact_focus_delta(self, focus, dx, dy)
+    if active_camera_focus(self) ~= focus then return end
+    dx = tonumber(dx) or 0
+    dy = tonumber(dy) or 0
+    if focus.lock_x then self.pos.x = self.pos.x + dx end
+    if focus.lock_y then self.pos.y = self.pos.y + dy end
+    clamp_focus_position(self, focus, self.pos)
+    if focus.blend_from then
+        if focus.lock_x then focus.blend_from.x = focus.blend_from.x + dx end
+        if focus.lock_y then focus.blend_from.y = focus.blend_from.y + dy end
+        clamp_focus_position(self, focus, focus.blend_from)
+    end
+end
+
+
+local function handle_camera_focus_acquire(self, message, sender, is_elevator)
+    message = message or {}
+    prune_camera_focuses(self)
+    local owner_key = focus_owner_key(message, sender)
+    if not owner_key then return false end
+
+    local generation = message.generation
+    local previous_generation = self.camera_focus_owner_generations[owner_key]
+    if focus_generation_is_older(generation, previous_generation) then
+        return false
+    end
+
+    local supplied_token = message.token
+    if supplied_token == nil and generation ~= nil then
+        supplied_token = owner_key .. ":" .. tostring(generation)
+    end
+    if supplied_token == nil then
+        self.camera_focus_sequence = self.camera_focus_sequence + 1
+        supplied_token = owner_key .. ":focus:" .. tostring(self.camera_focus_sequence)
+    end
+    local token_key = focus_token_key(supplied_token)
+    if self.closed_camera_focus_tokens[token_key] then
+        return false
+    end
+    local existing = self.camera_focuses[token_key]
+    if existing and not focus_owner_matches(existing, message, sender) then
+        return false
+    end
+    for _, owned_focus in pairs(self.camera_focuses) do
+        if owned_focus.owner_key == owner_key and
+           owned_focus.sender_key ~= nil and sender ~= nil and
+           owned_focus.sender_key ~= tostring(sender) then
+            if owned_focus.owner_url == nil or url_exists(owned_focus.owner_url) then
+                return false
+            end
+        end
+    end
+
+    remove_owner_focuses(self, owner_key, token_key)
+    if generation ~= nil then
+        self.camera_focus_owner_generations[owner_key] = generation
+    end
+
+    self.camera_focus_sequence = self.camera_focus_sequence + 1
+    local position = focus_position_from_message(message)
+    local target_url = message.target_url or message.follow_url or message.player_url
+    local lock_x = boolish(message.lock_x, true)
+    local lock_y = boolish(message.lock_y, true)
+    local focus = existing or {}
+    focus.token = supplied_token
+    focus.token_key = token_key
+    focus.owner_key = owner_key
+    focus.owner_url = focus_owner_url(message, sender)
+    focus.sender_key = sender ~= nil and tostring(sender) or focus.sender_key
+    focus.generation = generation
+    focus.priority = tonumber(message.priority) or (is_elevator and 50 or 0)
+    focus.order = self.camera_focus_sequence
+    focus.anchor = position or focus.anchor or vmath.vector3(self.pos)
+    focus.target_url = target_url or focus.target_url
+    focus.lock_x = lock_x
+    focus.lock_y = lock_y
+    focus.shaft_x = tonumber(message.shaft_x) or focus.shaft_x
+    focus.follow_offset_x = tonumber(message.follow_offset_x)
+    if focus.follow_offset_x == nil then focus.follow_offset_x = self.offset.x end
+    focus.follow_offset_y = tonumber(message.follow_offset_y)
+    if focus.follow_offset_y == nil then focus.follow_offset_y = self.offset.y end
+    focus.corridor = copy_corridor(message, focus.corridor)
+    focus.zoom = tonumber(message.zoom) or tonumber(message.zoom_level) or focus.zoom
+    focus.blend_in = math.max(0, tonumber(message.blend_in or message.transition_duration) or 0.2)
+    focus.update_sequence = tonumber(message.sequence or message.seq) or focus.update_sequence
+    self.camera_focuses[token_key] = focus
+
+    apply_focus_room(self, message, true)
+    select_camera_focus(self)
+    return supplied_token
+end
+
+local function handle_camera_focus_update(self, message, sender)
+    message = message or {}
+    local token_key = focus_token_key(message.token)
+    local focus = token_key and self.camera_focuses[token_key] or nil
+    if not focus or not focus_owner_matches(focus, message, sender) then
+        return false
+    end
+
+    local incoming_sequence = tonumber(message.sequence or message.seq)
+    if incoming_sequence and focus.update_sequence and incoming_sequence <= focus.update_sequence then
+        return false
+    end
+
+    local was_active = active_camera_focus(self) == focus
+    local old_anchor = focus.anchor and vmath.vector3(focus.anchor) or nil
+    local next_anchor = focus_position_from_message(message)
+    local explicit_dx = tonumber(message.delta_x or message.dx)
+    local explicit_dy = tonumber(message.delta_y or message.dy)
+    local dx, dy = explicit_dx or 0, explicit_dy or 0
+    if next_anchor then
+        if explicit_dx == nil and old_anchor then dx = next_anchor.x - old_anchor.x end
+        if explicit_dy == nil and old_anchor then dy = next_anchor.y - old_anchor.y end
+        focus.anchor = next_anchor
+    elseif old_anchor and (explicit_dx ~= nil or explicit_dy ~= nil) then
+        focus.anchor = vmath.vector3(old_anchor.x + dx, old_anchor.y + dy, old_anchor.z)
+    end
+
+    if message.priority ~= nil then focus.priority = tonumber(message.priority) or focus.priority end
+    if message.target_url ~= nil or message.follow_url ~= nil or message.player_url ~= nil then
+        focus.target_url = message.target_url or message.follow_url or message.player_url
+    end
+    if message.lock_x ~= nil then focus.lock_x = boolish(message.lock_x, focus.lock_x) end
+    if message.lock_y ~= nil then focus.lock_y = boolish(message.lock_y, focus.lock_y) end
+    if message.shaft_x ~= nil then focus.shaft_x = tonumber(message.shaft_x) end
+    if message.follow_offset_x ~= nil then focus.follow_offset_x = tonumber(message.follow_offset_x) or 0 end
+    if message.follow_offset_y ~= nil then focus.follow_offset_y = tonumber(message.follow_offset_y) or 0 end
+    focus.corridor = copy_corridor(message, focus.corridor)
+    if message.zoom ~= nil or message.zoom_level ~= nil then
+        focus.zoom = tonumber(message.zoom) or tonumber(message.zoom_level) or focus.zoom
+    end
+    if incoming_sequence then focus.update_sequence = incoming_sequence end
+
+    apply_focus_room(self, message, false)
+    select_camera_focus(self)
+    if was_active then
+        apply_exact_focus_delta(self, focus, dx, dy)
+    end
+    if was_active and active_camera_focus(self) == focus then
+        local shake_x, shake_y = Feel.offset()
+        render_camera(self, self._last_dt, "camera_focus_update", shake_x, shake_y, focus_zoom(self, focus))
+    end
+    return true
+end
+
+local function handle_camera_focus_release(self, message, sender)
+    message = message or {}
+    local token_key = focus_token_key(message.token)
+    local focus = token_key and self.camera_focuses[token_key] or nil
+    if not focus or not focus_owner_matches(focus, message, sender) then
+        return false
+    end
+    apply_focus_room(self, message, false)
+    local removed = remove_camera_focus(self, token_key)
+    if removed then self.closed_camera_focus_tokens[token_key] = true end
+    return removed
+end
+
+local function integrate_camera_focus(self, focus, dt)
+    if self._camera_paused then return end
+    self._follow_target_x, self._follow_target_y = nil, nil
+    dt = CameraMath.clamp_dt(dt)
+    local target = focus_target_position(self, focus)
+    local blend_in = tonumber(focus.blend_in) or 0
+    if focus.blend_from and blend_in > 0 and (focus.blend_elapsed or 0) < blend_in then
+        focus.blend_elapsed = math.min(blend_in, (focus.blend_elapsed or 0) + dt)
+        local t = focus.blend_elapsed / blend_in
+        if focus.lock_x then self.pos.x = lerp(focus.blend_from.x, target.x, t) end
+        if focus.lock_y then self.pos.y = lerp(focus.blend_from.y, target.y, t) end
+        if t >= 1 then focus.blend_from = nil end
+    else
+        if focus.lock_x then self.pos.x = target.x end
+        if focus.lock_y then self.pos.y = target.y end
+        focus.blend_from = nil
+    end
+    clamp_focus_position(self, focus, self.pos)
+    local shake_x, shake_y = Feel.offset()
+    return render_camera(self, dt, "camera_focus", shake_x, shake_y, focus_zoom(self, focus))
+end
+
+-- Zones with clamp_to_room keep the follow camera's view inside the current
+-- room's world rectangle, inset by bounds_padding; a room smaller than the
+-- view stays centred on that axis. After a room change the follow target is
+-- clamped at once, while the camera itself gets a short grace period to
+-- scroll across the doorway instead of snapping a full screen.
+local ROOM_CLAMP_GRACE = 0.6
+
+local function room_clamp_view(self)
+    if not self.zone_clamp_to_room then return nil end
+    local room_id = normalize_hash_string(self.current_room_id)
+    local room_manager = self.room_manager
+    if not room_id or type(room_manager) ~= "table" or type(room_manager.get_room_data) ~= "function" then
+        return nil
+    end
+    local ok_room, room = pcall(room_manager.get_room_data, room_id)
+    if not ok_room or type(room) ~= "table" then return nil end
+    local x, y, w, h = tonumber(room.x), tonumber(room.y), tonumber(room.w), tonumber(room.h)
+    if not x or not y or not w or not h or w <= 0 or h <= 0 then return nil end
+    local pad = tonumber(self.zone_bounds_padding) or 0
+    local zoom = tonumber(self.zone_zoom) or tonumber(self.base_zoom) or 1
+    if zoom <= 0 then zoom = 1 end
+    local width, height = get_render_window_size()
+    local min_x = x + (tonumber(room.ox) or 0) + pad
+    local min_y = y + (tonumber(room.oy) or 0) + pad
+    return { min_x = min_x, min_y = min_y, max_x = min_x + w - 2 * pad, max_y = min_y + h - 2 * pad,
+        half_w = (width * 0.5) / zoom, half_h = (height * 0.5) / zoom, room_id = room_id }
+end
+
+local function clamp_room_target(self, x, y)
+    local view = room_clamp_view(self)
+    if not view then return x, y end
+    return clamp_focus_axis(x, view.min_x, view.max_x, view.half_w, false),
+        clamp_focus_axis(y, view.min_y, view.max_y, view.half_h, false)
+end
+
+local function settle_room_clamp(self, dt)
+    local view = room_clamp_view(self)
+    if not view then
+        self._clamp_room_id = nil
+        return
+    end
+    if self._clamp_room_id ~= view.room_id then
+        -- The first room clamps immediately; later rooms scroll into place.
+        self._room_clamp_grace = self._clamp_room_id and ROOM_CLAMP_GRACE or 0
+        self._clamp_room_id = view.room_id
+    end
+    if (self._room_clamp_grace or 0) > 0 then
+        self._room_clamp_grace = self._room_clamp_grace - (dt or 0)
+        return
+    end
+    self.pos.x = clamp_focus_axis(self.pos.x, view.min_x, view.max_x, view.half_w, false)
+    self.pos.y = clamp_focus_axis(self.pos.y, view.min_y, view.max_y, view.half_h, false)
+end
+
+local function integrate_follow(self, dt)
+    if self._camera_paused then
+        return
+    end
+    dt = CameraMath.clamp_dt(dt)
+
+    if not self.have_target then
+        self._follow_target_x, self._follow_target_y = nil, nil
+        if self.last_valid_target then
+            self.pos.x = self.last_valid_target.x
+            self.pos.y = self.last_valid_target.y
+            apply_bounds(self, self.pos)
+            return render_camera(self, dt, "no_target_last_valid")
+        elseif bounds_valid(self.bounds) then
+            self.pos.x = (self.bounds.min_x + self.bounds.max_x) * 0.5
+            self.pos.y = (self.bounds.min_y + self.bounds.max_y) * 0.5
+            return render_camera(self, dt, "no_target_center_bounds")
+        end
+        return
+    end
+
+    if self.snapping and self.snap_target then
+        self._follow_target_x, self._follow_target_y = nil, nil
+        self.snap_t = self.snap_t + dt / math.max(0.0001, self.respawn_lerp_time)
+        local t = math.min(1, self.snap_t)
+        self.pos.x = lerp(self.pos.x, self.snap_target.x, t)
+        self.pos.y = lerp(self.pos.y, self.snap_target.y, t)
+        apply_bounds(self, self.pos)
+        if t >= 1 then
+            self.snapping, self.snap_target, self.snap_t = false, nil, 0
+        end
+        return render_camera(self, dt, "snapping")
+    end
+
+    local target_x = self.target_pos.x
+    local target_y = self.target_pos.y
+    local input_state = input_controller and input_controller.get_state and input_controller.get_state() or nil
+    if Config.camera.look_y_enabled~=false and self.zone_allow_look_around and input_state and input_state.camera_y and input_state.camera_y ~= 0 then
+        target_y = target_y + (self.look_y_amount or 64.0) * input_state.camera_y
+    end
+    local shake_x, shake_y = Feel.offset()
+    target_x = target_x + (shake_x or 0)
+    target_y = target_y + (shake_y or 0)
+
+    local lock_wx = clamp(self.zone_lock_weight_x or 0, 0, 1)
+    local lock_wy = clamp(self.zone_lock_weight_y or 0, 0, 1)
+    local lock_pull_x = clamp(lock_wx * lock_wx, 0, 1)
+    local lock_pull_y = clamp(lock_wy * lock_wy, 0, 1)
+
+    local follow_scale_x = 1 - lock_pull_x
+    local follow_scale_y = 1 - lock_pull_y
+
+    self.lookahead_offset=CameraMath.lookahead(self.lookahead_offset,input_state and input_state.move_x,
+        self.lookahead.x,self.speedx,dt)
+    target_x=target_x+self.lookahead_offset*follow_scale_x
+    target_x, target_y = clamp_room_target(self, target_x, target_y)
+
+    self.pos.x = CameraMath.deadzone_step(
+        self.pos.x, target_x, self.deadzone.x, self.speedx, dt, follow_scale_x, self._follow_target_x)
+    self.pos.y = CameraMath.deadzone_step(
+        self.pos.y, target_y, self.deadzone.y, self.speedy, dt, follow_scale_y, self._follow_target_y)
+    self._follow_target_x, self._follow_target_y = target_x, target_y
+
+    if lock_pull_x > 0 and self.zone_effective_focus_x ~= nil then
+        self.pos.x = lerp(self.pos.x, self.zone_effective_focus_x, lock_pull_x)
+        if lock_pull_x >= 0.999 and self.zone_focus_x ~= nil then
+            self.pos.x = self.zone_focus_x
+        end
+    end
+    if lock_pull_y > 0 and self.zone_effective_focus_y ~= nil then
+        self.pos.y = lerp(self.pos.y, self.zone_effective_focus_y, lock_pull_y)
+        if lock_pull_y >= 0.999 and self.zone_focus_y ~= nil then
+            self.pos.y = self.zone_focus_y
+        end
+    end
+
+    settle_room_clamp(self, dt)
+    apply_bounds(self, self.pos)
+    return render_camera(self, dt, "follow")
+end
+
+function init(self)
+
+    self.cam_url  = msg.url(nil, go.get_id(), self.camera_id)
+    msg.post(self.cam_url, "acquire_camera_focus")
+
+    self.follow_url  = nil
+    self.pos         = go.get_position()
+    self.target_pos  = vmath.vector3(self.pos)
+    self.bounds      = nil
+    self.have_target = false
+    self.last_valid_target = vmath.vector3(self.pos)
+    self._warn_timer = 0
+
+    -- Apply config values if they exist, otherwise use property defaults
+    if Config.camera and Config.camera.deadzone then
+        self.deadzone_x = Config.camera.deadzone.x or self.deadzone_x
+        self.deadzone_y = Config.camera.deadzone.y or self.deadzone_y
+    end
+    if Config.camera and Config.camera.lookahead then
+        self.lookahead_x = Config.camera.lookahead.x or self.lookahead_x
+    end
+    if Config.camera and Config.camera.offset then
+        self.offset_x = Config.camera.offset.x or self.offset_x
+        self.offset_y = Config.camera.offset.y or self.offset_y
+    end
+    if Config.camera and Config.camera.speed then
+        self.speed_x = Config.camera.speed.x or self.speed_x
+        self.speed_y = Config.camera.speed.y or self.speed_y
+    end
+    if Config.camera then
+        if Config.camera.snap_on_respawn ~= nil then
+            self.snap_on_respawn = Config.camera.snap_on_respawn and 1 or 0
+        end
+        if Config.camera.respawn_lerp_time then
+            self.respawn_lerp_time = Config.camera.respawn_lerp_time
+        end
+        if Config.camera.pull_from_go ~= nil then
+            self.pull_from_go = Config.camera.pull_from_go and 1 or 0
+        end
+        if Config.camera.parent_to_player ~= nil then
+            self.parent_to_player = Config.camera.parent_to_player and 1 or 0
+        end
+        if Config.camera.enable_zones ~= nil then
+            self.enable_zones = Config.camera.enable_zones and true or false
+        end
+    end
+
+    self.deadzone   = vmath.vector3(self.deadzone_x or 0, self.deadzone_y or 0, 0)
+    self.lookahead  = vmath.vector3(self.lookahead_x or 0, 0, 0)
+    self.offset     = vmath.vector3(self.offset_x or 0, self.offset_y or 0, 0)
+    self.speedx     = self.speed_x or 4.0
+    self.speedy     = self.speed_y or 4.0
+    self.base_deadzone = vmath.vector3(self.deadzone)
+    self.base_lookahead_x = self.lookahead.x
+    self.base_speedx = self.speedx
+    self.base_speedy = self.speedy
+    self.base_zoom = (Config.camera and Config.camera.default_zoom) or 1.0
+    self.zone_zoom = self.base_zoom
+    self.pixel_snap = not (Config.camera and Config.camera.pixel_snap == false)
+    self.render_pos = vmath.vector3(self.pos)
+    self._last_dt = 1 / 60
+    self._camera_paused = false
+    self.camera_focuses = {}
+    self.camera_focus_owner_generations = {}
+    self.closed_camera_focus_tokens = {}
+    self.camera_focus_sequence = 0
+    self.active_camera_focus_token = nil
+
+    self.zone_transition_duration = 0.2
+    self.current_room_id = nil
+    self.active_zone_key = nil
+    self.active_object_zone_id = nil
+    self.pending_room_zone_instant = true
+    self.object_camera_zones = {}
+    self.zone_named_configs = {}
+    self.zone_lock_x = false
+    self.zone_lock_y = false
+    self.zone_lock_camera = false
+    self.zone_focus_x = nil
+    self.zone_focus_y = nil
+    self.zone_effective_focus_x = nil
+    self.zone_effective_focus_y = nil
+    self.zone_lock_weight_x = 0
+    self.zone_lock_weight_y = 0
+    self.zone_lock_target_x = 0
+    self.zone_lock_target_y = 0
+    self.zone_lock_entry_focus_x = nil
+    self.zone_lock_entry_focus_y = nil
+    self.zone_allow_look_around = true
+    self.zone_zoom_target = self.base_zoom
+    self.room_manager = Util.require_module("mvtk.map.streaming.room_manager")
+
+    CameraZones.init()
+    -- The default (exploration) zone must inherit the project camera config;
+    -- only explicitly authored camera-zone fields may override it.
+    CameraZones.set_project_defaults({
+        deadzone = self.base_deadzone,
+        speed = vmath.vector3(self.base_speedx, self.base_speedy, 0),
+        lookahead = self.base_lookahead_x,
+    })
+    local camera_cfg = Util.require_config("developer.config.camera_zones")
+    if next(camera_cfg) then
+        if type(camera_cfg.zones) == "table" then
+            for zone_name, zone_settings in pairs(camera_cfg.zones) do
+                if type(zone_name) == "string" and type(zone_settings) == "table" then
+                    self.zone_named_configs[zone_name:lower()] = zone_settings
+                end
+            end
+        end
+
+        if type(camera_cfg.room_zones) == "table" then
+            for room_id, zone_config in pairs(camera_cfg.room_zones) do
+                local key = normalize_hash_string(room_id)
+                if key then
+                    local resolved = zone_config
+                    if type(zone_config) == "string" then
+                        local by_name = self.zone_named_configs[zone_config:lower()]
+                        if by_name then
+                            resolved = by_name
+                        end
+                    end
+                    CameraZones.register_zone(key, resolved)
+                end
+            end
+        end
+    end
+    activate_camera_zone(self, "exploration", true, 0)
+
+    self.snapping   = false
+    self.snap_target= nil
+    self.snap_t     = 0
+
+    self.is_parented = false
+
+    C.URL.CAMERA = msg.url()
+    camera_log("[CAMERA] init at", self.pos, "url=", C.URL.CAMERA)
+
+    -- Force detach from any parent to ensure world position setting works
+    msg.post(".", "set_parent", { parent_id = nil, keep_world_transform = 1 })
+end
+
+function update(self, dt)
+    Pause.update(dt)
+    local timescale = (Pause and (Pause.dt_scale or Pause.scale) and (Pause.dt_scale or Pause.scale)()) or 1.0
+    local is_paused = Pause and Pause.get and Pause.get()
+
+    if CAMERA_DEBUG then
+        if is_paused and not self._was_paused then
+            print(string.format("[CAMERA] PAUSE ENTERED - pos=%s", fmt_vec(go.get_position())))
+        elseif not is_paused and self._was_paused then
+            print(string.format("[CAMERA] PAUSE EXITED - pos=%s", fmt_vec(go.get_position())))
+        end
+        self._was_paused = is_paused
+    end
+
+    self._camera_paused = is_paused and true or false
+    if is_paused then
+        return
+    end
+
+    Feel.update(dt)
+    -- Preserve elapsed time by default; FrameClock snapping is opt-in.
+    dt = FrameClock.snap(dt) * timescale
+    self._last_dt = dt
+    self._frame_timescale = timescale
+    prune_camera_focuses(self)
+
+    -- External-move verification is diagnostic-only. Normal play trusts the
+    -- camera's unrounded simulation state and performs no position readback.
+    if CAMERA_DEBUG then
+        local actual = go.get_position()
+        if actual and self.pos then
+            local dx = math.abs((actual.x or 0) - (self.pos.x or 0))
+            local dy = math.abs((actual.y or 0) - (self.pos.y or 0))
+            if dx > 200 or dy > 200 then
+                camera_log(string.format(
+                    "[CAMERA EXTERNAL MOVE] Large displacement detected. Resyncing. expected=%s actual=%s",
+                    fmt_vec(self.pos), fmt_vec(actual)))
+                self.pos.x, self.pos.y, self.pos.z = actual.x, actual.y, actual.z
+            end
+        end
+    end
+
+    if self.is_parented then
+        local detach = false
+        if not (self.follow_url and go.exists(self.follow_url)) then
+            detach = true
+        else
+            -- If the parent ever flips/rotates (e.g. bad player scale), detach to avoid mirroring the world
+            local ok_scale, s = pcall(go.get_scale, self.follow_url)
+            if ok_scale and s and ((s.x or 1) < 0 or (s.y or 1) < 0 or (s.z or 1) <= 0) then
+                detach = true
+            end
+            local ok_rot, r = pcall(go.get_rotation, self.follow_url)
+            if ok_rot and r then
+                local ok_euler, ex, ey, ez = pcall(vmath.quat_to_euler, r)
+                if ok_euler then
+                    local rx, ry, rz
+                    if type(ex) == "userdata" and ex.x then
+                        rx, ry, rz = ex.x, ex.y, ex.z
+                    else
+                        rx, ry, rz = tonumber(ex) or 0, tonumber(ey) or 0, tonumber(ez) or 0
+                    end
+                    if (math.abs(rx) > 0.01) or (math.abs(ry) > 0.01) or (math.abs(rz) > 0.01) then
+                        detach = true
+                    end
+                end
+            end
+        end
+        if detach then
+            camera_log("[CAMERA] Detaching from parent to avoid inheriting flipped transforms")
+            go.set_parent(".", nil, true)
+            self.is_parented = false
+            pull_player_pos(self)
+        else
+            go.set_position(self.offset)
+            debug_state(self, dt, "parented")
+            return
+        end
+    end
+
+    if (not self.follow_url or not go.exists(self.follow_url)) and C and C.URL and C.URL.PLAYER and go.exists(C.URL.PLAYER) then
+        self.follow_url = C.URL.PLAYER
+        camera_log("[CAMERA] auto-follow recovered ->", self.follow_url)
+        pull_player_pos(self)
+        self.have_target = true
+        self.last_valid_target = vmath.vector3(self.target_pos)
+        self.pos.x = self.target_pos.x
+        self.pos.y = self.target_pos.y
+        if (self.snap_on_respawn ~= 0) then
+            msg.post(msg.url(), C.MSG.REQUEST_RESPAWN, { position = self.target_pos })
+        end
+    end
+
+    -- The follow target is pulled and integrated in late_update (frame commit),
+    -- after every other script has moved for this frame. Zone probing below
+    -- uses the previous commit's target, which is one frame old by design.
+
+    local zone_probe_pos = nil
+    if self.have_target then
+        zone_probe_pos = vmath.vector3(self.target_pos.x - self.offset.x, self.target_pos.y - self.offset.y, 0)
+    elseif self.follow_url and go.exists(self.follow_url) then
+        zone_probe_pos = get_follow_position(self, self.follow_url)
+    end
+
+    if self.enable_zones then
+        local active_object_zone = pick_active_object_zone(self, zone_probe_pos)
+        if active_object_zone then
+            self.active_object_zone_id = active_object_zone.id
+            activate_camera_zone(self, active_object_zone.key, false, active_object_zone.transition_duration)
+        else
+            self.active_object_zone_id = nil
+            activate_camera_zone(self, self.current_room_id or "exploration", self.pending_room_zone_instant == true, self.zone_transition_duration)
+            self.pending_room_zone_instant = false
+        end
+    end
+    apply_zone_settings(self, dt)
+end
+
+-- Frame commit. Defold runs late_update after every script's update() and
+-- after the in-frame message flush, so the followed object's transform is
+-- final for this frame. Pull the target here, integrate once, and publish the
+-- render state; the render projection, Tiled parallax, starter parallax and
+-- lighting all consume that single publication (CameraState hooks), which is
+-- what keeps the world and the backgrounds in lockstep with the player.
+-- Nothing else may write the camera position during play.
+function late_update(self, dt)
+    if self._camera_paused or self.is_parented then
+        self._follow_target_x, self._follow_target_y = nil, nil
+        return
+    end
+    dt = FrameClock.snap(dt) * (self._frame_timescale or 1.0)
+    self._last_dt = dt
+
+    if (self.pull_from_go ~= 0) and self.follow_url and go.exists(self.follow_url) then
+        pull_player_pos(self)
+    end
+
+    local focus = select_camera_focus(self)
+    local rendered
+    if focus then
+        rendered = integrate_camera_focus(self, focus, dt)
+    else
+        rendered = integrate_follow(self, dt)
+    end
+    -- Immediate message projections may be superseded before rendering. Only
+    -- this final view can drive durable discoveries, and a no-op cannot reuse
+    -- the preceding frame or an earlier message publication.
+    if rendered then CameraState.commit() end
+end
+
+function on_message(self, message_id, message, sender)
+    -- Log ALL messages received by camera for debugging
+    if CAMERA_DEBUG then
+        local msg_name = "unknown"
+        -- Try to identify common message names
+        if message_id == C.MSG.REQUEST_RESPAWN then msg_name = "REQUEST_RESPAWN"
+        elseif message_id == hash("set_bounds") then msg_name = "set_bounds"
+        elseif message_id == hash("set_follow") then msg_name = "set_follow"
+        elseif message_id == hash("mvtk_set_follow") then msg_name = "mvtk_set_follow"
+        elseif message_id == hash("enter_room") then msg_name = "enter_room"
+        elseif message_id == hash("register_room_zone") then msg_name = "register_room_zone"
+        elseif message_id == hash("register_zone") then msg_name = "register_zone"
+        elseif message_id == hash("register_camera_zone") then msg_name = "register_camera_zone"
+        elseif message_id == hash("player_pos") then msg_name = "player_pos"
+        elseif message_id == hash("cam_shake") then msg_name = "cam_shake"
+        elseif message_id == hash("hitstop") then msg_name = "hitstop"
+        elseif message_id == hash("acquire_camera_focus") then msg_name = "acquire_camera_focus"
+        elseif message_id == hash("release_camera_focus") then msg_name = "release_camera_focus"
+        end
+        print(string.format("[CAMERA MSG] received: %s (hash=%s) from=%s pos_before=%s",
+            msg_name, tostring(message_id), tostring(sender), fmt_vec(go.get_position())))
+    end
+
+    if message_id == hash("camera_focus_acquire") or message_id == hash("elevator_camera_acquire") then
+        handle_camera_focus_acquire(self, message, sender, message_id == hash("elevator_camera_acquire"))
+
+    elseif message_id == hash("camera_focus_update") or
+           message_id == hash("camera_focus_handoff") or
+           message_id == hash("elevator_camera_handoff") then
+        handle_camera_focus_update(self, message, sender)
+
+    elseif message_id == hash("camera_focus_release") or message_id == hash("elevator_camera_release") then
+        handle_camera_focus_release(self, message, sender)
+
+    elseif message_id == C.MSG.REQUEST_RESPAWN and message and message.position then
+        self._follow_target_x, self._follow_target_y = nil, nil
+        local tgt = vmath.vector3(message.position)
+        tgt.x = tgt.x + self.offset.x
+        tgt.y = tgt.y + self.offset.y
+        if (self.snap_on_respawn ~= 0) then
+            self.pos.x, self.pos.y = tgt.x, tgt.y
+            apply_bounds(self, self.pos)
+            self.snapping, self.snap_target, self.snap_t = false, nil, 0
+            render_camera(self, self._last_dt, "respawn_snap")
+            camera_log(string.format("[CAMERA] REQUEST_RESPAWN snap -> %s (from msg pos=%s)", fmt_vec(self.pos), fmt_vec(message.position)))
+        else
+            self.snap_target = apply_bounds(self, tgt)
+            self.snapping, self.snap_t = true, 0
+            camera_log(string.format("[CAMERA] REQUEST_RESPAWN lerp -> target=%s", fmt_vec(self.snap_target)))
+        end
+
+    elseif message_id == hash("set_bounds") and message then
+        -- Accept but ignore degenerate bounds so we don't freeze at (0,0)
+        if bounds_valid(message) then
+            self.bounds = message
+            camera_log(("[CAMERA] bounds set: x[%s..%s] y[%s..%s]"):format(
+            tostring(message.min_x), tostring(message.max_x), tostring(message.min_y), tostring(message.max_y)))
+        else
+            self.bounds = nil
+            camera_log("[CAMERA] bounds ignored (degenerate)")
+        end
+
+    elseif message_id == hash("enter_room") and message then
+        local room_id = normalize_hash_string(message.room_id)
+        if room_id then
+            self.current_room_id = room_id
+            self.pending_room_zone_instant = message.instant == true
+            if not self.active_object_zone_id then
+                activate_camera_zone(self, room_id, self.pending_room_zone_instant, self.zone_transition_duration)
+                self.pending_room_zone_instant = false
+            end
+            camera_log(string.format("[CAMERA_ZONES] enter_room=%s instant=%s", room_id, tostring(message.instant == true)))
+        end
+
+    elseif message_id == hash("register_room_zone") and message then
+        local room_id = normalize_hash_string(message.room_id)
+        local zone_value = message.zone or message.zone_type or message.camera_mode
+        if room_id and zone_value ~= nil then
+            local resolved = zone_value
+            if type(zone_value) == "string" and self.zone_named_configs then
+                local by_name = self.zone_named_configs[zone_value:lower()]
+                if by_name then
+                    resolved = by_name
+                end
+            end
+
+            CameraZones.register_zone(room_id, resolved)
+            if self.current_room_id == room_id and not self.active_object_zone_id then
+                activate_camera_zone(
+                    self,
+                    room_id,
+                    false,
+                    self.zone_transition_duration,
+                    self.active_zone_key == room_id
+                )
+            end
+            camera_log(string.format("[CAMERA_ZONES] room_zone room=%s zone=%s", tostring(room_id), tostring(zone_value)))
+        end
+
+    elseif (message_id == hash("register_zone") or message_id == hash("register_camera_zone")) and message then
+        local zone = build_object_zone(self, message)
+        if zone then
+            local replace_active_zone = self.active_zone_key == zone.key
+            self.object_camera_zones[zone.id] = zone
+            CameraZones.register_zone(zone.key, zone.settings)
+            if replace_active_zone then
+                activate_camera_zone(self, zone.key, false, zone.transition_duration, true)
+            end
+            camera_log(string.format("[CAMERA_ZONES] registered id=%s room=%s mode=%s",
+                tostring(zone.id), tostring(zone.room_id), tostring(message.camera_mode)))
+        else
+            camera_log("[CAMERA_ZONES] register ignored: missing id/position")
+        end
+
+    elseif (message_id == hash("set_follow") or message_id == hash("mvtk_set_follow")) and message and message.url then
+        if not (message.url and go.exists(message.url)) then
+            camera_log("[CAMERA WARN] set_follow ignored; url missing or does not exist")
+            return
+        end
+        -- If we were given a child (e.g., visual), walk up to the top-most parent so we follow the root player GO
+        local resolved = message.url
+        local safety = 0
+        while true do
+            local ok_parent, parent = pcall(go.get_parent, resolved)
+            if ok_parent and parent and go.exists(parent) and parent ~= resolved then
+                resolved = parent
+                safety = safety + 1
+                if safety > 4 then break end
+            else
+                break
+            end
+        end
+        self.follow_url  = resolved
+        self._follow_target_x, self._follow_target_y = nil, nil
+        self.is_parented = false  -- force pull mode; parenting to the player was causing flips/black screens on facing changes
+        camera_log(string.format("[CAMERA] set_follow -> %s (resolved from %s)", tostring(self.follow_url), tostring(message.url)))
+
+        if (self.pull_from_go ~= 0) then
+            pull_player_pos(self)
+            self.have_target = true
+            self.pos.x = self.target_pos.x
+            self.pos.y = self.target_pos.y
+            self.last_valid_target = vmath.vector3(self.target_pos)
+            render_camera(self, self._last_dt, "set_follow_pull")
+            camera_log(string.format("[CAMERA] set_follow SNAP (pull mode) -> %s", fmt_vec(self.pos)))
+            if (self.snap_on_respawn ~= 0) then
+                msg.post(msg.url(), C.MSG.REQUEST_RESPAWN, { position = self.pos })
+            end
+        else
+            -- Even without pull mode, seed target so we don't sit at origin
+            local p = get_follow_position(self, self.follow_url)
+            if not p then return end
+            self.target_pos.x = p.x + self.offset.x
+            self.target_pos.y = p.y + self.offset.y
+            self.have_target = true
+            self.last_valid_target = vmath.vector3(self.target_pos)
+            self.pos.x = self.target_pos.x
+            self.pos.y = self.target_pos.y
+            render_camera(self, self._last_dt, "set_follow_push")
+            camera_log(string.format("[CAMERA] set_follow SNAP (no pull) -> %s", fmt_vec(self.pos)))
+        end
+    elseif message_id == hash("player_pos") and message and message.pos then
+        -- Push fallback for configurations that do not pull from the player GO.
+        -- Integration remains in update() so the camera advances once per frame.
+        self.target_pos.x = message.pos.x + self.offset.x
+        self.target_pos.y = message.pos.y + self.offset.y
+        self.have_target = true
+        self.last_valid_target.x = self.target_pos.x
+        self.last_valid_target.y = self.target_pos.y
+    elseif message_id == hash("cam_shake") then
+        local Feel = require "mvtk.core.gamefeel"
+        local mag = (message and message.mag) or 12
+        local dur = (message and message.dur) or 0.12
+        local freq = (message and message.freq) or 25
+        Feel.shake(mag, dur, freq)
+    elseif message_id == hash("hitstop") then
+        local Pause = require "mvtk.core.pause"
+        Pause.hitstop((message and message.t) or 0.06)
+    end
+end
+
+function final(self)
+    self.camera_focuses = {}
+    self.camera_focus_owner_generations = {}
+    self.closed_camera_focus_tokens = {}
+    self.active_camera_focus_token = nil
+    CameraState.reset()
+    -- An unloaded game collection must not retain the render projection over
+    -- a later scene's component-only camera.
+    msg.post("@render:", "release_camera_projection", { id = hash("mvtk_camera_projection") })
+    local cam_url = self.cam_url or msg.url(nil, go.get_id(), self.camera_id)
+    if cam_url then
+        msg.post(cam_url, "release_camera_focus")
+    end
+    msg.post(".", "release_input_focus")
+end

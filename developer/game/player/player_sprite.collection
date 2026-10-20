@@ -1,0 +1,6 @@
+name: "player"
+instances {
+  id: "player"
+  prototype: "/developer/game/player/player_sprite.go"
+}
+scale_along_z: 0

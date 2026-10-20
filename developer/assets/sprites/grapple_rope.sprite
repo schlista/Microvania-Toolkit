@@ -1,0 +1,11 @@
+default_animation: "grapple_rope"
+material: "/developer/materials/grapple_rope.material"
+size {
+  x: 2.0
+  y: 2.0
+}
+size_mode: SIZE_MODE_MANUAL
+textures {
+  sampler: "texture_sampler"
+  texture: "/developer/assets/atlas/grapple_rope.atlas"
+}

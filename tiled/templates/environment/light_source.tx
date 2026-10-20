@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<template>
+ <object name="Light Source" type="light_source">
+  <properties>
+   <property name="light_id" type="string" value=""/>
+   <property name="light" type="class" propertytype="light_source_light">
+    <properties>
+     <property name="radius" type="float" value="200"/>
+     <property name="intensity" type="float" value="1"/>
+     <property name="enabled" type="bool" value="true"/>
+     <property name="track_position" type="bool" value="false"/>
+    </properties>
+   </property>
+   <property name="mvtk_template_version" type="string" value="2.7.0"/>
+  </properties>
+  <point/>
+ </object>
+</template>

@@ -1,0 +1,113 @@
+-- A separately baked holder lets one-shot feedback outlive a consumed owner.
+local Presentation = require "mvtk.tiled.object_presentation"
+local Manifest = require "developer.config.object_art_generated"
+local Animation = require "mvtk.tiled.art_animation"
+go.property("art_id", "")
+
+local function set_art(self, state)
+    self.state = state
+    local selected = self.states[state.state] and state.state or "default"
+    local fallback = selected ~= state.state and state.fallbacks and state.fallbacks[state.state]
+    for _, art in ipairs(self.art) do
+        if go.exists(art.url) then
+            local visible = not state.removed and state.visible ~= false and (art.state == selected or art.state == "always")
+            if state.fallbacks then
+                -- Runtime flips are relative to the baked atlas animation,
+                -- preserving Tiled's authored H/V orientation when restored.
+                sprite.set_hflip(art.sprite, art.state == "default"
+                    and fallback and fallback.flip_horizontal == true or false)
+            end
+            -- Optional alpha fallback (e.g. an opened chest with no "opened"
+            -- art dims its default image). Multiplies the authored opacity.
+            local alpha = art.alpha
+            if art.state == "default" and fallback and tonumber(fallback.alpha) then
+                alpha = alpha * math.max(0, math.min(1, tonumber(fallback.alpha)))
+            end
+            -- Set alpha synchronously as well as enable/disable: saved pickups
+            -- must not flash while the queued disable message is delivered.
+            go.set(art.sprite, "tint.w", visible and alpha or 0)
+            msg.post(art.sprite, visible and "enable" or "disable")
+            if state.removed then go.delete(art.url) end
+        end
+    end
+    self.removed = state.removed
+end
+
+local function feedback(self, event)
+    local component = self.spec.effects and self.spec.effects[event]
+    if not component or (event ~= "collected" and event ~= "destroyed" and self.cooldown > 0) then return end
+    self.cooldown = self.spec.effect_cooldown or 0
+    self.playing[component] = true
+    -- Events can arrive through a direct callback from the owner's script.
+    -- Resolve against this holder, never the currently executing script.
+    particlefx.play(msg.url(self.holder.socket, self.holder.path, component))
+end
+
+function init(self)
+    self.holder = msg.url()
+    self.spec = assert(Manifest[self.art_id], "Create Rooms: missing artwork manifest")
+    self.owner = msg.url(self.spec.owner)
+    self.art, self.states, self.playing, self.cooldown = {}, {}, {}, 0
+    for _, spec in ipairs(self.spec.art or {}) do
+        local url = msg.url(spec.id)
+        self.art[#self.art + 1] = {
+            url = url, sprite = msg.url(url.socket, url.path, "art"),
+            state = spec.state or "default", alpha = spec.alpha or 1, frames = spec.frames,
+            offset = vmath.vector3(spec.dx or 0, spec.dy or 0, spec.dz or 0),
+        }
+        self.states[spec.state or "default"] = true
+        if spec.state == "default" and spec.frames and not self.animation then self.animation = spec.frames end
+    end
+    local bounds
+    if self.spec.width and self.spec.height then
+        bounds = function(position)
+            if not go.exists(self.owner) then return false end
+            local p = go.get_world_position(self.owner)
+            local dx, dy = position.x - p.x, position.y - p.y
+            local a = self.spec.angle or 0
+            local x, y = dx * math.cos(a) + dy * math.sin(a), -dx * math.sin(a) + dy * math.cos(a)
+            return math.abs(x) <= self.spec.width / 2 and math.abs(y) <= self.spec.height / 2
+        end
+    end
+    Presentation.attach(self.owner, function(state, event)
+        set_art(self, state)
+        if event then feedback(self, event) end
+    end, bounds, self.animation)
+    local pending = Presentation.take_pending(self.owner)
+    if pending then feedback(self, pending) end
+end
+
+function update(self, dt)
+    self.animation_time = (self.animation_time or 0) + dt
+    self.cooldown = math.max(0, self.cooldown - dt)
+    if go.exists(self.owner) then
+        local p = go.get_position(self.owner)
+        go.set_position(p)
+        for _, art in ipairs(self.art) do
+            if go.exists(art.url) then go.set_position(p + art.offset, art.url) end
+        end
+    elseif not self.removed then
+        Presentation.restore(nil, true, self.owner)
+    end
+end
+
+function late_update(self, dt)
+    if self.removed then return end
+    local time = self.state and self.state.animation_time or self.animation_time or 0
+    for _, art in ipairs(self.art) do
+        if art.frames and go.exists(art.url) then
+            local frame = Animation.sample(art.frames, time)
+            if frame and frame.id ~= art.frame then
+                art.frame = frame.id
+                sprite.play_flipbook(art.sprite, hash(frame.id))
+            end
+        end
+    end
+end
+
+function final(self)
+    Presentation.detach(self.owner)
+    for component in pairs(self.playing or {}) do
+        particlefx.stop(msg.url(self.holder.socket, self.holder.path, component), { clear = true })
+    end
+end

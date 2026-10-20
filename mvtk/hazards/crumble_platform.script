@@ -1,0 +1,32 @@
+-- mvtk/hazards/crumble_platform.script
+go.property("delay_s", 0.35)
+go.property("fall_speed", 400.0)
+go.property("lifetime_s", 2.0)
+
+function init(self)
+  self._armed = false
+  self._fall = false
+  self._t = 0
+end
+
+function update(self, dt)
+  if self._fall then
+    self._t = self._t + dt
+    local p = go.get_position()
+    p.y = p.y - (self.fall_speed or 400) * dt
+    go.set_position(p)
+    if self._t >= (self.lifetime_s or 2.0) then go.delete('.') end
+  end
+end
+
+function on_message(self, message_id, message, sender)
+  if message_id == hash('contact_point_response') then
+    if message.group == hash('player') and not self._armed and not self._fall then
+      self._armed = true
+      timer.delay(self.delay_s or 0.35, false, function()
+        if self then self._fall = true end
+      end)
+    end
+  end
+end
+

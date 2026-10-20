@@ -1,0 +1,10 @@
+-- editor/auto_room_scan.script
+local ok, Autogen = pcall(require, "systems.room_registry_autogen")
+
+function init(self)
+    if ok and Autogen and Autogen.autoscan_and_save then
+        Autogen.autoscan_and_save(200)
+    else
+        print("DEBUG:SCRIPT: [ROOMS] autogen module missing; skipping autoscan")
+    end
+end

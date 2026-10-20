@@ -1,0 +1,3095 @@
+-- mvtk/player/player.script
+-- Main player script that integrates with the new modular player systems.
+-- Handles input processing, movement physics, combat actions, and health management.
+-- Coordinates with PlayerStateManager, AbilityManager, and MovementController for advanced functionality.
+
+local input_controller = require "mvtk.rooms.input_controller"
+local AbilityManager = require "mvtk.abilities.ability_manager"
+local PSTATE = require "mvtk.player.player_state"
+local Config = require "developer.config.resolved_config"
+local RuntimeSettings = require "developer.config.runtime_settings"
+local PS = RuntimeSettings.get_player_settings()  -- Load project overrides or compiled defaults
+local SWIM_CFG = (Config.player and Config.player.swim) or {}
+local ACTIONS = require "developer.config.player_actions"
+local Bindings = require "mvtk.core.input_bindings"
+local C = require "mvtk.core.constants"
+local Util = require "mvtk.core.util"
+local Pause = require "mvtk.core.pause"
+local FrameClock = require "mvtk.core.frame_clock"
+local Debug = require('developer.config.debug_config')
+local PlayerDebugBridge = require "mvtk.debug.player_debug_bridge"
+local DamageCalc = require "mvtk.combat.damage_calc"
+local DamagePayload = require "mvtk.combat.damage_payload"
+local CombatFeedback = require "mvtk.combat.combat_feedback"
+local CombatConfig = require "mvtk.combat.config"
+local AttackExecutor = require "mvtk.combat.attack_executor"
+local EnergyState = require "mvtk.player.energy_state"
+local SwimState = require "mvtk.player.swim_state"
+local ParrySystem = require "mvtk.player.parry_system"
+local HitReactions = require "mvtk.combat.hit_reactions"
+local PlayerAnim = require "mvtk.player.player_animation"
+local PlayerRuntimeAnimation = require "mvtk.player.animation"
+local PlayerCombatInput = require "mvtk.player.combat_input"
+local PlayerSurfaceEffects = require "mvtk.player.surface_effects"
+local PlayerCombatActions = require "mvtk.player.player_combat"
+local PlayerInteraction = require "mvtk.player.player_interaction"
+local PlayerDeath = require "mvtk.player.player_death"
+local PlayerMovement = require "mvtk.player.movement"
+local PlayerResources = require "mvtk.player.resources"
+local PlayerMessaging = require "mvtk.player.messaging"
+local RoomArrival = require "mvtk.player.room_arrival"
+local BlockGrabContact = require "mvtk.player.block_grab_contact"
+local BonePhysics = require "mvtk.player.bone_physics"
+local BoneCollision = require "mvtk.animation.bone_collision"
+local SurfaceClassifier = require "mvtk.core.surface_classifier"
+local PlayerCeilingContact = require "mvtk.player.player_ceiling_contact"
+local RenderOrder = require "mvtk.core.render_order"
+local GameplayConstants = Util.require_config("developer.config.gameplay_constants")
+local PLAYER_CONSTANTS = (GameplayConstants and GameplayConstants.player) or {}
+
+-- ============================================================================
+-- CONFIGURATION
+-- ============================================================================
+-- All configurable values are loaded from (in order):
+--   1) Tiled properties (per-object overrides)
+--   2) Project > Game Settings... runtime settings
+--   3) developer/config/game_config.lua (project defaults)
+-- Do not hardcode values here - add them to config instead.
+-- ============================================================================
+local HITBOX_CONFIG = (RuntimeSettings.get_hitbox_config and RuntimeSettings.get_hitbox_config()) or {}
+
+-- Physics constants
+local DEATH_SETTLE_VY = -240  -- Minimum downward velocity while dead body settles to ground
+local PLAYER_RENDER_Z = RenderOrder.player_z()
+
+local Spine = rawget(_G, "spine")
+local SPINE_MIX_BLEND_ADD = Spine and Spine.MIX_BLEND_ADD or nil
+local SPINE_MIX_BLEND_REPLACE = Spine and Spine.MIX_BLEND_REPLACE or nil
+
+PlayerRuntimeAnimation.configure({
+  Config = Config,
+  Debug = Debug,
+  Util = Util,
+  SPINE_MIX_BLEND_ADD = SPINE_MIX_BLEND_ADD,
+  SPINE_MIX_BLEND_REPLACE = SPINE_MIX_BLEND_REPLACE,
+})
+PlayerCombatInput.configure({
+  ACTIONS = ACTIONS,
+  Util = Util,
+})
+
+-- Load InteractionManager lazily to avoid circular-dependency / load-order issues.
+local InteractionManager
+local function get_interaction_manager()
+    if InteractionManager ~= nil then return InteractionManager end
+    local ok, mgr = pcall(require, "mvtk.game.interaction_manager")
+    InteractionManager = ok and mgr or false
+    return InteractionManager
+end
+
+
+local raw_print = print
+local function player_log(...)
+    if Debug.global.enable or Debug.gameplay.player then
+        raw_print(...)
+    end
+end
+
+local function input_log(...)
+    if Debug.global.enable or Debug.gameplay.input then
+        raw_print(...)
+    end
+end
+
+local function sync_player_position(self)
+  if not self or not self.pos then
+    return
+  end
+  self.pos.z = PLAYER_RENDER_Z
+  go.set_position(self.pos)
+end
+
+local function ensure_player_render_z(self)
+  if not self then
+    return
+  end
+  local pos = self.pos or go.get_position()
+  if not pos then
+    return
+  end
+  self.pos = pos
+  if math.abs((self.pos.z or 0) - PLAYER_RENDER_Z) > 0.0001 then
+    sync_player_position(self)
+  end
+end
+
+PlayerMovement.configure({
+  Debug = Debug,
+  ladder_climb = PS.ladder_climb,
+  SurfaceClassifier = SurfaceClassifier,
+  sync_player_position = sync_player_position,
+  player_log = player_log,
+  raw_print = raw_print,
+})
+
+local resolve_anim_uses_spine = PlayerRuntimeAnimation.resolve_anim_uses_spine
+
+local climb_log = PlayerMovement.climb_log
+local one_way_log = PlayerMovement.one_way_log
+local probe_upward_one_way = PlayerMovement.probe_upward_one_way
+local update_ladder_top_pass_through = PlayerMovement.update_ladder_top_pass_through
+local LadderClimb = PlayerMovement
+local detect_climb_bottom_out = PlayerMovement.detect_climb_bottom_out
+local climb_snap_x = PlayerMovement.climb_snap_x
+local ONE_WAY_DROP_BYPASS_FRAMES = PlayerMovement.ONE_WAY_DROP_BYPASS_FRAMES
+
+-- Cache audio module once at load time
+local _Audio = Util.require_module("mvtk.audio.audio")
+
+-- Cache optional modules at load time (avoids repeated pcall inside hot functions)
+local Gamefeel = Util.require_module("mvtk.core.gamefeel")
+local FX = Util.require_module("mvtk.fx.fx")
+local Checkpoint = Util.require_module("mvtk.core.checkpoint")
+local Flags = Util.require_module("mvtk.core.flags")
+local Inventory = Util.require_module("mvtk.core.inventory")
+local Items = Util.require_config("developer.config.items")
+local ScreenshotMarkers = Util.require_module("mvtk.map.screenshot_markers")
+local RoomManager = Util.require_module("mvtk.map.streaming.room_manager")
+-- Second unlock store consulted by the ability gates (see ability_unlocked_any_store).
+local Progression = Util.require_module("mvtk.game.progression.progression_manager")
+
+PlayerResources.configure({
+  EnergyState = EnergyState,
+  Checkpoint = Checkpoint,
+  Flags = Flags,
+  Gamefeel = Gamefeel,
+  player_log = player_log,
+})
+
+-- Lightweight SFX helper
+local function play_sfx(id, opts)
+  if not id then return end
+  if _Audio and _Audio.sfx then
+    pcall(_Audio.sfx, id, opts)
+  end
+end
+
+local function ability_unlocked(id)
+  if not id then return true end
+  if AbilityManager and AbilityManager.get_ability_info then
+    local ok, info = pcall(AbilityManager.get_ability_info, id)
+    if ok and info then
+      return info.unlocked and (info.enabled ~= false)
+    end
+  end
+  if AbilityManager and AbilityManager.is_ability_unlocked then
+    local ok, unlocked = pcall(AbilityManager.is_ability_unlocked, id)
+    if ok then return unlocked and true or false end
+  end
+  return true
+end
+
+local function ability_unlocked_strict(id)
+  if not id then return false end
+  if AbilityManager and AbilityManager.get_ability_info then
+    local ok, info = pcall(AbilityManager.get_ability_info, id)
+    if ok and info then
+      return info.unlocked and (info.enabled ~= false)
+    end
+  end
+  if AbilityManager and AbilityManager.is_ability_unlocked then
+    local ok, unlocked = pcall(AbilityManager.is_ability_unlocked, id)
+    if ok then return unlocked and true or false end
+  end
+  return false
+end
+
+-- Missing swim definitions are authoring/configuration errors, not an intended
+-- progression lock. Warn once and leave water traversable so a trimmed ability
+-- registry cannot turn every water volume into an unexplained death pit.
+local _warned_missing_swim = false
+
+-- Seconds between in-water re-checks of the swim gate.
+local SWIM_GATE_RECHECK_INTERVAL = 0.25
+
+-- An unlock can live in three places and they can legitimately disagree.
+-- `AbilityManager` holds the live registry, but `Checkpoint`'s provider calls
+-- `AbilityManager.reset()` whenever a restore carries no `abilities` payload
+-- (a save written before the pickup, a legacy slot, a defaults restore). That
+-- wipes the runtime unlock while `ProgressionManager.unlocked_abilities` and
+-- the `Flags` mirror still hold it -- so a player who really did collect Swim
+-- gets gated, sinks and drowns, and the respawn repeats the whole cycle.
+-- Ask every store, and repair the registry when a survivor is found. This
+-- mirrors `is_ability_unlocked` in mvtk/collectibles/collectible.script, which
+-- has always consulted both Progression and AbilityManager.
+local function ability_unlocked_any_store(id)
+  local defined = false
+
+  if AbilityManager and AbilityManager.get_ability_info then
+    local ok, info = pcall(AbilityManager.get_ability_info, id)
+    if ok and type(info) == "table" then
+      defined = true
+      if info.unlocked and info.enabled ~= false then return true, "ability_manager", defined end
+    end
+  end
+  if AbilityManager and AbilityManager.is_ability_unlocked then
+    local ok, unlocked = pcall(AbilityManager.is_ability_unlocked, id)
+    if ok and unlocked then return true, "ability_manager", defined end
+  end
+
+  if Progression and Progression.is_ability_unlocked then
+    local ok, unlocked = pcall(Progression.is_ability_unlocked, id)
+    if ok and unlocked then return true, "progression", defined end
+  end
+
+  if Flags and Flags.get then
+    local ok, flagged = pcall(Flags.get, id)
+    if ok and flagged then return true, "flags", defined end
+  end
+
+  return false, "locked", defined
+end
+
+local function swim_gate_ok()
+  local cfg = SWIM_CFG
+  if cfg.require_ability == false then return true end
+
+  local id = cfg.ability_id or "swim"
+  local unlocked, source, defined = ability_unlocked_any_store(id)
+
+  if unlocked then
+    -- Heal the divergence so cooldown/stamina bookkeeping, the HUD and the
+    -- next save all agree with the gate we just opened.
+    if source ~= "ability_manager" and AbilityManager and AbilityManager.unlock_ability then
+      pcall(AbilityManager.unlock_ability, id, { enabled = true })
+      print(string.format("[SWIM] '%s' was unlocked in %s but missing from AbilityManager - restored", id, source))
+    end
+    return true
+  end
+
+  if not defined then
+    if not _warned_missing_swim then
+      _warned_missing_swim = true
+      print(string.format("[SWIM] ability '%s' is not defined in developer/config/abilities.lua - treating as unlocked", id))
+    end
+    return true
+  end
+
+  return false
+end
+
+--- Consolidated ability activation: checks unlock + cooldown + stamina via AbilityManager.
+-- Returns true if the ability was successfully consumed.
+local function consume_ability(id)
+  if not AbilityManager then return true end
+  if AbilityManager.use_ability then
+    local ok, used = pcall(AbilityManager.use_ability, id)
+    if ok then return used end
+  end
+  -- Fallback: allow if unlocked (no stamina/cooldown tracking)
+  return ability_unlocked(id)
+end
+
+--- Check if an ability can be activated (unlock + cooldown + stamina).
+local function can_consume_ability(id)
+  if not AbilityManager then return ability_unlocked(id) end
+  if AbilityManager.can_use_ability then
+    local ok, allowed = pcall(AbilityManager.can_use_ability, id)
+    if ok then return allowed end
+  end
+  return ability_unlocked(id)
+end
+
+local sum_conveyor_forces = PlayerSurfaceEffects.sum_conveyor_forces
+
+-- Animation control helpers (animation/animation_controller.script on this GO)
+local MSG_ANIM_DONE = PlayerRuntimeAnimation.MSG_ANIM_DONE
+local MSG_ANIM_MISSING = PlayerRuntimeAnimation.MSG_ANIM_MISSING
+
+local anim_set = PlayerRuntimeAnimation.anim_set
+local anim_once = PlayerRuntimeAnimation.anim_once
+local anim_overlay_once = PlayerRuntimeAnimation.anim_overlay_once
+local anim_once_lock = PlayerRuntimeAnimation.anim_once_lock
+local anim_attack = PlayerRuntimeAnimation.anim_attack
+local play_attack_animation_from_def = PlayerRuntimeAnimation.play_attack_animation_from_def
+local anim_face = PlayerRuntimeAnimation.anim_face
+local normalize_facing = PlayerRuntimeAnimation.normalize_facing
+
+local normalize_ability_id = PlayerCombatInput.normalize_ability_id
+local resolve_attack_type = PlayerCombatInput.resolve_attack_type
+local number_or_default = PlayerCombatInput.number_or_default
+local movement_action_direction = PlayerCombatInput.movement_action_direction
+local resolve_movement_contact_config = PlayerCombatInput.resolve_movement_contact_config
+-- ============================================================================
+-- PLAYER CONFIGURATION
+-- ============================================================================
+-- Player baselines are configured in developer/config/player_settings.lua.
+-- Starting ability baselines are configured in developer/config/ability_defaults.lua.
+-- Project > Game Settings... saves creator_settings.lua overrides over those baselines.
+--
+-- The go.properties below are ONLY for per-instance collider adjustments
+-- in the Defold Editor (rare use case for custom player variants).
+-- ============================================================================
+
+-- Per-instance collider dimensions (only edit in Editor for special cases)
+go.property("collider_half_height", 31.0)
+go.property("collider_half_width", 24.0)
+go.property("foot_floor_adjust", -8.0)
+
+-- Player action helpers live in focused modules; keep local aliases for existing update/message call sites.
+PlayerCombatActions.configure({
+  ACTIONS = ACTIONS,
+  HITBOX_CONFIG = HITBOX_CONFIG,
+  C = C,
+  BoneCollision = BoneCollision,
+  CombatConfig = CombatConfig,
+  ParrySystem = ParrySystem,
+  PSTATE = PSTATE,
+  SPINE_MIX_BLEND_REPLACE = SPINE_MIX_BLEND_REPLACE,
+  Audio = _Audio,
+  player_log = player_log,
+  anim_attack = anim_attack,
+  anim_once = anim_once,
+  anim_overlay_once = anim_overlay_once,
+  anim_set = anim_set,
+  play_sfx = play_sfx,
+  can_consume_ability = can_consume_ability,
+  consume_ability = consume_ability,
+  resolve_attack_type = resolve_attack_type,
+  number_or_default = number_or_default,
+  movement_action_direction = movement_action_direction,
+  resolve_movement_contact_config = resolve_movement_contact_config,
+})
+
+PlayerInteraction.configure({
+  ACTIONS = ACTIONS,
+  Inventory = Inventory,
+  Items = Items,
+  Gamefeel = Gamefeel,
+  ScreenshotMarkers = ScreenshotMarkers,
+  RoomManager = RoomManager,
+  Audio = _Audio,
+  zone_interact_msg = hash("request_zone_interact"),
+  player_log = player_log,
+  get_interaction_manager = get_interaction_manager,
+})
+
+PlayerDeath.configure({
+  DEATH_SETTLE_VY = DEATH_SETTLE_VY,
+  AttackExecutor = AttackExecutor,
+  C = C,
+  GROUND_GROUPS = SurfaceClassifier.RAYCAST.GROUND,
+  clear_all_movement_contact_hitboxes = PlayerCombatActions.clear_all_movement_contact_hitboxes,
+  anim_once_lock = anim_once_lock,
+  sync_player_position = sync_player_position,
+})
+
+local do_light_melee = PlayerCombatActions.do_light_melee
+local do_heavy_melee = PlayerCombatActions.do_heavy_melee
+local pick_attack_bone = PlayerCombatActions.pick_attack_bone
+local clear_movement_contact_hitbox = PlayerCombatActions.clear_movement_contact_hitbox
+local clear_all_movement_contact_hitboxes = PlayerCombatActions.clear_all_movement_contact_hitboxes
+local spawn_movement_contact_hitbox = PlayerCombatActions.spawn_movement_contact_hitbox
+local spawn_melee = PlayerCombatActions.spawn_melee
+local spawn_down_strike = PlayerCombatActions.spawn_down_strike
+local spawn_melee_charged = PlayerCombatActions.spawn_melee_charged
+local do_parry = PlayerCombatActions.do_parry
+local do_grapple = PlayerCombatActions.do_grapple
+local do_interact = PlayerInteraction.do_interact
+local do_potion = PlayerInteraction.do_potion
+local do_map_marker = PlayerInteraction.do_map_marker
+local trigger_death = PlayerDeath.trigger_death
+local snap_dead_to_ground = PlayerDeath.snap_dead_to_ground
+
+local EPS    = PLAYER_CONSTANTS.eps or 0.5
+
+local DAMAGE_MSG = hash("mvtk_apply_damage")
+local RESTORE_MSG = C.MSG.RESTORE_HEALTH
+local RESET_MOTION_MSG = (C.MSG and C.MSG.RESET_MOTION) or hash("mvtk_reset_motion")
+local HEAL_MSG = hash("heal")
+local PUSH_CONTACT_MSG = hash("mvtk_push_contact")
+local BLOCK_PULL_MSG = hash("mvtk_block_pull")
+local CONTACT_POINT_RESPONSE_MSG = hash("contact_point_response")
+local TRIGGER_RESPONSE_MSG = hash("trigger_response")
+local DEFAULT_COLLISION_GROUPS = { [hash("world")] = true, [hash("interactable")] = true }
+local CEILING_CONTACT_DEPS = {
+  is_terrain_group = SurfaceClassifier.is_terrain_group,
+  platform_group = SurfaceClassifier.GROUPS.PLATFORM,
+}
+local PROXIED_DIRECT_DEDUPE = {
+  [hash("one_way_contact")] = true,
+  [hash("external_force")] = true,
+  [hash("apply_external_force")] = true,
+  [hash("apply_force")] = true,
+  [hash("apply_movement_modifier")] = true,
+  [hash("remove_movement_modifier")] = true,
+  [hash("platform_delta")] = true,
+  [hash("on_conveyor")] = true,
+  [hash("off_conveyor")] = true,
+}
+
+local function should_skip_proxied_direct_message(self, message_id, message)
+  if not (message and message.source_part and message.original_sender) then return false end
+  if not PROXIED_DIRECT_DEDUPE[message_id] then return false end
+
+  local frame = self._frame_counter or 0
+  self._proxied_direct_seen = self._proxied_direct_seen or {}
+  local key = tostring(message_id) .. "|" .. tostring(message.original_sender)
+  if self._proxied_direct_seen[key] == frame then
+    return true
+  end
+  self._proxied_direct_seen[key] = frame
+  return false
+end
+
+local clamp_health = PlayerResources.clamp_health
+
+local function block_grab_enabled(self)
+  return self._block_grab_cfg and self._block_grab_cfg.enabled == true
+end
+
+local clear_block_grab = BlockGrabContact.clear
+
+local function probe_pushable_block(self, other_id)
+  self._block_probe = self._block_probe or {}
+  local cached = self._block_probe[other_id]
+  if cached == nil then
+    local other_script = msg.url(nil, other_id, "script")
+    -- Property existence is the contract: even an empty block_id is a block.
+    cached = pcall(go.get, other_script, "block_id")
+    self._block_probe[other_id] = cached
+  end
+  return cached
+end
+
+local function update_block_grab_latch(self, input, dt)
+  if not block_grab_enabled(self) then
+    clear_block_grab(self)
+    return
+  end
+
+  local blocked = input_controller and input_controller.get_blocked and input_controller.get_blocked()
+  local can_hold = self._interact_held == true
+    and not blocked
+    and not self._is_dead
+    and self.grounded == true
+    and not self._in_water
+    and not self._in_climb
+
+  local had_grab = self._block_grab ~= nil
+  BlockGrabContact.update(self, dt, can_hold)
+  if had_grab then
+    return
+  end
+
+  if can_hold
+    and (self._push_block_t or 0) > 0
+    and (self._block_grab_contact_t or 0) > 0
+    and self._push_block_id
+    and (self._push_block_dir or 0) ~= 0 then
+    local dir = (self._push_block_dir > 0) and 1 or -1
+    self._block_grab = {
+      block_id = self._push_block_id,
+      dir = dir,
+    }
+    self._block_grab_motion = "pull_idle"
+    self.facing = dir
+  end
+end
+
+local function apply_block_grab_motion(self, input)
+  local grab = self._block_grab
+  if not grab then
+    self._block_grab_motion = nil
+    return
+  end
+
+  local block_dir = grab.dir or 0
+  if block_dir == 0 or not grab.block_id then
+    clear_block_grab(self)
+    return
+  end
+
+  -- Walking backward must not turn the player away from the held block.
+  self.facing = block_dir
+  local move_x = (input and input.move_x) or 0
+  local relative_input = move_x * block_dir
+  if relative_input > 0.1 then
+    self._block_grab_motion = "push"
+  elseif relative_input < -0.1 then
+    local was_pulling = self._block_grab_motion == "pull"
+    self._block_grab_motion = "pull"
+    local pull_speed = math.max(0, tonumber(self._block_grab_cfg.pull_speed) or 0)
+    local speed = pull_speed * math.min(1, math.abs(move_x))
+    local move_dir = -block_dir
+    -- Prime the block one frame before the player starts walking backward.
+    -- Defold dispatches the pull message after this update callback; without
+    -- this hand-off frame both actors can retain a permanent one-frame gap.
+    self.vx = was_pulling and (move_dir * speed) or 0
+    msg.post(grab.block_id, BLOCK_PULL_MSG, {
+      dir = move_dir,
+      speed = speed,
+      max_speed = pull_speed, -- pull-only cap; already scaled by PlayerScale
+      from = msg.url(),
+    })
+  else
+    self._block_grab_motion = "pull_idle"
+  end
+end
+
+local function reset_motion_state(self)
+  self._block_probe = {}
+  clear_all_movement_contact_hitboxes(self)
+  AttackExecutor.cancel(self)
+  self.vx, self.vy = 0, 0
+  self.pos = go.get_position()
+  ensure_player_render_z(self)
+  self.grounded = false
+  self._ground_normal = nil
+  self._ground_is_platform = false
+  self._coyote_t = 0
+  self._jump_buffer_t = 0
+  self._jump_hold_t = 0
+  self._run_gate = false
+  self._slide_t, self._slide_cool, self._slide_recovery_t = 0, 0, 0
+  self._slide_prev = 0
+  self._dash_t, self._dash_cool = 0, 0
+  self._dash_prev = 0
+  self._extra_jumps = (self._cfg and self._cfg.air_jumps) or 0
+  self._double_jump_t = 0
+  self._push_block_t = 0
+  self._push_block_dir = 0
+  self._push_block_id = nil
+  self._interact_held = false
+  clear_block_grab(self)
+  self._air_dashes_left = (self._cfg and self._cfg.air_dash and self._cfg.air_dash.max_air_dashes) or 1
+  self._on_wall, self._wall_side = false, 0
+  self._wall_time, self._wall_contact_timer = 0, 0
+  self._wall_coyote_t, self._wall_reattach_lock_t = 0, 0
+  self._wall_last_side = 0
+  self._extended_jump_active = false
+  self._extended_jump_hold_time = 0
+  self._extended_jump_hang_time = 0
+  self._extended_jump_bonus_applied = false
+  self._invulnerable = false
+  self._parry_iframes_t = 0
+  self._stun_t = 0
+  self._in_water = false
+  self._gravity_mult = 1.0
+  self._backdash_t, self._backdash_cool = 0, 0
+  self._backdash_prev = 0
+  self._roll_t, self._roll_cool = 0, 0
+  self._pound_active, self._pound_recovery_t = false, 0
+  self._pound_prev = 0
+  self._platform_drop_t = 0
+  self._grapple_active = false
+  self._grapple_anchor = nil
+  self._anim_lock_t = 0
+  self._anim_lock_allow_movement = true
+  self._attack = nil
+  self._atk_recovery_t = 0
+  self._cd_light, self._cd_heavy, self._cd_ranged = 0, 0, 0
+  self._cd_potion = 0
+  self._damage_iframes_t = 0
+  self._is_dead = false
+  self._death_settled = false
+  self._control_locked = false
+  if PSTATE.clear_ledge_state then
+    PSTATE.clear_ledge_state(self)
+  end
+  self._one_way = nil
+  self._autorun_nudge_t = 0
+  self._autorun_dir = 0
+  if input_controller and input_controller.clear_all then
+    input_controller.clear_all()
+  end
+  anim_set(self, "idle", { force = true })
+end
+
+
+function init(self)
+  msg.post(".", "acquire_input_focus")
+  self._block_probe = {}
+  local configured_groups = PS.collision_response and PS.collision_response.allowed_groups
+  if configured_groups then
+    self._collision_allowed_groups = {}
+    for _, group in ipairs(configured_groups) do
+      self._collision_allowed_groups[type(group) == "string" and hash(group) or group] = true
+    end
+  else
+    -- Shared defaults are immutable; configured sets belong to each instance.
+    self._collision_allowed_groups = DEFAULT_COLLISION_GROUPS
+  end
+
+  -- Spine-bone physics gate: read once at init. When true, the player root's
+  -- legacy `#co` collider is disabled and contact messages instead arrive
+  -- relayed from sibling bone-collider GOs (with `source_part` injected).
+  -- Read mid-session toggling is intentionally not supported in v1.
+  self._spine_physics_active = (Config.is_spine_physics_active and Config.is_spine_physics_active()) == true
+  self._last_contact_part = nil
+
+  -- This player is the lifecycle owner for the single-player controller route.
+  -- Start with no stale device index; an already-connected mapped pad reclaims
+  -- ownership on its first action even if Defold does not repeat CONNECTED.
+  if input_controller and input_controller.reset_controllers then input_controller.reset_controllers() end
+
+  -- Ensure no stale input or velocity carries over into the first frame
+  if input_controller and input_controller.clear_all then input_controller.clear_all() end
+  if input_controller and input_controller.begin_frame then input_controller.begin_frame() end
+  self.vx, self.vy = 0, 0
+
+  -- Load all settings from config files (developer/config/player_settings.lua)
+  -- Movement
+  self.walk_speed = PS.walk_speed or 1200
+  self.run_speed = PS.run_speed or 2000
+  self.walk_speed_mode = PS.walk_speed_mode and hash(PS.walk_speed_mode) or hash("scaled")
+  self.run_mode = PS.run_mode and hash(PS.run_mode) or hash("hold_button")
+  self.run_threshold = PS.run_threshold or 0.72
+  self.accel = PS.accel or 18
+  self.decel = PS.decel or 26
+  self.stop_epsilon = PS.stop_epsilon or 3
+
+  local block_grab_cfg = PS.block_grab or {}
+  self._block_grab_cfg = {
+    enabled = block_grab_cfg.enabled == true,
+    pull_speed = math.max(0, tonumber(block_grab_cfg.pull_speed) or 700),
+    release_grace = math.max(0, tonumber(block_grab_cfg.release_grace) or 0.15),
+  }
+  self._push_block_t = 0
+  self._push_block_dir = 0
+  self._push_block_id = nil
+  self._interact_held = false
+  self._block_grab = nil
+  self._block_grab_contact_t = 0
+  self._block_grab_motion = nil
+
+  -- Jumping
+  self.gravity = PS.gravity or -1200
+  self.jump_height = PS.jump_height or 256
+  self.extended_jump_height = PS.extended_jump_height or 64
+  self.jump_release_gravity_mult = PS.jump_release_gravity_mult or 2.5
+  self.jump_min_hold_time = PS.jump_min_hold_time or 0.06
+  self.coyote_time = PS.coyote_time or 0.12
+  self.jump_buffer = PS.jump_buffer or 0.12
+  self.air_jumps = PS.air_jumps or 0  -- Controlled by ability_defaults.lua via AbilityManager
+
+  -- Collider (go.property for per-instance adjustment, PS for global override)
+  self.collider_half_height = PS.collider_half_height or self.collider_half_height
+  self.collider_half_width = PS.collider_half_width or self.collider_half_width
+  self._wall_half_width = self.collider_half_width
+  self._base_collider_half_height = self.collider_half_height
+  self._base_collider_half_width = self.collider_half_width
+  self.foot_floor_adjust = PS.foot_floor_adjust or self.foot_floor_adjust
+
+  -- Stats from config files (developer/config/player_settings.lua)
+  self.max_health = PS.max_health or 5
+  self.health = self.max_health
+  clamp_health(self)
+  self.max_energy = PS.max_energy or 3
+  EnergyState.init({ max = self.max_energy, current = self.max_energy })
+  self.energy, self.max_energy = EnergyState.get()
+
+  -- Initialize swimming state
+  SwimState.init()
+  self._in_water = false
+  self._water_sources = {}
+  self._water_surface_y = nil
+  self._oxygen_enabled = nil
+  self._swim_gate_ok = nil
+  self._in_climb = false
+  self._in_climb_zone = false
+  self._climb_reattach_lock_t = 0
+  self._climb_speed = 400
+  self._climb_can_jump = true
+  self._climb_snap_to_center = true
+  self._climb_offset_x = 0
+  self._climb_center_x = nil
+  self._climb_center_y = nil
+  self._climb_ladder_id = nil
+  self._climb_width = 0
+  self._climb_pass_through_top = true
+  self._climb_grab_extend_down = 0
+  self._climb_grab_extend_up = 0
+  self._climb_height = 0
+  self._climb_top_pass_active = false
+  self.bypass_ceiling_frames = 0
+  self._climb_trace = Debug.global.enable or Debug.gameplay.player
+  self._conveyor_contacts = {}
+  self._conveyor_force_x = 0
+  self._conveyor_force_y = 0
+
+  local energy_listener = EnergyState.register_listener(function(event)
+    self.energy = event.current
+    self.max_energy = event.max
+  end)
+  if energy_listener then
+    self._energy_listener = energy_listener
+  else
+    print("[PLAYER] Failed to register energy listener; energy updates disabled")
+  end
+  self.max_stamina = PS.max_stamina or 100
+  self.stamina = self.max_stamina
+
+  -- HUD: initialize health display
+  pcall(msg.post, msg.url("main:/mode_hud#mode_hud"), hash("hud_health"), { hp = self.health, hp_max = self.max_health })
+  ParrySystem.init()
+  pcall(msg.post, msg.url("main:/mode_hud#mode_hud"), hash("hud_stamina"), { stamina = self.stamina, stamina_max = self.max_stamina })
+  AbilityManager.init()
+
+  local function copy_table(src)
+    local out = {}
+    if type(src) == "table" then
+      for k, v in pairs(src) do
+        out[k] = v
+      end
+    end
+    return out
+  end
+
+  -- Normalize wall-climb config so wall-jump settings always exist at runtime.
+  local wall_climb_cfg = copy_table(PS.wall_climb)
+  if next(wall_climb_cfg) == nil then
+    wall_climb_cfg = { enabled = false, speed = 600 }
+  end
+  wall_climb_cfg.climb_speed = tonumber(wall_climb_cfg.climb_speed or wall_climb_cfg.speed) or 600
+  wall_climb_cfg.stick_speed = tonumber(wall_climb_cfg.stick_speed) or 0
+  wall_climb_cfg.contact_grace = math.max(0, tonumber(wall_climb_cfg.contact_grace) or 0.12)
+  wall_climb_cfg.min_wall_height_tiles = tonumber(wall_climb_cfg.min_wall_height_tiles or wall_climb_cfg.min_wall_tiles) or 3
+  local wall_jump_cfg = copy_table(wall_climb_cfg.wall_jump)
+  if wall_jump_cfg.enabled == nil then
+    wall_jump_cfg.enabled = false
+  end
+  if wall_jump_cfg.input_allow_neutral == nil then
+    wall_jump_cfg.input_allow_neutral = true
+  end
+  wall_climb_cfg.wall_jump = wall_jump_cfg
+
+  -- Build overrides table from config files (developer/config/player_settings.lua)
+  -- All values come from PS (player settings) with sensible fallbacks
+  local overrides = {
+    -- Movement settings
+    walk_speed = PS.walk_speed or 1200,
+    run_speed  = PS.run_speed or 2000,
+    walk_speed_mode = PS.walk_speed_mode or "scaled",
+    run_mode   = PS.run_mode or "hold_button",
+    run_threshold = PS.run_threshold or 0.72,
+    accel = PS.accel or 18,
+    decel = PS.decel or 26,
+    stop_epsilon = PS.stop_epsilon or 3,
+    walk_stop_deadzone = PS.walk_stop_deadzone or 0.20,
+    air_accel_mult = PS.air_accel_mult or 0.8,
+
+    -- Jump/gravity settings
+    gravity = PS.gravity or -1200,
+    jump_height = PS.jump_height or 256,
+    extended_jump_height = PS.extended_jump_height or 64,
+    jump_release_gravity_mult = PS.jump_release_gravity_mult or 2.5,
+    fall_gravity_mult = PS.fall_gravity_mult or 1.0,
+    jump_min_hold_time = PS.jump_min_hold_time or 0.06,
+    coyote_time = PS.coyote_time or 0.12,
+    jump_buffer = PS.jump_buffer or 0.12,
+    air_jumps = PS.air_jumps or 0,
+
+    -- Ability settings (from player_settings.lua, unlocks from ability_defaults.lua)
+    slide = PS.slide or { enabled = false, speed = 2200, duration = 0.35, iframes = false, lock_control = true },
+    air_dash = PS.air_dash or { enabled = false, speed = 1800, duration = 0.18, iframes = false },
+    wall_climb = wall_climb_cfg,
+    extended_jump = PS.extended_jump or { enabled = false, hang_time = 0.15 },
+    glide = PS.glide or { enabled = false, require_jump_held = true, gravity_mult = 0.22, max_fall_speed = 900 },
+    grapple = PS.grapple or { range_px = 360, pull_speed = 2200 },
+    slide_to_run = PS.slide_to_run or { enabled = false },
+    -- Pass the game_config.player.swim gate/gravity controls into player_state
+    -- explicitly alongside the resolved movement settings.
+    swim = SWIM_CFG,
+
+    -- Collider dimensions (from go.property for per-instance adjustment)
+    collider_half_height = self.collider_half_height,
+    collider_half_width  = self.collider_half_width,
+  }
+
+  self._ability_baseline = {
+    air_jumps = overrides.air_jumps or 0,
+    slide_enabled = overrides.slide and overrides.slide.enabled or false,
+    slide_iframes = overrides.slide and overrides.slide.iframes,
+    air_dash_enabled = overrides.air_dash and overrides.air_dash.enabled or false,
+    air_dash_iframes = overrides.air_dash and overrides.air_dash.iframes,
+    wall_climb_enabled = overrides.wall_climb and overrides.wall_climb.enabled or false,
+    wall_jump_enabled = overrides.wall_climb and overrides.wall_climb.wall_jump and overrides.wall_climb.wall_jump.enabled or false,
+    extended_jump_enabled = overrides.extended_jump and overrides.extended_jump.enabled or false,
+    glide_enabled = overrides.glide and overrides.glide.enabled or false,
+  }
+
+  local function ability_enabled(id, force_log)
+    local ok, info = pcall(AbilityManager.get_ability_info, id)
+    if ok and info then
+      local result = info.unlocked and (info.enabled ~= false)
+      if force_log or Debug.gameplay.ability_manager or Debug.global.enable then
+        player_log(string.format("[ABILITY] %s: unlocked=%s enabled=%s -> result=%s", id, tostring(info.unlocked), tostring(info.enabled), tostring(result)))
+      end
+      return result
+    end
+    if force_log then
+      player_log(string.format("[ABILITY] %s: get_ability_info failed (ok=%s), falling back to is_ability_unlocked", id, tostring(ok)))
+    end
+    local ok2, unlocked = pcall(AbilityManager.is_ability_unlocked, id)
+    if force_log then
+      player_log(string.format("[ABILITY] %s: is_ability_unlocked ok=%s unlocked=%s", id, tostring(ok2), tostring(unlocked)))
+    end
+    return ok2 and unlocked or false
+  end
+
+  -- Keep this require inside init: update is at Lua 5.1's upvalue limit.
+  local AbilityStates = require "mvtk.player.ability_states"
+  local function ability_defined(id)
+    local ok, info = pcall(AbilityManager.get_ability_info, id)
+    return ok and info ~= nil
+  end
+  local function apply_ability_states()
+    AbilityStates.apply(overrides, self._ability_baseline, ability_enabled, ability_defined, player_log)
+  end
+
+  -- Starting unlocks combine ability_defaults.lua with Game Settings overrides.
+  -- Do not force-unlock here; AbilityManager.init() reads the resolved defaults.
+
+  apply_ability_states()
+  if Debug.gameplay.ability_manager or Debug.global.enable then
+    print(string.format("[ABILITY] Init: air_jumps=%s, slide=%s, air_dash=%s, wall_climb=%s, wall_jump=%s, glide=%s",
+      tostring(overrides.air_jumps),
+      tostring(overrides.slide and overrides.slide.enabled),
+      tostring(overrides.air_dash and overrides.air_dash.enabled),
+      tostring(overrides.wall_climb and overrides.wall_climb.enabled),
+      tostring(overrides.wall_climb and overrides.wall_climb.wall_jump and overrides.wall_climb.wall_jump.enabled),
+      tostring(overrides.glide and overrides.glide.enabled)))
+  end
+  self._apply_ability_states = apply_ability_states
+  self._overrides = overrides
+
+  if AbilityManager.register_listener then
+    local ability_listener = AbilityManager.register_listener(function(event, ability_id)
+      if Debug.global.enable or Debug.gameplay.ability_manager then
+        print(string.format("[PLAYER] Ability listener triggered: event=%s ability=%s", tostring(event), tostring(ability_id)))
+      end
+      if self._apply_ability_states then
+        self._apply_ability_states()
+        -- Refresh PSTATE cached values so abilities work immediately
+        if PSTATE and PSTATE.refresh_abilities then
+          pcall(PSTATE.refresh_abilities, self)
+        end
+      end
+    end)
+    if ability_listener then
+      self._ability_listener = ability_listener
+      if Debug.global.enable or Debug.gameplay.ability_manager then
+        print("[PLAYER] Ability listener registered successfully")
+      end
+    else
+      if Debug.global.enable or Debug.gameplay.ability_manager then
+        print("[PLAYER] Failed to register ability listener; ability state updates disabled")
+      end
+    end
+  end
+
+  -- Provide resolved player overrides to the shared input controller.
+  if input_controller and input_controller.set_config then
+    input_controller.set_config(overrides)
+  end
+
+  PSTATE.init(self, overrides)
+  self.pos = go.get_position()
+  ensure_player_render_z(self)
+  self._ground_normal = nil
+  self._ground_is_platform = false
+  self._frame_counter = 0
+  self._was_grounded = false
+  self._anim_current = nil
+  self._anim_facing = nil
+  self._anim_lock_t = 0
+  self._anim_lock_allow_movement = true
+  self._attack = nil    -- Independent attack state { timer, elapsed, ground }
+  do
+    self._anim_is_spine = resolve_anim_uses_spine()
+  end
+  -- PSTATE preserves an externally supplied false and otherwise starts
+  -- optimistic for the bundled renderers. animation_controller revokes the
+  -- capability if hang or ledge_grab_climb fails to play.
+  self._roll_prev = 0
+  self._dash_prev = 0
+  self._slide_prev = 0
+  self._backdash_prev = 0
+  self._pound_prev = 0
+  self._movement_contact_hitboxes = {}
+  AttackExecutor.init(self, {
+    play_attack_animation = play_attack_animation_from_def,
+  })
+  self._platform_drop_t = 0
+  self._is_dead = false  -- Attack / consumable cooldowns
+  self._cd_light, self._cd_heavy, self._cd_ranged = 0, 0, 0
+  self._cd_potion = 0
+  self._atk_recovery_t = 0
+  -- Input buffering: queue up to 2 attack presses so they execute in sequence.
+  -- This prevents missed inputs during cooldowns/animations (best practice for action games).
+  self._light_buffer_count = 0   -- queued light attack presses (max 2)
+  self._heavy_buffer_count = 0   -- queued heavy attack presses (max 2)
+  self._ranged_buffer_count = 0  -- queued ranged attack presses (max 2)
+  self._attack_queue_max = 2     -- maximum queued presses per attack type
+  -- Damage iFrames: brief invulnerability after taking a hit (standard Metroidvania mechanic)
+  -- Prevents stun-lock / animation cancellation from rapid contact damage.
+  self._damage_iframes_t = 0
+  self._damage_iframes_duration = PS.damage_iframes or 0.8  -- Configurable in player_settings.lua
+  local game_bones = (Config.player and Config.player.spine_physics and Config.player.spine_physics.bone_map) or {}
+  local settings_bones = (PS.spine_physics and PS.spine_physics.bone_map) or {}
+  local function configured_bone(key, fallback)
+    return settings_bones[key] or game_bones[key] or fallback
+  end
+  BonePhysics.init(self, {
+    debug = false,
+    foot_floor_adjust = self.foot_floor_adjust or 0,
+    landing_snap_distance = PS.landing_snap_distance or 0,
+    head_margin = PS.head_margin or 0,
+    -- Bone-anchored feet are the default ground-detection path when spine
+    -- physics is active. Sprite mode (and spine-with-bone-physics-disabled)
+    -- continues to use collider-center raycasts via use_bone_feet = false.
+    use_bone_feet = self._spine_physics_active == true,
+    feet = self._spine_physics_active and {
+      configured_bone("foot_l", "foot_far"),
+      configured_bone("foot_r", "foot_near"),
+    } or nil,
+    head = self._spine_physics_active and configured_bone("head", "head") or nil,
+    wall_attach_slop = wall_climb_cfg and wall_climb_cfg.wall_attach_slop or nil,
+  })
+  -- Initial facing/state
+  anim_face(self, 1)
+  anim_set(self, "idle", { force = true })
+
+  local player_go_url = go.get_id()
+  if C then
+    C.URL = C.URL or {}
+    C.URL.PLAYER = player_go_url
+  end
+  pcall(msg.post, "main:/main_go#script", hash("player_ready"), { url = player_go_url })
+end
+
+function final(self)
+  if RoomManager then RoomArrival.cancel(self, RoomManager) end
+  AttackExecutor.cancel(self)
+  clear_all_movement_contact_hitboxes(self)
+  msg.post(".", "release_input_focus")
+  if self._ability_listener and AbilityManager.unregister_listener then
+    AbilityManager.unregister_listener(self._ability_listener)
+    self._ability_listener = nil
+  end
+  if self._energy_listener then
+    EnergyState.unregister_listener(self._energy_listener)
+    self._energy_listener = nil
+  end
+end
+
+local apply_force_falling = PlayerMovement.apply_force_falling
+
+function on_input(self, action_id, action)
+  if self._is_dead then
+    -- Keep the current controller registry accurate while the dead player ignores gameplay.
+    if action_id == C.INPUT.GAMEPAD_CONNECTED or action_id == C.INPUT.GAMEPAD_DISCONNECTED then
+      input_controller.on_input(action_id, action)
+      self._interact_held = input_controller.get_state().interact_held == true
+    end
+    return
+  end
+
+  -- The controller owns UI blocking and active-gamepad selection. Do not let
+  -- player-side shortcuts bypass either decision.
+  if not input_controller.on_input(action_id, action) then
+    self._interact_held = input_controller.get_state().interact_held == true
+    return
+  end
+  self._interact_held = input_controller.get_state().interact_held == true
+
+  if not RoomManager.is_startup_ready() then return end
+
+  local ladder_locked = self._in_climb and not self._in_water
+  if ladder_locked then
+    -- While climbing, lock out movement abilities and attacks; jumping dismounts.
+    if Bindings.is("JUMP", action_id) and action.pressed and self._climb_can_jump then
+      climb_log(self, "jump_dismount")
+      self._in_climb = false
+      self.bypass_ceiling_frames = 0
+      self._climb_reattach_lock_t = math.max(self._climb_reattach_lock_t or 0, 0.25)
+      self._jump_buffer_t = 0
+      self._coyote_t = 0
+      self._jump_hold_t = (self._cfg and self._cfg.jump_min_hold_time) or 0
+      self.vy = self._jump_speed or self.vy
+      self.grounded = false
+      anim_once(self, "jump")
+      if _Audio and _Audio.sfx then _Audio.sfx("jump") end
+      return
+    end
+    -- Still allow slide RELEASE to clear any held state from before climbing.
+    if (Bindings.is("SLIDE", action_id)) and action.released then
+      PSTATE.request_slide_release(self)
+    end
+    return
+  end
+  if Bindings.is("JUMP", action_id) and action.pressed then
+    local S = input_controller and input_controller.get_state and input_controller.get_state() or nil
+    local down_pressed = S and (S.move_y or 0) < -0.5
+    one_way_log(self, "JUMP pressed down=%s one_way=%s", tostring(down_pressed), tostring(self._one_way))
+    if down_pressed and self.grounded then
+      local dropped = false
+      if self._ground_is_platform then
+        self._platform_drop_t = math.max(self._platform_drop_t or 0, 0.35)
+        PSTATE.set_grounded(self, false)
+        self.grounded = false
+        self.vy = math.min(self.vy or 0, -60)
+        dropped = true
+      end
+      if self._one_way then
+        -- The player is never told when it leaves a one-way platform, so the
+        -- remembered one can be stale. Drop only through the platform underfoot:
+        -- dropping "through" a stale one placed the player below solid floor.
+        local half_h = self.collider_half_height or 60
+        local px = self.pos and self.pos.x or 0
+        local feet_y = (self.pos and self.pos.y or 0) - half_h
+        local top = self._one_way_bounds_top
+        local left, right = self._one_way_bounds_left, self._one_way_bounds_right
+        local on_platform = (not top or math.abs(feet_y - top) <= math.max(12, half_h * 0.5))
+          and (not left or px >= left) and (not right or px <= right)
+        if not on_platform then
+          one_way_log(self, "ignoring stale one-way platform %s", tostring(self._one_way))
+          self._one_way = nil
+        end
+      end
+      if self._one_way then
+        one_way_log(self, "posting drop_through to %s", tostring(self._one_way))
+        pcall(msg.post, self._one_way, hash("drop_through"), {
+          other_id = go.get_id(),
+        })
+        local drop_pos = nil
+        local bounds_bottom = self._one_way_bounds_bottom
+        if bounds_bottom then
+          local half_h = self.collider_half_height or 60
+          local target_y = bounds_bottom - half_h - 8
+          drop_pos = vmath.vector3(self.pos.x, target_y, self.pos.z or 0)
+          one_way_log(self, "manual drop teleport bounds_bottom=%.1f target_y=%.1f", bounds_bottom, target_y)
+        end
+        self._platform_drop_t = math.max(self._platform_drop_t or 0, 0.5)
+        apply_force_falling(self, {
+          reason = "one_way_drop",
+          frames = ONE_WAY_DROP_BYPASS_FRAMES,
+          vy = math.min(self.vy or 0, -200),
+          pos = drop_pos,
+        })
+        dropped = true
+      end
+      if dropped then
+        return
+      end
+    end
+    local was_grounded = self.grounded and true or false
+    local extra_before = self._extra_jumps or 0
+    local ok = PSTATE.request_jump(self, S)
+    one_way_log(
+      self,
+      "request_jump ok=%s was_grounded=%s coyote=%.3f extra_before=%d wall_contact=%s one_way=%s",
+      tostring(ok),
+      tostring(was_grounded),
+      tonumber(self._coyote_t) or 0,
+      tonumber(extra_before) or 0,
+      tostring(self._wall_contact),
+      tostring(self._one_way)
+    )
+    if ok and not self._ledge_climbing then
+      -- Fallback probe to open upward one-way platforms even when side-overlap timing is missed.
+      probe_upward_one_way(self)
+      -- Don't use anim_once_lock - let the animation state system handle it
+      -- The double_jump_t timer will trigger the animation via the state system
+      if (not was_grounded) and extra_before > 0 then
+        -- Timer is set in player_state.lua when double jump is performed
+      else
+        anim_once(self, "jump")
+      end
+    end
+  end
+  if (Bindings.is("SLIDE", action_id)) and not self._ledge_kinematic then
+    if action.pressed then 
+      local S = input_controller and input_controller.get_state and input_controller.get_state() or nil
+      local handled = PSTATE.request_slide_press(self, S)
+      local overrides = self._overrides or {}
+      local air_dash_enabled = overrides.air_dash and overrides.air_dash.enabled
+      local slide_enabled = overrides.slide and overrides.slide.enabled
+      local mode = self.grounded and "ground" or "air"
+      input_log(string.format(
+        "[INPUT] SLIDE pressed mode=%s grounded=%s air_dash_enabled=%s slide_enabled=%s handled=%s",
+        tostring(mode), tostring(self.grounded), tostring(air_dash_enabled),
+        tostring(slide_enabled), tostring(handled)))
+    end
+    if action.released then PSTATE.request_slide_release(self) end
+  end
+  if Bindings.is("BACKDASH", action_id) and action.pressed and not self._ledge_kinematic then PSTATE.request_backdash(self) end
+end
+
+local integrate = PlayerMovement.integrate
+
+-- Seconds swim state survives a trigger exit before tearing down (see
+-- exit_water_state for why the surface chatters).
+local WATER_EXIT_GRACE = 0.12
+
+local finalize_water_exit  -- forward declaration; defined below exit_water_state
+
+-- Water can be reported by a baked water_volume, a legacy water_zone, or a
+-- bare collision trigger. Keep the player state and SwimState armed together,
+-- and count sources so overlapping volumes do not cancel each other early.
+local function enter_water_state(self, source_id, opts)
+  opts = opts or {}
+  self._water_sources = self._water_sources or {}
+  local source_key = tostring(source_id or "unknown")
+  self._water_sources[source_key] = true
+  -- Coming straight back in cancels a pending exit; swim state never dropped.
+  self._water_exit_grace_t = nil
+
+  if self._in_water then
+    -- A second source can arrive with better information than the first. The
+    -- bare trigger path has no surface at all and falls back to the entry Y,
+    -- so a later water_volume message must correct BOTH the player copy and
+    -- SwimState's -- the latter drives is_underwater, oxygen and buoyancy.
+    if opts.surface_y ~= nil then
+      self._water_surface_y = opts.surface_y
+      SwimState.set_surface_y(opts.surface_y)
+    end
+    if opts.oxygen_enabled ~= nil then self._oxygen_enabled = opts.oxygen_enabled == true end
+    if opts.swim_params then SwimState.set_params(opts.swim_params) end
+    return
+  end
+
+  local player_pos = go.get_world_position()
+  local surface_y = opts.surface_y or player_pos.y
+  self._swim_gate_ok = swim_gate_ok()
+  self._swim_gate_recheck_t = SWIM_GATE_RECHECK_INTERVAL
+  self._drown_tick_t = 0
+  self._water_surface_y = surface_y
+  self._oxygen_enabled = opts.oxygen_enabled == true
+
+  SwimState.reset_params()
+  if opts.swim_params then SwimState.set_params(opts.swim_params) end
+  SwimState.enter_water(surface_y, player_pos.y, {
+    source = source_id,
+    surface_known = opts.surface_y ~= nil,
+  })
+  self._in_water = true
+  PSTATE.set_water(self, true)
+  pcall(msg.post, msg.url("main:/underwater_overlay#underwater_overlay"), hash("underwater_set"), { enabled = true })
+
+  -- Successful arming is routine and repeats every time the player crosses the
+  -- surface, so keep it on the swim debug channel. A CLOSED gate stays
+  -- unconditional below: that is the failure the developer needs to see.
+  if Debug.global.enable or (Debug.gameplay and Debug.gameplay.swim) then
+    local stats = SwimState.get_stats()
+    print(string.format(
+      "[SWIM] armed source=%s has_swim=%s require_ability=%s surface_y=%.1f player_y=%.1f speed=%.0f buoyancy=%.0f oxygen=%s",
+      tostring(source_id), tostring(self._swim_gate_ok), tostring(SWIM_CFG.require_ability ~= false),
+      surface_y, player_pos.y, (stats.swim_speed or 0) * (stats.swim_speed_mult or 1),
+      stats.buoyancy_speed or 0, tostring(self._oxygen_enabled)
+    ))
+  end
+  if not self._swim_gate_ok then
+    print(string.format("[SWIM] ability gate locked: '%s'", tostring(SWIM_CFG.ability_id or "swim")))
+  end
+end
+
+local function exit_water_state(self, source_id, force)
+  self._water_sources = self._water_sources or {}
+  if force then
+    self._water_sources = {}
+  else
+    self._water_sources[tostring(source_id or "unknown")] = nil
+  end
+  if next(self._water_sources) ~= nil then return end
+  if not self._in_water and not SwimState.is_swimming() then return end
+
+  -- A player floating at the surface straddles the trigger's top edge and
+  -- chatters enter/exit several times a second. Tearing swim state down on the
+  -- first exit would reset velocity and swim params, replay the splash FX and
+  -- drop them into normal gravity -- which pulls them back in, and the cycle
+  -- repeats. Wait out a short grace and cancel it if they come straight back.
+  -- `force` (death, surface jump-out) means we left under our own power and
+  -- must tear down now.
+  if not force then
+    self._water_exit_grace_t = WATER_EXIT_GRACE
+    return
+  end
+
+  finalize_water_exit(self, source_id)
+end
+
+finalize_water_exit = function(self, source_id)
+  self._water_exit_grace_t = nil
+  if not self._in_water and not SwimState.is_swimming() then return end
+
+  local exit_velocity = vmath.vector3(self.vx or 0, self.vy or 0, 0)
+  SwimState.exit_water(exit_velocity)
+  SwimState.reset_params()
+  self._in_water = false
+  self._water_surface_y = nil
+  self._oxygen_enabled = nil
+  self._swim_gate_ok = nil
+  self._swim_gate_recheck_t = 0
+  self._drown_tick_t = 0
+  PSTATE.set_water(self, false)
+  pcall(msg.post, msg.url("main:/underwater_overlay#underwater_overlay"), hash("underwater_set"), { enabled = false })
+  if Debug.global.enable or (Debug.gameplay and Debug.gameplay.swim) then
+    print(string.format("[SWIM] exited source=%s", tostring(source_id)))
+  end
+end
+
+local PLAYER_POS_MSG = hash("player_pos")
+
+local function read_final_world_position()
+  pcall(go.update_world_transform)
+  return go.get_world_position()
+end
+
+local function publish_final_world_position(self, world_pos, dt)
+  rawset(_G, "PLAYER_WORLD_POS", world_pos)
+
+  local camera_url = C.URL and C.URL.CAMERA
+  if camera_url then
+    local message = self._camera_position_message
+    if not message then
+      message = {}
+      self._camera_position_message = message
+    end
+    message.pos = world_pos
+    msg.post(camera_url, PLAYER_POS_MSG, message)
+  end
+end
+
+function update(self, dt)
+  if RoomArrival.update(self, RoomManager) then
+    input_controller.begin_frame()
+    return
+  end
+  if Pause and Pause.get and Pause.get() then input_controller.begin_frame(); return end
+  local timescale = (Pause and (Pause.dt_scale or Pause.scale) and (Pause.dt_scale or Pause.scale)()) or 1.0
+  -- Snap the raw engine dt to the display interval (mvtk/core/frame_clock.lua)
+  -- before scaling: vsync jitter otherwise becomes uneven per-frame steps.
+  dt = FrameClock.snap(dt) * timescale
+
+  -- Debug: report which player instance is active and its position
+  if Debug.global.enable or Debug.gameplay.player then
+    self._dbg_timer = (self._dbg_timer or 0) - dt
+    if (self._dbg_timer or 0) <= 0 then
+      self._dbg_timer = 0.5
+      local id = go.get_id()
+      local main_id = C.URL and C.URL.PLAYER
+      local is_main = main_id and (id == main_id) or false
+      local ok_parent, parent = pcall(go.get_parent, id)
+      local pos = go.get_position()
+      local ok_wp, wp = pcall(go.get_world_position, id)
+      player_log(string.format(
+        "[PLAYER DBG] id=%s is_main=%s parent=%s pos=(%.1f, %.1f) world=%s",
+        tostring(id),
+        tostring(is_main),
+        tostring(ok_parent and parent or nil),
+        pos.x or 0, pos.y or 0,
+        ok_wp and string.format("(%.1f, %.1f)", wp.x or 0, wp.y or 0) or "nil"
+      ))
+    end
+  end
+  
+  -- Tick respawn grace period timer
+  if self._respawn_grace_timer and self._respawn_grace_timer > 0 then
+    self._respawn_grace_timer = self._respawn_grace_timer - dt
+  end
+  -- Damage iFrames timer is now ticked centrally in player_state.lua update
+  
+  self._platform_drop_t = math.max(0, (self._platform_drop_t or 0) - dt)
+  self._climb_reattach_lock_t = math.max(0, (self._climb_reattach_lock_t or 0) - dt)
+  self._frame_counter = (self._frame_counter or 0) + 1
+  local prev_pos = self._previous_frame_position
+  if not prev_pos then
+    prev_pos = vmath.vector3()
+    self._previous_frame_position = prev_pos
+  end
+  prev_pos.x, prev_pos.y, prev_pos.z = self.pos.x, self.pos.y, self.pos.z
+  local current_frame = self._frame_counter
+  local input_src = input_controller.end_frame(dt)
+  local input = self._input_frame
+  if not input then
+    input = {}
+    self._input_frame = input
+  else
+    for k in pairs(input) do
+      input[k] = nil
+    end
+  end
+  for k, v in pairs(input_src) do
+    input[k] = v
+  end
+  self._interact_held = input.interact_held == true
+  if self._movement_modifiers then
+    local mult = 1.0
+    for _, v in pairs(self._movement_modifiers) do
+      if v and v ~= 0 then
+        mult = mult * v
+      end
+    end
+    if mult ~= 1.0 then
+      input.move_x = (input.move_x or 0) * mult
+      input.move_y = (input.move_y or 0) * mult
+    end
+  end
+  LadderClimb.filter_climb_input(self, input)
+  -- ============================================================================
+  -- INPUT BUFFERING: Capture attack inputs BEFORE any lock-based zeroing.
+  -- Queue up to 2 presses per type so button mashing during animations
+  -- chains into follow-up attacks automatically.
+  -- ============================================================================
+  if input.light_down then
+    self._light_buffer_count = math.min((self._light_buffer_count or 0) + 1, self._attack_queue_max or 2)
+  end
+  if input.heavy_down then
+    self._heavy_buffer_count = math.min((self._heavy_buffer_count or 0) + 1, self._attack_queue_max or 2)
+  end
+  if input.ranged_down then
+    self._ranged_buffer_count = math.min((self._ranged_buffer_count or 0) + 1, self._attack_queue_max or 2)
+  end
+
+  if self._attack and input then
+    -- During attacks: block dashes/slides/parry but allow movement
+    -- and let attack presses through (they are buffered above).
+    if not AttackExecutor.can_cancel_to(self, "dash") then
+      input.dash_down, input.dash_pressed = false, false
+    end
+    if not AttackExecutor.can_cancel_to(self, "slide") then
+      input.slide_down, input.slide_held, input.slide_up = false, false, false
+    end
+    if not AttackExecutor.can_cancel_to(self, "backdash") then
+      input.backdash_down = false
+    end
+    if not AttackExecutor.can_cancel_to(self, "parry") then
+      input.parry_down = false
+    end
+    input.grapple_down = false
+  end
+  if self._in_climb and not self._in_water then
+    -- Lock out attacks/actions while climbing; jumping is the dismount.
+    input.light_down, input.light_held, input.light_up = false, false, false
+    input.heavy_down, input.ranged_down = false, false
+    input.parry_down, input.grapple_down = false, false
+    input.dash_down, input.dash_pressed = false, false
+    input.slide_down, input.slide_held, input.slide_up = false, false, false
+    input.backdash_down = false
+    input.ground_pound_down = false
+    input.interact_down, input.potion_down, input.marker_down = false, false, false
+    self._light_buffer_count, self._heavy_buffer_count, self._ranged_buffer_count = 0, 0, 0
+    self._light_hold_t = 0
+  end
+  -- General animation lock countdown (dash, land, roll — NOT attacks)
+  if (self._anim_lock_t or 0) > 0 then
+    self._anim_lock_t = math.max(0, (self._anim_lock_t or 0) - dt)
+    if self._anim_lock_t <= 0 then
+      self._anim_lock_allow_movement = true
+    end
+  end
+  if (self._push_block_t or 0) > 0 then
+    self._push_block_t = math.max(0, (self._push_block_t or 0) - dt)
+    if self._push_block_t <= 0 then
+      self._push_block_dir = 0
+      self._push_block_id = nil
+    end
+  end
+  update_block_grab_latch(self, input, dt)
+
+  local attack_update_ctx = self._attack_update_ctx
+  if not attack_update_ctx then
+    attack_update_ctx = {}
+    self._attack_update_ctx = attack_update_ctx
+  end
+  attack_update_ctx.grounded = self.grounded
+  AttackExecutor.update(self, dt, attack_update_ctx)
+
+  if self._is_dead then
+    -- Dead bodies should keep falling until ground contact, even inside water.
+    self._in_climb = false
+    if PSTATE.clear_ledge_state then PSTATE.clear_ledge_state(self) end
+    self.vx = 0
+    self._light_hold_t = 0
+    self._light_buffer_count, self._heavy_buffer_count, self._ranged_buffer_count = 0, 0, 0
+    self._ext_fx, self._ext_fy = 0, 0
+
+    if self._in_water then
+      exit_water_state(self, nil, true)
+    end
+
+    local g = (PS.gravity or -1200) * (self._gravity_mult or 1.0)
+    if (self.vy or 0) < 0 then
+      g = g * (PS.fall_gravity_mult or 1.0)
+    end
+    self.vy = (self.vy or 0) + g * dt
+    if PS.max_fall_speed then
+      self.vy = math.max(self.vy, PS.max_fall_speed)
+    end
+
+    integrate(self, dt)
+    local death_collision = BonePhysics.resolve(self, prev_pos)
+    self._ground_is_platform = death_collision and death_collision.ground_group == SurfaceClassifier.GROUPS.PLATFORM or false
+    self.grounded = death_collision and death_collision.grounded or false
+    self._ground_normal = death_collision and death_collision.ground_normal and {
+      x = death_collision.ground_normal.x,
+      y = death_collision.ground_normal.y
+    } or nil
+    PSTATE.set_wall_contact(self, 0)
+
+    if self.grounded then
+      self.vy = 0
+    else
+      self.vy = math.min(self.vy or 0, DEATH_SETTLE_VY)
+    end
+
+    snap_dead_to_ground(self, death_collision)
+
+    do
+      local world_pos = read_final_world_position()
+      publish_final_world_position(self, world_pos, dt)
+    end
+
+    anim_face(self, self.facing or 1)
+    input_controller.begin_frame()
+    return
+  end
+
+  local conveyor_vx, conveyor_vy = sum_conveyor_forces(self)
+  local ext_bias_x = (self._ext_fx or 0) + (conveyor_vx or 0)
+  local ext_bias_y = (self._ext_fy or 0) + (conveyor_vy or 0)
+  if self._ledge_kinematic then
+    conveyor_vx, conveyor_vy = 0, 0
+    ext_bias_x, ext_bias_y = 0, 0
+  end
+  -- Clear one-shot external forces after capturing them for this frame
+  self._ext_fx, self._ext_fy = 0, 0
+  if ext_bias_x ~= 0 or ext_bias_y ~= 0 then
+    self.vx = (self.vx or 0) - ext_bias_x
+    self.vy = (self.vy or 0) - ext_bias_y
+  end
+
+  
+  -- Clear wall contact if grounded (wall climbing only works in air)
+  if self.grounded then
+    PSTATE.set_wall_contact(self, 0)
+  end
+  -- Track charge time for light attack
+  if input.light_held then
+    self._light_hold_t = (self._light_hold_t or 0) + dt
+  elseif input.light_up then
+    self._light_hold_t = 0
+  end
+  
+  -- Ladder/climb zones: only engage climb when the player presses up/down while in the zone
+  local in_climb_zone = self._in_climb_zone and not self._in_water and (self._climb_reattach_lock_t or 0) <= 0
+  if (not self._in_climb) and in_climb_zone and not self._grapple_active then
+    local my = input.move_y or 0
+    if LadderClimb.can_enter_climb(self, input) then
+      self._in_climb = true
+      climb_log(self, "climb_start ladder=%s center=(%.1f,%.1f) offset=%.1f h=%.1f move_y=%.2f pass_top=%s",
+        tostring(self._climb_ladder_id),
+        tonumber(self._climb_center_x) or 0,
+        tonumber(self._climb_center_y) or 0,
+        tonumber(self._climb_offset_x) or 0,
+        tonumber(self._climb_height) or 0,
+        tonumber(my) or 0,
+        tostring(self._climb_pass_through_top))
+    end
+  end
+
+  -- Update swimming physics if in water
+  local in_climb = self._in_climb and not self._in_water
+  if in_climb then
+    -- If player left the trigger but was kept climbing via grab_extend,
+    -- check if they've now moved beyond the extended bounds.
+    if not self._in_climb_zone and self._climb_center_y then
+      local half_h = (self._climb_height or 0) * 0.5
+      local ladder_top = self._climb_center_y + half_h + (self._climb_grab_extend_up or 0)
+      local ladder_bottom = self._climb_center_y - half_h - (self._climb_grab_extend_down or 0)
+      if self.pos.y < ladder_bottom or self.pos.y > ladder_top then
+        climb_log(self, "climb_exit_bounds pos_y=%.1f ladder_bottom=%.1f ladder_top=%.1f",
+          tonumber(self.pos.y) or 0, tonumber(ladder_bottom) or 0, tonumber(ladder_top) or 0)
+        self._in_climb = false
+        in_climb = false
+        self._climb_center_x = nil
+        self._climb_offset_x = 0
+        self._climb_center_y = nil
+        self._climb_ladder_id = nil
+        self._climb_width = 0
+        self._climb_pass_through_top = true
+        self._climb_grab_extend_down = 0
+        self._climb_grab_extend_up = 0
+        self._climb_height = 0
+        self.bypass_ceiling_frames = 0
+      end
+    end
+  end
+  if in_climb then
+    -- Disable ground snapping while climbing so you can descend from the top platform.
+    self.bypass_ground_frames = math.max(self.bypass_ground_frames or 0, 1)
+    update_ladder_top_pass_through(self, input)
+    if input.jump_down and self._climb_can_jump then
+      climb_log(self, "climb_jump_off")
+      self._in_climb = false
+      self.bypass_ceiling_frames = 0
+      in_climb = false
+    else
+      -- Snap toward ladder center while climbing (if enabled)
+      if self._climb_snap_to_center then
+        local cx = climb_snap_x(self)
+        if cx then
+          local snap_rate = 18
+          local t = math.min(1, snap_rate * dt)
+          self.pos.x = self.pos.x + (cx - self.pos.x) * t
+        end
+        self.vx = 0
+      else
+        -- Allow horizontal movement on ladder if snap is disabled
+        self.vx = (input.move_x or 0) * (self._climb_speed or 200) * 0.5
+      end
+      self.vy = (input.move_y or 0) * (self._climb_speed or 200)
+    end
+  end
+
+  -- Settle a pending water exit (see exit_water_state's surface-chatter note).
+  if self._water_exit_grace_t then
+    self._water_exit_grace_t = self._water_exit_grace_t - dt
+    if self._water_exit_grace_t <= 0 then
+      if next(self._water_sources or {}) == nil then
+        finalize_water_exit(self, nil)
+      else
+        self._water_exit_grace_t = nil
+      end
+    end
+  end
+
+  if self._in_water then
+    -- Re-resolve the gate periodically instead of latching it at entry: an
+    -- unlock (or a repair of a wiped registry) that lands while the player is
+    -- already submerged must take effect without making them leave the water
+    -- first. Throttled so the lookup does not allocate every frame.
+    self._swim_gate_recheck_t = (self._swim_gate_recheck_t or 0) - dt
+    if self._swim_gate_recheck_t <= 0 then
+      self._swim_gate_recheck_t = SWIM_GATE_RECHECK_INTERVAL
+      local gate_now = swim_gate_ok()
+      if gate_now ~= self._swim_gate_ok then
+        self._swim_gate_ok = gate_now
+        print(string.format("[SWIM] ability gate changed to %s while in water", tostring(gate_now)))
+      end
+    end
+    local has_swim = self._swim_gate_ok == true
+    local swim_input
+    if has_swim then
+      swim_input = vmath.vector3(input.move_x or 0, input.move_y or 0, 0)
+    else
+      -- No swim ability: lock directional movement while submerged.
+      local horizontal_mult = (SWIM_CFG.no_swim_horizontal_mult or 0)
+      input.move_x = (input.move_x or 0) * horizontal_mult
+      input.move_y = 0
+      input.jump_down, input.jump_held = false, false
+      input.dash_down, input.dash_pressed = false, false
+      input.slide_down, input.slide_held, input.slide_up = false, false, false
+      input.backdash_down = false
+      input.ground_pound_down = false
+      swim_input = vmath.vector3(input.move_x or 0, 0, 0)
+    end
+
+    local player_pos = go.get_world_position()
+    -- Non-swimmers always consume oxygen and eventually drown in water.
+    local oxygen_enabled
+    if has_swim then oxygen_enabled = self._oxygen_enabled == true else oxygen_enabled = true end
+
+    local swim_velocity, event = SwimState.update(dt, player_pos, swim_input, oxygen_enabled)
+
+    if swim_velocity then
+      -- Override velocity with swimming physics. Non-swimmers use the
+      -- configurable horizontal struggle multiplier (0 by default).
+      self.vx = swim_velocity.x
+      self.vy = swim_velocity.y
+    end
+    if not has_swim then
+      local sink_speed = math.abs((SWIM_CFG and SWIM_CFG.no_swim_sink_speed) or 220)
+      self.vy = math.min(self.vy or 0, -sink_speed)
+    end
+
+    -- Handle drowning. The damage pipeline plays a hurt SFX and spawns a
+    -- damage number per message, so this MUST tick on an interval -- posting a
+    -- fractional `0.5 * dt` every frame turns drowning into a 60 Hz stream of
+    -- hit sounds ("pinging") and popups instead of a readable drown.
+    if event == "drowning" then
+      self._drown_tick_t = (self._drown_tick_t or 0) - dt
+      if self._drown_tick_t <= 0 then
+        self._drown_tick_t = math.max(0.1, tonumber(SWIM_CFG.drown_damage_interval) or 1.0)
+        msg.post(".", DAMAGE_MSG, {
+          amount = math.max(0, tonumber(SWIM_CFG.drown_damage) or 1),
+          dtype = "drowning",
+          -- damage_over_time: no knockback, no parry attempt, not cancelled by the
+          -- slide/dash invulnerability. ignore_iframes: the tick interval is
+          -- the rate limit, so the 0.8s damage-iframe window must not eat it.
+          damage_over_time = true,
+          ignore_iframes = true,
+          stun_t = 0,
+        })
+      end
+    else
+      self._drown_tick_t = 0
+    end
+
+    -- Update oxygen HUD if enabled
+    if oxygen_enabled then
+      SwimState.publish_oxygen_hud(SwimState.get_oxygen())
+    end
+
+    local sj = SWIM_CFG
+    if has_swim and sj.surface_jump_out ~= false and input.jump_down
+      and player_pos.y >= (self._water_surface_y or player_pos.y) - (sj.surface_jump_band or 24) then
+      self.vy = (self._jump_speed or 600) * (sj.surface_jump_boost or 1.0)
+      self.vx = swim_velocity and swim_velocity.x or self.vx
+      exit_water_state(self, nil, true)
+      SwimState.reset_velocity()
+    end
+
+    -- Handle swim dash input
+    if has_swim and input.dash_pressed and SwimState.can_dash() then
+      local dash_dir = vmath.vector3(input.move_x or 0, input.move_y or 0, 0)
+      if vmath.length(dash_dir) > 0.1 then
+        SwimState.dash(dash_dir)
+        player_log('[PLAYER] Swim dash')
+      end
+    end
+  elseif in_climb then
+    -- Climb movement is handled above; skip normal physics while on ladder.
+  else
+    -- Normal ground/air physics
+    PSTATE.update(self, dt, input)
+  end
+
+  if self._ledge_climb_started then
+    local duration = math.max(0.001, tonumber(self._ledge_climb_duration) or 0.45)
+    anim_once_lock(self, "ledge_grab_climb", duration, { allow_movement = false })
+    self._ledge_climb_started = false
+  end
+  if self._ledge_climb_aborted then
+    -- A swept clearance/support failure returns control immediately instead of
+    -- leaving the failed Edge_Climb animation lock active for its full time.
+    self._anim_lock_t = 0
+    self._anim_lock_allow_movement = true
+    self._ledge_climb_aborted = false
+  end
+
+  local ledge_controls_locked = self._ledge_kinematic or self._ledge_climb_completed
+  if ledge_controls_locked then
+    -- Hang consumes only directional/jump input inside PSTATE. All other
+    -- gameplay actions stay suppressed until the kinematic climb completes.
+    input.light_down, input.light_held, input.light_up = false, false, false
+    input.heavy_down, input.heavy_held, input.heavy_up = false, false, false
+    input.ranged_down, input.parry_down, input.grapple_down = false, false, false
+    input.slide_down, input.slide_held, input.slide_up = false, false, false
+    input.backdash_down, input.ground_pound_down = false, false
+    input.interact_down, input.potion_down, input.marker_down = false, false, false
+    self._light_buffer_count, self._heavy_buffer_count, self._ranged_buffer_count = 0, 0, 0
+    clear_block_grab(self)
+  end
+
+  -- Apply any external forces (from conveyors/wind/water currents)
+  if (not ledge_controls_locked) and (ext_bias_x ~= 0 or ext_bias_y ~= 0) then
+    self.vx = (self.vx or 0) + ext_bias_x
+    self.vy = (self.vy or 0) + ext_bias_y
+  end
+  -- Jumping, swimming, or entering a climb can invalidate a grab during
+  -- PSTATE.update. Re-check before driving the block for this frame.
+  update_block_grab_latch(self, input)
+  apply_block_grab_motion(self, input)
+  -- Decrease animation lock
+  -- Update parry system
+  local parry_update_result = ParrySystem.update(dt)
+  if parry_update_result == "parry_missed" then
+    local parry_cfg = CombatConfig.get().parry or {}
+    if parry_cfg.miss_sfx then
+      play_sfx(parry_cfg.miss_sfx)
+    end
+  end
+  -- Perfect-parry time-slow: deferred activation so hitstop finishes first.
+  -- Pending → active once hitstop completes. Timing is owned by Pause using
+  -- unscaled real time so authored durations remain stable under slow-mo.
+  if self._parry_timeslow_pending and Pause and Pause.is_hitstopped and (not Pause.is_hitstopped()) then
+    local p = self._parry_timeslow_pending
+    self._parry_timeslow_pending = nil
+    if Pause.start_slowmo then
+      Pause.start_slowmo(p.factor, p.duration)
+    end
+  end
+  local dash_now = (self._dash_t or 0)
+  local slide_now = (self._slide_t or 0)
+  local backdash_now = (self._backdash_t or 0)
+  local pound_now = self._pound_active and 1 or 0
+  if dash_now > 0 and (self._dash_prev or 0) <= 0 then
+    local dash_dir = self._last_dash_dir or ((self.vx or 0) >= 0 and 1 or -1)
+    local dash_state = (dash_dir >= 0) and "air_dash_right" or "air_dash"
+    -- Like double_jump, the dash clip is a full-body base-track animation.
+    -- Re-playing it as an additive overlay doubles its bone/mesh timelines
+    -- and can stretch attachments on rigs with keyed scale or deformation.
+    anim_once_lock(self, dash_state, math.min(dash_now, 0.35), {
+      allow_movement = true,
+      blend = 0,
+    })
+    -- Disable bone-driven dash motion: rely on velocity set in player_state
+    self._dash_anim_motion = nil
+    spawn_movement_contact_hitbox(self, "air_dash", dash_now)
+  elseif dash_now <= 0 and (self._dash_prev or 0) > 0 then
+    clear_movement_contact_hitbox(self, "air_dash")
+  end
+
+  if slide_now > 0 and (self._slide_prev or 0) <= 0 then
+    spawn_movement_contact_hitbox(self, "slide", slide_now)
+  elseif slide_now <= 0 and (self._slide_prev or 0) > 0 then
+    clear_movement_contact_hitbox(self, "slide")
+  end
+
+  if backdash_now > 0 and (self._backdash_prev or 0) <= 0 then
+    spawn_movement_contact_hitbox(self, "backdash", backdash_now)
+  elseif backdash_now <= 0 and (self._backdash_prev or 0) > 0 then
+    clear_movement_contact_hitbox(self, "backdash")
+  end
+
+  if pound_now > 0 and (self._pound_prev or 0) <= 0 then
+    spawn_movement_contact_hitbox(self, "ground_pound")
+  elseif pound_now <= 0 and (self._pound_prev or 0) > 0 then
+    clear_movement_contact_hitbox(self, "ground_pound")
+  end
+  local double_jump_now = (self._double_jump_t or 0)
+  if double_jump_now > 0 and (self._double_jump_prev or 0) <= 0 then
+    -- double_jump is a full-body base-track animation. Playing the same clip
+    -- again as an additive overlay doubles its bone/mesh timelines; rigs with
+    -- keyed scale or deformation (including the bundled Buck jump_2 clip) can
+    -- briefly stretch an attachment across the screen.
+    anim_once_lock(self, "double_jump", math.min(double_jump_now, 0.35), {
+      allow_movement = true,
+      blend = 0,
+    })
+  end
+  -- Update facing from movement state and deliberate horizontal input.
+  local anim_vx = (self.vx or 0) - conveyor_vx
+  local anim_vy = (self.vy or 0) - conveyor_vy
+  PlayerRuntimeAnimation.update_facing(self, input, dt)
+  -- Animation: facing
+  anim_face(self, self.facing or 1)
+  -- Detect roll start (transition 0 -> >0)
+  local roll_now = (self._roll_t or 0)
+  if roll_now > 0 and (self._roll_prev or 0) <= 0 then
+    anim_once_lock(self, "roll", math.min(roll_now, 0.30), { allow_movement = false })
+  end
+  self._roll_prev = roll_now
+  self._dash_prev = dash_now
+  self._slide_prev = slide_now
+  self._backdash_prev = backdash_now
+  self._pound_prev = pound_now
+  self._double_jump_prev = double_jump_now
+  if dash_now <= 0 then
+    self._dash_anim_motion = nil
+  end
+
+  integrate(self, dt)
+  local ladder_top_out_collision
+  do
+    local top_out, surface_y, surface_group, support = LadderClimb.detect_climb_top_out(self, input)
+    if top_out then
+      local landing_y = support.position.y
+      self._in_climb = false
+      self._climb_top_pass_active = false
+      self._climb_reattach_lock_t = math.max(self._climb_reattach_lock_t or 0, 0.2)
+      self.bypass_ground_frames = 0
+      self.bypass_ceiling_frames = 0
+      self.vy = 0
+      self.pos.x, self.pos.y = support.position.x, landing_y
+      ladder_top_out_collision = support.collision
+      climb_log(self, "climb_top_out feet_y=%.1f surface_y=%.1f landing_y=%.1f group=%s",
+        tonumber((self.pos.y or 0) - (self.collider_half_height or 60)) or 0,
+        tonumber(surface_y) or 0,
+        tonumber(landing_y) or 0,
+        tostring(surface_group))
+    end
+  end
+  do
+    local bottom_out, surface_y, surface_group = detect_climb_bottom_out(self, input, prev_pos)
+    if bottom_out then
+      local landing_y = (surface_y or self.pos.y) + (self.collider_half_height or 60)
+      self._in_climb = false
+      self._climb_top_pass_active = false
+      self._climb_reattach_lock_t = math.max(self._climb_reattach_lock_t or 0, 0.2)
+      self.bypass_ground_frames = 0
+      self.bypass_ceiling_frames = 0
+      self.vy = 0
+      if self.pos.y < landing_y then
+        self.pos.y = landing_y
+      end
+      climb_log(self, "climb_bottom_out feet_y=%.1f surface_y=%.1f landing_y=%.1f group=%s",
+        tonumber((self.pos.y or 0) - (self.collider_half_height or 60)) or 0,
+        tonumber(surface_y) or 0,
+        tonumber(landing_y) or 0,
+        tostring(surface_group))
+    end
+  end
+  do
+    local ctx = self._bone_physics
+    if ctx then
+      local dash_active = (self._dash_t or 0) > 0
+      local slide_active = (self._slide_t or 0) > 0
+      local suppress = dash_active or slide_active
+      if suppress then
+        if ctx._bone_feet_restore == nil then
+          ctx._bone_feet_restore = ctx.use_bone_feet and true or false
+        end
+        ctx.use_bone_feet = false
+      elseif ctx._bone_feet_restore ~= nil then
+        ctx.use_bone_feet = ctx._bone_feet_restore
+        ctx._bone_feet_restore = nil
+      end
+    end
+  end
+  local ledge_climb_motion = self._ledge_climbing == true
+  if RoomManager and RoomManager.can_move_between then
+    local allowed, room, err = RoomManager.can_move_between(prev_pos, self.pos,
+      self.collider_half_width or 0, self.collider_half_height or 0)
+    if not allowed then
+      if ladder_top_out_collision then
+        -- Keep holding the ladder while streaming catches up to a sideways
+        -- exit. Rejecting the destination must not turn the pull-up into a fall.
+        self._in_climb = true
+        self._climb_top_pass_active = (input.move_y or 0) > 0.1
+        self._climb_reattach_lock_t = 0
+        self.bypass_ground_frames = 1
+        self.bypass_ceiling_frames = self._climb_top_pass_active and 1 or 0
+      end
+      ladder_top_out_collision = nil
+      self.pos.x, self.pos.y = prev_pos.x, prev_pos.y
+      self.vx, self.vy = 0, 0
+      sync_player_position(self)
+      if err and self._stream_error ~= room then
+        self._stream_error = room
+        pcall(msg.post, "main:/toast_gui#toast", hash("toast"), {
+          text = "The next room could not be loaded. Please return and try again.", duration = 4,
+        })
+      end
+    else
+      self._stream_error = nil
+    end
+  end
+  local ledge_completed_this_frame = self._ledge_climb_completed == true
+  local collision
+  if ladder_top_out_collision then
+    -- The ladder exit already checked support/headroom. Re-running the normal
+    -- solver with prev_pos below the platform would treat the pull-up as a bonk.
+    sync_player_position(self)
+    collision = ladder_top_out_collision
+  elseif ledge_climb_motion then
+    -- player_state swept this kinematic segment against the collider faces.
+    -- The ordinary wall solver would snap X back to the wall, so it resumes
+    -- after the route reaches a separately probed support surface.
+    sync_player_position(self)
+    collision = {
+      grounded = false,
+      wall_contact = 0,
+    }
+  elseif ledge_completed_this_frame then
+    sync_player_position(self)
+    -- This collision comes from BonePhysics.probe_ledge_support; completion is
+    -- never allowed to invent grounded=true without a real walkable hit.
+    collision = self._ledge_climb_collision or {
+      grounded = false,
+      wall_contact = 0,
+    }
+  else
+    collision = BonePhysics.resolve(self, prev_pos)
+  end
+  if self._in_climb or (self.bypass_ceiling_frames or 0) > 0 or (self._climb_top_pass_active == true) then
+    local normal = collision and collision.ground_normal or nil
+    climb_log(self,
+      "post_resolve grounded=%s group=%s wall=%s normal=(%.2f,%.2f) top_pass=%s ladder=%s",
+      tostring(collision and collision.grounded or false),
+      tostring(collision and collision.ground_group),
+      tostring(collision and collision.wall_contact),
+      tonumber(normal and normal.x) or 0,
+      tonumber(normal and normal.y) or 0,
+      tostring(self._climb_top_pass_active == true),
+      tostring(self._climb_ladder_id))
+  end
+  self._ground_is_platform = collision and collision.ground_group == SurfaceClassifier.GROUPS.PLATFORM or false
+  self._platform_delta_x = 0
+  self._platform_delta_y = 0
+  do
+    local dx = (self.pos.x or 0) - (prev_pos.x or 0)
+    local dy = (self.pos.y or 0) - (prev_pos.y or 0)
+    local dist = math.sqrt(dx * dx + dy * dy)
+    if dist > 120 and (Debug.gameplay.player or Debug.global.enable) then
+      print(string.format("[PLAYER] Large delta: dx=%.1f dy=%.1f dist=%.1f", dx, dy, dist))
+    end
+  end
+  local was_grounded = self.grounded and true or false
+  if ledge_completed_this_frame then
+    -- Route completion through the regular landing bookkeeping so air
+    -- resources reset, while suppressing the separate Land animation below.
+    self.grounded = false
+    was_grounded = false
+  end
+  local grounded_now = collision and collision.grounded or false
+  local had_wall_contact = (self._on_wall or ((self._wall_contact_timer or 0) > 0) or ((collision and collision.wall_contact) or 0) ~= 0)
+  if grounded_now then
+    self._ground_normal = collision.ground_normal and { x = collision.ground_normal.x, y = collision.ground_normal.y } or nil
+    if not was_grounded then
+      PSTATE.set_grounded(self, true)
+      PSTATE.on_ground_impact(self, collision.ground_hit or self.pos)
+    else
+      PSTATE.set_grounded(self, true)
+    end
+  else
+    self._ground_normal = nil
+    if was_grounded then
+      PSTATE.set_grounded(self, false)
+    end
+  end
+  self.grounded = grounded_now
+  update_block_grab_latch(self, input)
+  local wall_contact = (collision and collision.wall_contact) or 0
+  if wall_contact ~= 0 and not self.grounded then
+    PSTATE.set_wall_contact(self, wall_contact)
+  else
+    PSTATE.set_wall_contact(self, 0)
+  end
+  PSTATE.grapple_contacts(self, collision)
+  -- Detect land (air -> ground) after physics resolution
+  if (not ledge_completed_this_frame) and (not self._was_grounded) and self.grounded then
+    local land_state = had_wall_contact and "wall_land" or "land"
+    local land_lock = had_wall_contact and 0.18 or 0.12
+    anim_once_lock(self, land_state, land_lock, { allow_movement = true })
+    if FX and FX.on_land then pcall(FX.on_land, { pos = go.get_position() }) end
+  end
+  if ledge_completed_this_frame and PSTATE.clear_ledge_state then
+    PSTATE.clear_ledge_state(self)
+  end
+
+  -- Store world position globally AFTER collision resolution
+  -- This ensures the camera and other systems see the final post-collision position
+  do
+    local world_pos = read_final_world_position()
+    publish_final_world_position(self, world_pos, dt)
+  end
+
+  -- Death settling: keep the body on the ground when the death animation ends.
+  if self._is_dead then
+    if not self.grounded then
+      -- Keep falling until we find ground.
+      self.vy = math.min(self.vy or 0, DEATH_SETTLE_VY)
+    end
+    snap_dead_to_ground(self, collision)
+  end
+  -- Animation: choose state based on ability/state machine
+  local state
+  local abs = math.abs
+  anim_vx = (self.vx or 0) - conveyor_vx
+  anim_vy = (self.vy or 0) - conveyor_vy
+  local vx, vy = anim_vx, anim_vy
+  local moving_h = abs(vx) > 10
+  local crouching = self.grounded
+    and not self._in_water
+    and not self._in_climb
+    and (input.move_y or 0) <= -0.6
+  local push_dir = self._push_block_dir or 0
+  local move_x = (input and input.move_x) or 0
+  local block_grab_motion = self._block_grab_motion
+  local pushing_block = self.grounded
+    and not self._in_water
+    and not self._in_climb
+    and not crouching
+    and (self._push_block_t or 0) > 0
+    and math.abs(move_x) > 0.1
+    and ((move_x > 0 and push_dir > 0) or (move_x < 0 and push_dir < 0))
+  local cfg = self._cfg or PS
+  if self._ledge_climbing then
+    state = "ledge_grab_climb"
+  elseif self._ledge_hanging then
+    state = "hang"
+  elseif self._in_water then
+    state = (moving_h or abs(vy) > 10) and "swim_move" or "swim_idle"
+  elseif self._in_climb and not self._in_water then
+    local climb_input = (input and input.move_y) or 0
+    if climb_input > 0.1 then
+      state = "climb_up"
+    elseif climb_input < -0.1 then
+      state = "climb_down"
+    else
+      state = "climb_idle"
+    end
+  elseif self._grapple_active then
+    state = "grapple"
+  elseif dash_now > 0 then
+    local dash_dir = self._last_dash_dir or ((self.vx or 0) >= 0 and 1 or -1)
+    state = (dash_dir >= 0) and "air_dash_right" or "air_dash"
+  elseif (self._backdash_t or 0) > 0 then
+    state = "slide"
+  elseif (self._roll_t or 0) > 0 or (self._slide_t or 0) > 0 then
+    state = "slide"
+  elseif self._on_wall then
+    state = (abs(vy) <= 40) and "wall_cling" or "wall_slide"
+  elseif (self._double_jump_t or 0) > 0 then
+    state = "double_jump"
+  elseif not self.grounded then
+    state = (vy >= 0) and "jump" or "fall"
+  else
+    if block_grab_motion == "push" then
+      state = "push"
+    elseif block_grab_motion == "pull" then
+      state = "pull"
+    elseif self._block_grab then
+      state = "pull_idle"
+    elseif crouching then
+      state = moving_h and "crouch_walk" or "crouch_idle"
+    elseif pushing_block then
+      state = moving_h and "push" or "pushpull_idle_state"
+    elseif moving_h then
+      local walk_speed = (cfg and cfg.walk_speed) or self.walk_speed or 1200
+      local run_speed = (cfg and cfg.run_speed) or self.run_speed or (walk_speed * 1.5)
+      local threshold = (walk_speed + run_speed) * 0.5
+      local run_gate = self._run_gate or abs(vx) >= threshold
+      if run_gate then
+        state = "run"
+      else
+        state = "walk"
+      end
+    else
+      state = "idle"
+    end
+  end
+  -- Debug animation state
+  -- Debug disabled
+
+  -- Movement animations and ability animations should ALWAYS be allowed, even during animation lock
+  -- The lock should only prevent special actions like attacking
+  local is_movement_anim = (state == "idle" or state == "walk" or state == "run" or state == "fall" or state == "jump"
+    or state == "double_jump" or state == "air_dash" or state == "air_dash_right"
+    or state == "slide" or state == "wall_cling" or state == "wall_slide" or state == "climb"
+    or state == "swim_move" or state == "swim_idle"
+    or state == "climb_up" or state == "climb_down" or state == "climb_idle" or state == "hang"
+    or state == "crouch_idle" or state == "crouch_walk"
+    or state == "push" or state == "pushpull_idle_state" or state == "pull" or state == "pull_idle")
+  -- General anim lock (dash/land/roll) can allow or block movement via its own flag.
+  local general_lock_allows = (self._anim_lock_t or 0) <= 0
+    or (self._anim_lock_allow_movement ~= false and is_movement_anim)
+  -- Sprite attacks play on the single base track (no overlay), so the movement
+  -- state machine must not re-drive the base track while an attack is active or
+  -- it overwrites the attack flipbook after one frame. Spine attacks live on
+  -- overlay track 2 and are unaffected, so keep updating the base track there.
+  local sprite_attack_active = (not self._anim_is_spine) and (self._attack ~= nil)
+  local can_set_anim = general_lock_allows and not sprite_attack_active
+
+
+
+  if can_set_anim then
+    PlayerRuntimeAnimation.anim_set(self, state, { locomotion_speed = anim_vx, locomotion_config = PS })
+  else
+    -- Debug disabled
+  end
+  -- Track grounded transition (could be used for land one-shot if desired)
+  self._was_grounded = self.grounded and true or false
+
+  -- Update minimap with player position
+  local mini = rawget(_G, "MINIMAP_MODULE")
+  if mini and mini.set_player_pos then
+    pcall(mini.set_player_pos, self.pos)
+  end
+
+  -- Footsteps: configurable cadence using movement without conveyor carry.
+  if PlayerRuntimeAnimation.footstep_due(self, dt, anim_vx,
+    self.grounded and not self._in_water and not self._in_climb and not self._is_dead, PS) then
+    if _Audio and _Audio.footstep then _Audio.footstep(nil, self._biome_id) end
+  end
+  -- ============================================================================
+  -- INPUT BUFFERING: Queue-based (not timer-based). Counters hold up to 2
+  -- queued presses per attack type. No tick-down needed.
+  -- ============================================================================
+
+  -- Block all attacks during hit-stun (player should not act while staggered)
+  local stunned = (self._stun_t or 0) > 0
+
+  -- Backdash / Ground Pound inputs
+  if input.backdash_down then PSTATE.request_backdash(self) end
+  if (input.ground_pound_down or (not self.grounded and input.heavy_down and (input.move_y or 0) <= -((PS.ground_pound and PS.ground_pound.require_down_threshold) or 0.6))) then
+    PSTATE.request_ground_pound(self, input)
+  end
+
+  -- Interact should take priority over combat when both are bound to the same
+  -- button (e.g. gamepad Y): if an interaction succeeds this frame, suppress
+  -- queued attack inputs generated by that same press.
+  local interacted_this_frame = input.interact_down and self._block_grab ~= nil
+  if input.interact_down and not self._block_grab then
+    input_log('[PLAYER] interact_down detected!')
+    interacted_this_frame = do_interact(self) and true or false
+  end
+  if interacted_this_frame then
+    if input.light_down and (self._light_buffer_count or 0) > 0 then
+      self._light_buffer_count = math.max(0, (self._light_buffer_count or 0) - 1)
+    end
+    if input.heavy_down and (self._heavy_buffer_count or 0) > 0 then
+      self._heavy_buffer_count = math.max(0, (self._heavy_buffer_count or 0) - 1)
+    end
+    if input.ranged_down and (self._ranged_buffer_count or 0) > 0 then
+      self._ranged_buffer_count = math.max(0, (self._ranged_buffer_count or 0) - 1)
+    end
+    input.light_down, input.heavy_down, input.ranged_down = false, false, false
+  end
+
+  -- Process light attack after interact priority has had a chance to consume the same press.
+  local want_light = (self._light_buffer_count or 0) > 0
+  if want_light and not interacted_this_frame and not stunned then
+    local ds = ACTIONS.down_strike or {}
+    local ds_enabled = ds.enabled and can_consume_ability("down_strike")
+    local CA = ACTIONS.charge_attack or {}
+    local ca_enabled = CA.enabled and can_consume_ability("charge_attack")
+    local wants_down_strike = ds_enabled and not self.grounded and (input.move_y or 0) <= -(ds.require_down_threshold or 0.6)
+    local wants_charged = ca_enabled and self.grounded and (self._light_hold_t or 0) >= (CA.threshold or 0.45)
+    local requested = AttackExecutor.request(self, "light", {
+      grounded = self.grounded,
+      want_down_strike = wants_down_strike,
+      want_charged = wants_charged,
+    })
+    if requested then
+      self._light_buffer_count = (self._light_buffer_count or 1) - 1  -- Consume one queued press
+      self._light_hold_t = 0
+      if wants_down_strike then
+        consume_ability("down_strike")
+        pcall(msg.post, msg.url("main:/mode_hud#mode_hud"), hash("hud_cooldown"), { action = "down" })
+      elseif wants_charged then
+        consume_ability("charge_attack")
+        pcall(msg.post, msg.url("main:/mode_hud#mode_hud"), hash("hud_cooldown"), { action = "charged" })
+      else
+        pcall(msg.post, msg.url("main:/mode_hud#mode_hud"), hash("hud_cooldown"), { action = "light" })
+      end
+    end
+  end
+
+  -- Process heavy attack (check queue OR immediate press)
+  local want_heavy = (self._heavy_buffer_count or 0) > 0
+  if want_heavy and not interacted_this_frame and not stunned then
+    local requested = AttackExecutor.request(self, "heavy", {
+      grounded = self.grounded,
+    })
+    if requested then
+      self._heavy_buffer_count = (self._heavy_buffer_count or 1) - 1
+      pcall(msg.post, msg.url("main:/mode_hud#mode_hud"), hash("hud_cooldown"), { action = "heavy" })
+    end
+  end
+
+  if input.parry_down and not stunned   then do_parry(self)   end
+  if PSTATE.grapple_should_cast(self, input) and not stunned then do_grapple(self, input) end
+  if input.potion_down  then do_potion(self)  end
+  if input.marker_down  then do_map_marker(self) end
+
+  -- Process ranged attack (check queue OR immediate press)
+  local want_ranged = (self._ranged_buffer_count or 0) > 0
+  if want_ranged and not stunned and can_consume_ability("ranged_attack") then
+    local requested = AttackExecutor.request(self, "ranged", {
+      grounded = self.grounded,
+    })
+    if requested then
+      consume_ability("ranged_attack")
+      self._ranged_buffer_count = (self._ranged_buffer_count or 1) - 1
+      pcall(msg.post, msg.url("main:/mode_hud#mode_hud"), hash("hud_cooldown"), { action = "ranged" })
+    end
+  end
+  -- Ability cooldowns and stamina live in AbilityManager and nothing else
+  -- ticks them. Without this, a used ability (ranged shot, down strike,
+  -- charge attack) stays on cooldown forever after its first use.
+  AbilityManager.update(dt)
+  self._cd_light  = math.max(0, (self._cd_light or 0) - dt)
+  self._cd_heavy  = math.max(0, (self._cd_heavy or 0) - dt)
+  self._cd_ranged = math.max(0, (self._cd_ranged or 0) - dt)
+  self._cd_potion = math.max(0, (self._cd_potion or 0) - dt)
+  self._atk_recovery_t = math.max(0, (self._atk_recovery_t or 0) - dt)
+
+  -- Send debug data to debug overlay (if enabled)
+  if Debug and Debug.global and Debug.global.enable then
+    PlayerDebugBridge.send_player_data(self)
+  end
+
+  input_controller.begin_frame()
+end
+
+function on_message(self, message_id, message, sender)
+  if should_skip_proxied_direct_message(self, message_id, message) then
+    return
+  end
+  if RoomArrival.intercept(self, RoomManager, message_id, message or {}, sender) then return end
+  if (self._room_arrival or not RoomManager.is_startup_ready()) and (message_id == DAMAGE_MSG or message_id == hash("take_damage")
+      or message_id == CONTACT_POINT_RESPONSE_MSG or message_id == hash("platform_delta")) then
+    return
+  end
+
+  if message_id == CONTACT_POINT_RESPONSE_MSG then
+    -- Spine-bone physics: when active, only accept relayed contacts from
+    -- bone-collider siblings (they inject `source_part`). The legacy `#co`
+    -- collider is disabled but be defensive in case any contact still fires.
+    if self._spine_physics_active then
+      if not (message and message.source_part) then
+        return
+      end
+      self._last_contact_part = message.source_part
+    end
+    if self._ledge_kinematic then
+      -- Edge_Idle and Edge_Climb both own the root transform kinematically;
+      -- asynchronous body-bone contacts must not push the stationary hang or
+      -- authored climb route away from the wall probes that maintain it.
+      return
+    end
+    local og = message and message.other_group
+    local climb_contact_trace =
+      self._in_climb or
+      (self._climb_top_pass_active == true) or
+      ((self.bypass_ceiling_frames or 0) > 0) or
+      ((self.bypass_ground_frames or 0) > 0)
+    if climb_contact_trace then
+      climb_log(self,
+        "contact other=%s group=%s dist=%.3f normal=(%.2f,%.2f)",
+        tostring(message and message.other_id),
+        tostring(og),
+        tonumber(message and message.distance) or -1,
+        tonumber(message and message.normal and message.normal.x) or 0,
+        tonumber(message and message.normal and message.normal.y) or 0)
+    end
+    -- BYPASS: When bypassing ground for crumble platform, ignore all ground/tile contacts
+    -- This prevents physics from pushing the player back up onto baked tilemap collision
+    if (self.bypass_ground_frames or 0) > 0 then
+      -- Only allow wall contacts during bypass, skip ground/tile
+      if SurfaceClassifier.is_terrain_group(og) then
+        if climb_contact_trace then
+          climb_log(self, "contact_skip reason=bypass_ground_group group=%s", tostring(og))
+        end
+        return  -- Skip this collision entirely
+      end
+      -- Also skip if normal is primarily vertical (ground/ceiling)
+      if message and message.normal then
+        local abs_ny = math.abs(message.normal.y)
+        if abs_ny > 0.7 then
+          if climb_contact_trace then
+            climb_log(self, "contact_skip reason=bypass_ground_vertical group=%s normal=(%.2f,%.2f)",
+              tostring(og),
+              tonumber(message.normal.x) or 0,
+              tonumber(message.normal.y) or 0)
+          end
+          return  -- Skip vertical (ground/ceiling) contacts during bypass
+        end
+      end
+    end
+    
+    -- Only handle special world/blocker groups (locked doors, etc.), skip normal ground/tile contacts
+    local collision_cfg = PS.collision_response or {}
+    local allowed_groups = self._collision_allowed_groups or DEFAULT_COLLISION_GROUPS
+    if og and not allowed_groups[og] then
+      -- Ceiling safety net: raycast resolution can miss when the head is
+      -- already overlapping. A strong downward terrain normal is unambiguous.
+      local ceiling_correction = PlayerCeilingContact.evaluate(message, collision_cfg, self, CEILING_CONTACT_DEPS)
+      if ceiling_correction then
+        self.pos.y = self.pos.y + ceiling_correction.delta_y
+        if ceiling_correction.stop_upward_velocity then self.vy = 0 end
+        sync_player_position(self)
+        if climb_contact_trace then
+          climb_log(self, "contact_correct axis=y correction=%.2f normal_y=%.2f",
+            ceiling_correction.correction, tonumber(message.normal.y) or 0)
+        end
+      end
+      if climb_contact_trace then
+        climb_log(self, "contact_skip reason=group_filter group=%s", tostring(og))
+      end
+      return
+    end
+    if Debug.global.enable or Debug.gameplay.player then
+      local pos = go.get_position()
+      print(string.format("[PLAYER COLLISION] other=%s dist=%.3f normal=(%.2f,%.2f) ours=(%.1f,%.1f)",
+        tostring(message and message.other_id),
+        message and message.distance or -1,
+        message and message.normal and message.normal.x or 0,
+        message and message.normal and message.normal.y or 0,
+        pos.x, pos.y))
+    end
+
+    -- Handle collision response: correct position AND velocity
+    if message and message.normal and message.distance then
+      local nx = message.normal.x
+      local ny = message.normal.y
+      local distance = message.distance
+
+      -- Get collision response settings from config
+      local collision_cfg = PS.collision_response or {}
+      local angle_threshold = collision_cfg.angle_threshold or 0.7
+      local penetration_threshold = collision_cfg.penetration_threshold or 1.0
+      local safety_margin = collision_cfg.penetration_safety_margin or 0.1
+
+      -- Filter out diagonal corner collisions - only respond to primarily horizontal or vertical surfaces
+      -- This prevents catching on tile corners
+      local abs_nx = math.abs(nx)
+      local abs_ny = math.abs(ny)
+      local is_primarily_horizontal = abs_nx > angle_threshold and abs_nx > abs_ny
+      local is_primarily_vertical = abs_ny > angle_threshold and abs_ny > abs_nx
+
+      if is_primarily_horizontal or is_primarily_vertical then
+        -- IMPORTANT:
+        -- Vertical contacts (ground/ceiling) are already resolved by BonePhysics.resolve() via raycasts.
+        -- Doing extra position correction here can cause visible y-jitter when the collider is slightly
+        -- overlapping the ground and gets pushed out every physics step.
+        local allow_position_correction = is_primarily_horizontal
+
+        -- Only do position correction for significant penetrations on WALL-like contacts.
+        if allow_position_correction and distance > penetration_threshold then
+          local correction = distance + safety_margin
+          -- Treat this handler as a "wall solver": correct horizontally only.
+          -- (Vertical correction is handled by BonePhysics.resolve() to avoid ground jitter.)
+          self.pos.x = self.pos.x + nx * correction
+          sync_player_position(self)
+          if climb_contact_trace then
+            climb_log(self, "contact_correct axis=x correction=%.2f normal=(%.2f,%.2f)", correction, nx, ny)
+          end
+          if Debug.global.enable or Debug.gameplay.player then
+            print(string.format("[PLAYER COLLISION] Position corrected by %.2f along normal (%.2f, %.2f)", correction, nx, ny))
+          end
+        end
+
+        -- Always block velocity into the surface (prevents "pushing" into walls and helps settle).
+        local dot = (self.vx or 0) * nx + (self.vy or 0) * ny
+        local grab_contact_is_pushable = false
+        if block_grab_enabled(self) and is_primarily_horizontal and message.other_id then
+          grab_contact_is_pushable = probe_pushable_block(self, message.other_id)
+          if grab_contact_is_pushable
+            and (not self._block_grab or self._block_grab.block_id == message.other_id) then
+            local block_dir = (-nx >= 0) and 1 or -1
+            self._push_block_t = math.max(self._push_block_t or 0, 0.12)
+            self._push_block_dir = block_dir
+            self._push_block_id = message.other_id
+            self._block_grab_contact_t = math.max(
+              self._block_grab_contact_t or 0,
+              self._block_grab_cfg.release_grace or 0.15
+            )
+          end
+        end
+        -- Forward a push hint to world objects (e.g. pushable blocks) before velocity is cancelled.
+        -- The object decides whether to react.
+        if dot < 0 and is_primarily_horizontal and message.other_id then
+          local is_pushable_block = probe_pushable_block(self, message.other_id)
+          if is_pushable_block then
+            self._push_block_t = math.max(self._push_block_t or 0, 0.12)
+            self._push_block_dir = (-nx >= 0) and 1 or -1
+            if block_grab_enabled(self) then
+              self._push_block_id = message.other_id
+            end
+            msg.post(message.other_id, PUSH_CONTACT_MSG, {
+              direction_x = -nx,
+              amount = -dot,
+              from = msg.url(),
+            })
+          end
+        end
+        if dot < 0 then
+          self.vx = (self.vx or 0) - dot * nx
+          self.vy = (self.vy or 0) - dot * ny
+          if climb_contact_trace then
+            climb_log(self, "contact_block_velocity dot=%.2f new_v=(%.1f,%.1f) normal=(%.2f,%.2f)",
+              dot, self.vx, self.vy, nx, ny)
+          end
+          if Debug.global.enable or Debug.gameplay.player then
+            print(string.format("[PLAYER COLLISION] Velocity blocked: new vx=%.1f vy=%.1f", self.vx, self.vy))
+          end
+        end
+      elseif climb_contact_trace then
+        climb_log(self, "contact_skip reason=diagonal normal=(%.2f,%.2f) threshold=%.2f", nx, ny, angle_threshold)
+      end
+    end
+    return
+  elseif message_id == TRIGGER_RESPONSE_MSG then
+    -- Spine-bone physics: only the body_hurtbox part should route triggers
+    -- (damage, sensors, water, ladders, collectibles). Foot/head probes are
+    -- terrain-only by mask, but be defensive: ignore non-relayed messages
+    -- and ignore non-body relayed triggers.
+    if self._spine_physics_active then
+      if not (message and message.source_part) then
+        return
+      end
+      if message.source_part ~= "body" then
+        return
+      end
+      self._last_contact_part = message.source_part
+    end
+    -- Log triggers (door sensors, water, etc.)
+    if Debug.global.enable or Debug.gameplay.player then
+      print(string.format("[PLAYER TRIGGER] group=%s enter=%s other=%s",
+        tostring(message and message.group),
+        tostring(message and message.enter),
+        tostring(message and message.other_id)))
+    end
+    local trigger_water = message and ((message.group == hash("water")) or (message.other_group == hash("water")))
+    if trigger_water then
+      if message.enter then
+        enter_water_state(self, message.other_id, {})
+      else
+        exit_water_state(self, message.other_id)
+      end
+    end
+    return
+  elseif message_id == MSG_ANIM_MISSING then
+    local requested = message and (message.requested_state or message.state)
+    local missing_ledge_anim = requested == "hang"
+      or requested == "ledge_grab_climb"
+      or requested == hash("hang")
+      or requested == hash("ledge_grab_climb")
+    if missing_ledge_anim then
+      self._ledge_hang_supported = false
+      self._anim_current = nil
+      self._anim_lock_t = 0
+      self._anim_lock_allow_movement = true
+      if PSTATE.on_ledge_animation_missing then
+        PSTATE.on_ledge_animation_missing(self)
+      end
+    end
+    return
+  elseif message_id == MSG_ANIM_DONE then
+    -- animation_controller may fall back to idle after a base-track one-shot.
+    -- Invalidate the matching request cache so the next update can immediately
+    -- restore the gameplay state (jump/fall/walk/etc.) instead of gliding.
+    PlayerRuntimeAnimation.on_animation_done(self, message)
+    -- Attack animation finished: clear attack state so movement resumes
+    -- and the next queued attack can fire.  Does NOT touch the general
+    -- _anim_lock_t used by dash/land/roll.
+    AttackExecutor.on_animation_done(self)
+  elseif message_id == DAMAGE_MSG then
+    -- Ignore damage completely when dead or during post-respawn grace period
+    if self._is_dead then
+      player_log('[PLAYER] damage ignored - player is dead')
+      return
+    end
+    if self._respawn_grace_timer and self._respawn_grace_timer > 0 then
+      player_log('[PLAYER] damage blocked by respawn grace period')
+      return
+    end
+    local bypass_iframes = (message and message.ignore_iframes) and true or false
+    local is_damage_over_time = (message and message.damage_over_time) and true or false
+    -- Check damage iFrames (post-hit invulnerability)
+    if (not bypass_iframes) and PSTATE.is_damage_invulnerable(self) then
+      player_log('[PLAYER] damage blocked by damage iFrames')
+      return
+    end
+    -- Check if player is invulnerable (during slide/air dash/parry)
+    if (not is_damage_over_time) and PSTATE.is_invulnerable(self) then
+      player_log('[PLAYER] damage blocked by ability iFrames')
+      return
+    end
+    local incoming = DamagePayload.normalize(message, sender)
+    local amt = DamageCalc.apply(incoming.amount, incoming.damage_type or incoming.dtype, { target = "player" })
+    incoming.amount = amt
+    incoming.damage = amt
+    -- Parry check: attempt to parry incoming attack
+    local parry_result = nil
+    if not is_damage_over_time and incoming.parryable and (not CombatConfig.feature_enabled or CombatConfig.feature_enabled("parry", true)) then
+      parry_result = ParrySystem.attempt_parry(incoming)
+    end
+    if parry_result and parry_result.success then
+      player_log('[PLAYER] Successful parry!' .. (parry_result.perfect and ' PERFECT!' or ''))
+      if PSTATE and PSTATE.add_iframes and parry_result.iframes then
+        PSTATE.add_iframes(self, parry_result.iframes)
+      end
+      if parry_result.counter_window then
+        AttackExecutor.open_counter_window(self, parry_result.counter_window, parry_result.attacker_url)
+      end
+      -- Visual flash: white for normal parry, gold for perfect
+      if parry_result.perfect then
+        pcall(msg.post, "#anim", hash("anim.flash"), {
+          color = vmath.vector4(1.0, 0.85, 0.2, 1.0),  -- gold
+          duration = 0.18,
+        })
+        -- Brief time-slow for perfect parry (global set_time_step)
+        local parry_cfg = CombatConfig.get().parry or {}
+        local slow_dur = parry_cfg.perfect_time_slow_duration or 0.15
+        local slow_factor = parry_cfg.perfect_time_slow_factor or 0.3
+        -- Defer time-slow: hitstop fires on this same frame via CombatFeedback,
+        -- so we store the pending slow and apply it once hitstop restores time.
+        self._parry_timeslow_pending = { factor = slow_factor, duration = slow_dur }
+      else
+        pcall(msg.post, "#anim", hash("anim.flash"), {
+          color = vmath.vector4(1.0, 1.0, 1.0, 1.0),  -- white
+          duration = 0.12,
+        })
+      end
+      if parry_result.attacker_url then
+        pcall(msg.post, parry_result.attacker_url, hash('mvtk_apply_damage'), DamagePayload.build({
+          amount = 0,
+          damage_type = incoming.damage_type,
+          reaction_type = "stun",
+          stun_t = parry_result.stun_duration or 0.60,
+          parryable = false,
+          source_actor = go.get_id(),
+          source_attack = "parry_stun",
+        }))
+      end
+      return
+    end
+
+    self.health = (self.health or self.max_health) - amt
+    clamp_health(self)
+    player_log(string.format('[PLAYER] took %.1f damage (hp=%.1f)', amt, self.health))
+    -- Grant damage iFrames so rapid hits cannot stun-lock or cancel animations.
+    -- With iFrames active, this cancel only fires once per hit window (not every frame).
+    if not bypass_iframes then
+      self._damage_iframes_t = self._damage_iframes_duration or 0.8
+    end
+    local hurt_feedback, boss_feedback_override = CombatFeedback.player_profile(incoming)
+    -- Direct hits interrupt the swing once per invulnerability window.
+    -- Damage-over-time ticks must not cancel attacks or animate a stagger.
+    if not is_damage_over_time then
+      if hurt_feedback.interrupt_attack then AttackExecutor.cancel(self) end
+      if ParrySystem.reset_streak then
+        ParrySystem.reset_streak()
+      end
+      self._light_buffer_count = 0
+      self._heavy_buffer_count = 0
+      self._ranged_buffer_count = 0
+    end
+    -- Apply knockback and hit-stun if provided
+    local kx = incoming.kx or 0
+    local ky = incoming.ky or 0
+    if is_damage_over_time then
+      kx = 0
+      ky = 0
+    end
+    local stun_t = tonumber(message and message.stun_t)
+    if boss_feedback_override and not is_damage_over_time then stun_t = hurt_feedback.stun_t end
+    if stun_t == nil then stun_t = is_damage_over_time and 0 or (hurt_feedback.stun_t or 0) end
+    local dtype = incoming.damage_type or incoming.dtype or "physical"
+    if (message and message.no_facing_flip) or dtype == "projectile" then
+      local lock_t = math.max(0.10, tonumber(stun_t) or 0)
+      self._facing_lock_t = math.max(self._facing_lock_t or 0, lock_t)
+      self._facing_lock_until_input = true
+    end
+    if PSTATE and PSTATE.apply_knockback and (kx ~= 0 or ky ~= 0) then PSTATE.apply_knockback(self, kx, ky) end
+    if PSTATE and PSTATE.apply_stun and stun_t > 0 then
+      self._hurt_decel = hurt_feedback.hurt_decel
+      PSTATE.apply_stun(self, stun_t)
+    end
+    if not is_damage_over_time then
+      if hurt_feedback.flash_color and (hurt_feedback.flash_duration or 0) > 0 then
+        local color = hurt_feedback.flash_color
+        msg.post("#anim", "anim.flash", {
+          color = vmath.vector4(color[1], color[2], color[3], color[4]),
+          duration = hurt_feedback.flash_duration,
+        })
+      end
+      if stun_t > 0 and hurt_feedback.animation then
+        if self._anim_is_spine and hurt_feedback.interrupt_attack then
+          -- Replace the attack overlay too; otherwise it hides the base hurt.
+          PlayerRuntimeAnimation.anim_overlay_once(self, hurt_feedback.animation, { track = 2 })
+        end
+        PlayerRuntimeAnimation.anim_once_lock(self, hurt_feedback.animation, stun_t, { allow_movement = false })
+      end
+    end
+    CombatFeedback.impact("hurt", amt, hurt_feedback)
+    if Gamefeel and Gamefeel.damage_number then
+      pcall(Gamefeel.damage_number, amt, go.get_position(), {
+        dtype = incoming.damage_type or incoming.dtype or 'physical',
+        target = 'player'
+      })
+    end
+    pcall(msg.post, msg.url("main:/mode_hud#mode_hud"), hash("hud_health"), { hp = self.health, hp_max = self.max_health })
+    if self.health <= 0 then
+      trigger_death(self, message and message.source or 'combat')
+      return
+    end
+  elseif message_id == HEAL_MSG then
+    local max_health = tonumber(self.max_health) or 0
+    if max_health <= 0 then
+      return
+    end
+    local before = tonumber(self.health) or max_health
+    local has_amount = message and message.amount ~= nil
+    local has_percent = message and message.percent ~= nil
+    local full = message and (message.full == true or message.full == 1)
+
+    if full then
+      self.health = max_health
+    else
+      local heal_delta = 0
+      if has_amount then
+        heal_delta = tonumber(message.amount) or 0
+      elseif has_percent then
+        heal_delta = math.floor(max_health * (tonumber(message.percent) or 0))
+      end
+      if heal_delta > 0 then
+        self.health = before + heal_delta
+      end
+    end
+
+    clamp_health(self)
+    local healed = math.max(0, (self.health or 0) - before)
+    pcall(msg.post, msg.url("main:/mode_hud#mode_hud"), hash("hud_health"), { hp = self.health, hp_max = self.max_health })
+    if healed > 0 then
+      if Gamefeel and Gamefeel.damage_number then
+        pcall(Gamefeel.damage_number, -healed, go.get_position(), { dtype = 'heal', target = 'player' })
+      end
+    end
+    -- Stations say what happened (a full-health heal used to look like nothing).
+    if message and message.source == "health_station" and healed > 0 then
+      require("mvtk.prefabs.prefab_utils").toast(
+        string.format("Health restored (+%s)", tostring(math.floor(healed + 0.5))), 2.0)
+    end
+    player_log(string.format("[PLAYER] healed %.1f (hp=%.1f)", healed, self.health or 0))
+  elseif message_id == RESTORE_MSG then
+    -- Respawn previously sent RESET_MOTION separately. Keep the full reset
+    -- inside the ready arrival so dash/climb/attack state cannot cross it.
+    if message and message.respawn_pos then reset_motion_state(self) end
+    player_log("[PLAYER] ======================================")
+    player_log("[PLAYER] RESTORE_HEALTH message received")
+    player_log(string.format("[PLAYER] Current state: health=%.1f, _is_dead=%s", self.health or 0, tostring(self._is_dead)))
+    player_log(string.format("[PLAYER] Current position: (%.1f, %.1f)", self.pos.x or 0, self.pos.y or 0))
+    player_log(string.format("[PLAYER] Current velocity: vx=%.1f, vy=%.1f", self.vx or 0, self.vy or 0))
+    
+    local before = self.health or self.max_health
+    self.health = self.max_health
+    self._is_dead = false  -- Reset death state on full restore
+    self._control_locked = false  -- Unlock player controls
+    self._death_settled = false  -- Clear death settlement flag
+    self._respawn_grace_timer = 0.5  -- Brief invulnerability after respawn
+    
+    -- CRITICAL: Use respawn position from message if provided
+    -- This avoids race condition where update() overwrites go.set_position before this message arrives
+    if message and message.respawn_pos then
+        self.pos = vmath.vector3(message.respawn_pos.x, message.respawn_pos.y, self.pos.z or 0)
+        sync_player_position(self)  -- Also update game object position
+        player_log(string.format("[PLAYER] TELEPORTED to respawn_pos: (%.1f, %.1f)", self.pos.x, self.pos.y))
+    else
+        -- Fallback: sync from game object (may be stale if update() ran)
+        self.pos = go.get_position()
+    end
+    ensure_player_render_z(self)
+
+    -- CRITICAL: Also reset motion state along with health restore
+    self.vx = 0
+    self.vy = 0
+    
+    clamp_health(self)
+    -- Reset animation to idle
+    if self.sprite_url then
+      pcall(msg.post, self.sprite_url, hash("play_animation"), { id = hash("idle") })
+    end
+    local healed = math.max(0, (self.health or 0) - (before or 0))
+    
+    player_log(string.format("[PLAYER] AFTER RESTORE: health=%.1f, _is_dead=%s", self.health, tostring(self._is_dead)))
+    player_log(string.format("[PLAYER] AFTER RESTORE: position (%.1f, %.1f)", self.pos.x or 0, self.pos.y or 0))
+    player_log(string.format("[PLAYER] AFTER RESTORE: velocity vx=%.1f, vy=%.1f", self.vx or 0, self.vy or 0))
+    player_log("[PLAYER] ======================================")
+    
+    player_log('[PLAYER] health restored, death state cleared, controls unlocked')
+    pcall(msg.post, msg.url("main:/mode_hud#mode_hud"), hash("hud_health"), { hp = self.health, hp_max = self.max_health })
+    if healed > 0 then
+      if Gamefeel and Gamefeel.damage_number then pcall(Gamefeel.damage_number, -healed, go.get_position(), { dtype = 'heal', target = 'player' }) end
+    end
+  elseif message_id == RESET_MOTION_MSG then
+    player_log("[PLAYER] ======================================")
+    player_log("[PLAYER] RESET_MOTION message received")
+    player_log(string.format("[PLAYER] BEFORE reset: vx=%.1f, vy=%.1f", self.vx or 0, self.vy or 0))
+    reset_motion_state(self)
+    player_log(string.format("[PLAYER] AFTER reset: vx=%.1f, vy=%.1f", self.vx or 0, self.vy or 0))
+    player_log("[PLAYER] ======================================")
+  elseif message_id == hash('mvtk_pogo') then
+    if CombatConfig.feature_enabled and not CombatConfig.feature_enabled("aerial_juggle", true) then
+      return
+    end
+    local bounce = (ACTIONS.down_strike and ACTIONS.down_strike.bounce_speed) or 1000
+    -- Bounce upward and reset some aerial resources if desired
+    self.vy = math.max(self.vy or 0, bounce)
+    -- Optional: clear slide/dash if hitting during pogo handled in state
+    player_log('[PLAYER] Pogo bounce!')
+  elseif message_id == hash('mvtk_roll_state') then
+    local active = message and message.active
+    local roll = PS.roll or {}
+    if active then
+      self.collider_half_width  = roll.small_half_width or self._base_collider_half_width or self.collider_half_width
+      self.collider_half_height = roll.small_half_height or self._base_collider_half_height or self.collider_half_height
+    else
+      self.collider_half_width  = self._base_collider_half_width or self.collider_half_width
+      self.collider_half_height = self._base_collider_half_height or self.collider_half_height
+    end
+    self._wall_half_width = self.collider_half_width
+  elseif message_id == hash('set_gravity_mult') then
+    local k = message and message.k or nil
+    if PSTATE and PSTATE.set_gravity_mult then PSTATE.set_gravity_mult(self, k) end
+  elseif message_id == hash('clear_gravity_mult') then
+    if PSTATE and PSTATE.clear_gravity_mult then PSTATE.clear_gravity_mult(self) end
+  elseif message_id == hash('one_way_contact') then
+    local previous = self._one_way
+    if message and message.url then self._one_way = message.url end
+    if message and message.bounds_bottom then self._one_way_bounds_bottom = message.bounds_bottom end
+    if message and message.bounds_top then self._one_way_bounds_top = message.bounds_top end
+    if message and message.bounds_left then self._one_way_bounds_left = message.bounds_left end
+    if message and message.bounds_right then self._one_way_bounds_right = message.bounds_right end
+    one_way_log(self, "one_way_contact prev=%s url=%s direction=%s sender=%s", tostring(previous), tostring(message and message.url), tostring(message and message.direction), tostring(sender))
+    -- Auto-drop for "up" direction platforms: the player should fall through
+    -- from above without needing to press down+jump.
+    -- Teleport the player below the platform bounds to clear any overlapping tilemap collision.
+    -- Triggers when grounded OR when falling through (vy <= 0) to prevent the player
+    -- from being caught by tilemap solid tiles under the platform.
+    if message and message.direction == "up" and (self.grounded or (self.vy or 0) <= 0) then
+      one_way_log(self, "auto-drop for direction=up platform %s grounded=%s", tostring(message.url), tostring(self.grounded))
+      if message.url then
+        pcall(msg.post, message.url, hash("drop_through"), {
+          other_id = go.get_id(),
+        })
+      end
+      local drop_pos = nil
+      local bounds_bottom = message.bounds_bottom
+      if bounds_bottom then
+        local half_h = self.collider_half_height or 60
+        local target_y = bounds_bottom - half_h - 8
+        drop_pos = vmath.vector3(self.pos.x, target_y, self.pos.z or 0)
+        one_way_log(self, "auto-drop teleport bounds_bottom=%.1f target_y=%.1f", bounds_bottom, target_y)
+      end
+      self._platform_drop_t = math.max(self._platform_drop_t or 0, 0.5)
+      apply_force_falling(self, {
+        reason = "one_way_up_auto",
+        frames = ONE_WAY_DROP_BYPASS_FRAMES,
+        vy = math.min(self.vy or 0, -200),
+        pos = drop_pos,
+      })
+    end
+  elseif message_id == hash('set_biome') then
+    self._biome_id = message and (message.id or message.biome)
+  elseif PlayerMessaging.handle_environment_message(
+      self,
+      message_id,
+      message,
+      (message and message.original_sender) or sender,
+      sync_player_position
+    ) then
+    -- handled by mvtk.player.messaging
+  elseif message_id == (C.MSG and C.MSG.GRANT_ABILITY or hash('mvtk_grant_ability')) then
+    local debug_ability = Debug.global.enable or Debug.gameplay.ability_manager
+    if debug_ability then
+      print("[PLAYER] ========== GRANT_ABILITY RECEIVED ==========")
+    end
+    local aid = message and (message.ability or message.id or message.name)
+    if debug_ability then
+      print(string.format("[PLAYER] aid=%s enabled=%s", tostring(aid), tostring(message and message.enabled)))
+    end
+    if aid then
+      local ability_id = normalize_ability_id(aid) or tostring(aid)
+      local enabled = nil
+      if message and message.enabled ~= nil then
+        enabled = message.enabled and true or false
+      end
+      if debug_ability then
+        print(string.format("[PLAYER] Calling AbilityManager.unlock_ability(%s, {enabled=%s})", ability_id, tostring(enabled)))
+      end
+
+      -- Check state BEFORE unlock
+      local before_info = AbilityManager.get_ability_info and AbilityManager.get_ability_info(ability_id)
+      if before_info then
+        if debug_ability then
+          print(string.format("[PLAYER] BEFORE unlock: unlocked=%s enabled=%s", tostring(before_info.unlocked), tostring(before_info.enabled)))
+        end
+      end
+
+      local unlocked = false
+      if AbilityManager.unlock_ability then
+        unlocked = AbilityManager.unlock_ability(ability_id, { enabled = enabled })
+        if debug_ability then
+          print(string.format("[PLAYER] AbilityManager.unlock_ability returned: %s", tostring(unlocked)))
+        end
+      else
+        AbilityManager.force_unlock_ability(ability_id)
+        unlocked = true
+      end
+      if (not unlocked) and (enabled ~= nil) then
+        if debug_ability then
+          print(string.format("[PLAYER] Ability was already unlocked, calling set_ability_enabled(%s, %s)", ability_id, tostring(enabled)))
+        end
+        AbilityManager.set_ability_enabled(ability_id, enabled)
+      end
+
+      -- Check state AFTER unlock
+      local after_info = AbilityManager.get_ability_info and AbilityManager.get_ability_info(ability_id)
+      if after_info then
+        if debug_ability then
+          print(string.format("[PLAYER] AFTER unlock: unlocked=%s enabled=%s", tostring(after_info.unlocked), tostring(after_info.enabled)))
+        end
+      end
+
+      if self._apply_ability_states then
+        if debug_ability then
+          print("[PLAYER] Calling _apply_ability_states()")
+        end
+        local apply_ok, apply_err = pcall(self._apply_ability_states)
+        if not apply_ok then
+          print(string.format("[PLAYER] ERROR in _apply_ability_states: %s", tostring(apply_err)))
+        else
+          if debug_ability then
+            print("[PLAYER] _apply_ability_states completed successfully")
+          end
+        end
+        if debug_ability then
+          print(string.format("[PLAYER] After apply: air_jumps=%s slide=%s air_dash=%s wall_climb=%s glide=%s",
+            tostring(self._overrides and self._overrides.air_jumps),
+            tostring(self._overrides and self._overrides.slide and self._overrides.slide.enabled),
+            tostring(self._overrides and self._overrides.air_dash and self._overrides.air_dash.enabled),
+            tostring(self._overrides and self._overrides.wall_climb and self._overrides.wall_climb.enabled),
+            tostring(self._overrides and self._overrides.glide and self._overrides.glide.enabled)))
+        end
+        -- Refresh PSTATE cached values so abilities work immediately
+        if PSTATE and PSTATE.refresh_abilities then
+          if debug_ability then
+            print("[PLAYER] Calling PSTATE.refresh_abilities()")
+          end
+          pcall(PSTATE.refresh_abilities, self)
+        end
+      else
+        print("[PLAYER] WARNING: self._apply_ability_states is nil!")
+      end
+      local info = AbilityManager.get_ability_info and AbilityManager.get_ability_info(ability_id)
+      local label = (info and info.name) or ability_id:gsub('_', ' ')
+      if unlocked or (message and message.toast_when_known) then
+        pcall(msg.post, msg.url("main:/toast_gui#toast"), hash('toast'), { text = string.format("Ability Unlocked\n%s", label) })
+      end
+      if debug_ability then
+        print("[PLAYER] ========== GRANT_ABILITY END ==========")
+      end
+    end
+  elseif message_id == hash('mvtk_increase_max_health') then
+    -- Handle collectible health container upgrade
+    local amount = (message and message.amount) or 1
+    self.max_health = (self.max_health or 5) + amount
+    self.health = (self.health or 0) + amount  -- Also increase current health
+    clamp_health(self)
+    player_log(string.format('[PLAYER] Max health increased by %d (new max: %.1f)', amount, self.max_health))
+    -- Update HUD
+    pcall(msg.post, msg.url("main:/mode_hud#mode_hud"), hash("hud_health"), { hp = self.health, hp_max = self.max_health })
+    -- Visual/audio feedback
+    if Gamefeel and Gamefeel.damage_number then
+      pcall(Gamefeel.damage_number, -amount, go.get_position(), { dtype = 'upgrade', target = 'player' })
+    end
+  elseif message_id == hash('mvtk_increase_max_energy') then
+    -- Handle collectible energy container upgrade
+    local amount = (message and message.amount) or 1
+    EnergyState.increase_max(amount, { fill = true, reason = "upgrade" })
+    local current, max = EnergyState.get()
+    self.energy = current
+    self.max_energy = max
+    player_log(string.format('[PLAYER] Max energy increased by %d (new max: %.1f)', amount, self.max_energy))
+    -- Visual/audio feedback
+    if Gamefeel and Gamefeel.damage_number then
+      pcall(Gamefeel.damage_number, -amount, go.get_position(), { dtype = 'upgrade', target = 'player' })
+    end
+  elseif message_id == hash('mvtk_increase_max_stamina') then
+    -- Handle collectible stamina vessel upgrade
+    local amount = (message and message.amount) or 20
+    self.max_stamina = (self.max_stamina or 100) + amount
+    self.stamina = (self.stamina or 0) + amount  -- Also increase current stamina
+    player_log(string.format('[PLAYER] Max stamina increased by %d (new max: %.1f)', amount, self.max_stamina))
+    -- Update HUD
+    pcall(msg.post, msg.url("main:/mode_hud#mode_hud"), hash("hud_stamina"), { stamina = self.stamina, stamina_max = self.max_stamina })
+    -- Visual/audio feedback
+    if Gamefeel and Gamefeel.damage_number then
+      pcall(Gamefeel.damage_number, -amount, go.get_position(), { dtype = 'upgrade', target = 'player' })
+    end
+
+  elseif message_id == hash('enter_water') then
+    enter_water_state(self, sender, {
+      surface_y = message and message.surface_y,
+      oxygen_enabled = message and message.oxygen_enabled,
+      swim_params = message and message.swim_params,
+    })
+
+  elseif message_id == hash('exit_water') then
+    exit_water_state(self, sender)
+
+  elseif message_id == hash('apply_force') then
+    -- Water current or other external force
+    if message and message.force then
+      self._ext_fx = (self._ext_fx or 0) + (message.force.x or 0)
+      self._ext_fy = (self._ext_fy or 0) + (message.force.y or 0)
+    end
+
+  elseif message_id == hash("mvtk_set_position") then
+    self._block_probe = {}
+    -- Teleport without modifying player stats (used by fast travel/map).
+    local p = message and (message.pos or message.position)
+    if p and p.x and p.y then
+      self.pos = vmath.vector3(p.x, p.y, self.pos.z or 0)
+      sync_player_position(self)
+      rawset(_G, "PLAYER_WORLD_POS", go.get_world_position())
+    end
+    -- Reset motion unless explicitly preserved.
+    if not (message and message.preserve_velocity) then
+      self.vx, self.vy = 0, 0
+    end
+    -- Clear transient movement state that can "stick" across teleports.
+    PSTATE.cancel_grapple(self)
+    self.bypass_ground_frames = 0
+    self.bypass_ceiling_frames = 0
+    self.grounded = false
+    if PSTATE and PSTATE.set_grounded then
+      pcall(PSTATE.set_grounded, self, false)
+    end
+    self._in_climb = false
+    self._in_climb_zone = false
+    self._climb_center_x = nil
+    self._climb_offset_x = 0
+    self._climb_center_y = nil
+    self._climb_ladder_id = nil
+    self._climb_width = 0
+    self._climb_pass_through_top = true
+    self._climb_grab_extend_down = 0
+    self._climb_grab_extend_up = 0
+    self._climb_height = 0
+    self._climb_top_pass_active = false
+    self._one_way = nil
+    self._conveyor_contacts = {}
+    self._conveyor_force_x = 0
+    self._conveyor_force_y = 0
+    self._movement_modifiers = {}
+    local ctx = self._bone_physics
+    if ctx then
+      ctx.last_ground_y = nil
+      ctx.last_ground_normal = nil
+      ctx.stable_ground_y = nil
+      ctx.missed_ground_frames = 0
+    end
+    if message and message.facing ~= nil then
+      self.facing = normalize_facing(message.facing)
+      anim_face(self, self.facing)
+    end
+  elseif message_id == hash("mvtk_bounce") then
+    local speed = tonumber(message and (message.speed or message.vy)) or 900
+    self.vy = math.max(self.vy or 0, speed)
+    self.grounded = false
+    if PSTATE and PSTATE.set_grounded then
+      pcall(PSTATE.set_grounded, self, false)
+    end
+  elseif message_id == hash("enter_climb_zone") then
+    self._in_climb_zone = true
+    if message then
+      self._climb_ladder_id = message.ladder_id or self._climb_ladder_id
+      self._climb_center_x = message.center_x
+      self._climb_center_y = message.center_y
+      self._climb_width = tonumber(message.width) or self._climb_width or 0
+      self._climb_height = tonumber(message.height) or 0
+      if message.pass_through_top ~= nil then
+        self._climb_pass_through_top = message.pass_through_top and true or false
+      else
+        self._climb_pass_through_top = true
+      end
+      self._climb_grab_extend_down = tonumber(message.grab_extend_down) or 0
+      self._climb_grab_extend_up = tonumber(message.grab_extend_up) or 0
+      self._climb_offset_x = tonumber(message.climb_offset_x) or 0
+      if message.climb_speed then
+        self._climb_speed = message.climb_speed
+      end
+      if message.can_jump_off ~= nil then
+        self._climb_can_jump = message.can_jump_off and true or false
+      end
+      if message.snap_to_center ~= nil then
+        self._climb_snap_to_center = message.snap_to_center and true or false
+      else
+        self._climb_snap_to_center = true  -- Default to true
+      end
+      climb_log(self, "enter_zone ladder=%s center=(%.1f,%.1f) offset=%.1f h=%.1f pass_top=%s",
+        tostring(self._climb_ladder_id),
+        tonumber(self._climb_center_x) or 0,
+        tonumber(self._climb_center_y) or 0,
+        tonumber(self._climb_offset_x) or 0,
+        tonumber(self._climb_height) or 0,
+        tostring(self._climb_pass_through_top))
+    end
+
+  elseif message_id == hash("exit_climb_zone") then
+    -- Check if player is still within the grab_extend zone beyond the trigger box.
+    -- If so, keep climbing — only detach when truly outside the extended bounds.
+    if self._in_climb and self._climb_center_y then
+      local half_h = (self._climb_height or 0) * 0.5
+      local extend_up = self._climb_grab_extend_up or 0
+      local extend_down = self._climb_grab_extend_down or 0
+      local ladder_top = self._climb_center_y + half_h + extend_up
+      local ladder_bottom = self._climb_center_y - half_h - extend_down
+      local py = self.pos.y
+      if py >= ladder_bottom and py <= ladder_top then
+        -- Still within extended grab range — stay on the ladder
+        self._in_climb_zone = false  -- trigger exited, but keep climbing
+        climb_log(self, "exit_zone_keep_climbing pos_y=%.1f ladder_bottom=%.1f ladder_top=%.1f",
+          tonumber(py) or 0, tonumber(ladder_bottom) or 0, tonumber(ladder_top) or 0)
+        return
+      end
+    end
+    climb_log(self, "exit_zone_detach")
+    self._in_climb_zone = false
+    self._in_climb = false
+    self._climb_center_x = nil
+    self._climb_offset_x = 0
+    self._climb_center_y = nil
+    self._climb_ladder_id = nil
+    self._climb_width = 0
+    self._climb_pass_through_top = true
+    self._climb_grab_extend_down = 0
+    self._climb_grab_extend_up = 0
+    self._climb_height = 0
+    self._climb_top_pass_active = false
+    self.bypass_ceiling_frames = 0
+
+  elseif message_id == hash("mvtk_set_facing") then
+    if message and message.facing ~= nil then
+      self.facing = normalize_facing(message.facing)
+      anim_face(self, self.facing)
+    end
+
+  elseif message_id == hash('mvtk_death') then
+    trigger_death(self, message and message.reason or 'unknown')
+
+  elseif message_id == hash('force_falling') then
+    apply_force_falling(self, message)
+
+  elseif message_id == hash('take_damage') then
+    -- Damage from enemies/environment
+    local amt = (message and (message.amount or message.damage)) or 0
+    -- Check immunity
+    if self._is_dead then return end
+    if self._respawn_grace_timer and self._respawn_grace_timer > 0 then return end
+    local direct_hit_blocked = PSTATE.is_invulnerable(self) and true or false
+
+    if amt <= 0 then return end
+    if direct_hit_blocked then return end
+
+    if PSTATE.is_invulnerable(self) then return end
+    -- Apply damage through the normal damage pipeline
+    msg.post(".", DAMAGE_MSG, {
+      amount = amt,
+      dtype = message and message.dtype or "contact",
+      kx = message and message.kx,
+      ky = message and message.ky,
+      -- Preserve inheritance and explicit zero through the legacy message.
+      stun_t = message and message.stun_t,
+      source = message and message.source or sender,
+      knockback = message and message.knockback,
+      dir = message and message.dir,
+    })
+  end
+end
+
+-- Register the message handler while this chunk is still running.
+--
+-- Room arrival replays the queued position message through the player's own
+-- on_message. It cannot read the global: once the engine has run a script
+-- chunk it extracts every lifecycle callback and sets that global to nil
+-- (gameobject_script.cpp SCRIPT_FUNCTION_NAMES), which it must do because the
+-- project runs with shared_state and all scripts share one global table.
+-- Registering here is also why update() passes no handler: it already sits at
+-- Lua 5.1's 60-upvalue limit, so it cannot reference one more local.
+RoomArrival.set_dispatch(on_message)
+
+-- Update the rope after movement and contact corrections, so both its ends
+-- follow the final player position and the fixed ceiling attachment.
+function late_update(self, dt)
+  PSTATE.draw_grapple_rope(self)
+end

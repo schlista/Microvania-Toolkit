@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<template>
+ <object name="Water Volume" type="water_volume" width="128" height="128">
+  <properties>
+   <property name="water_type" propertytype="water_types" value="water"/>
+   <property name="water_id" type="string" value=""/>
+   <property name="swimming_and_current" type="class" propertytype="water_volume_swimming_and_current">
+    <properties>
+     <property name="swim_enabled" type="bool" value="true"/>
+     <property name="swim_speed_mult" type="float" value="0.7"/>
+     <property name="current_direction" propertytype="water_directions" value="none"/>
+     <property name="current_strength" type="float" value="0"/>
+     <property name="buoyancy" type="float" value="0.5"/>
+     <property name="water_drag" type="float" value="0.85"/>
+     <property name="surface_y_offset" type="float" value="0"/>
+    </properties>
+   </property>
+   <property name="survival" type="class" propertytype="water_volume_survival">
+    <properties>
+     <property name="damage" type="float" value="0"/>
+     <property name="damage_interval" type="float" value="1.0"/>
+     <property name="oxygen_drain" type="bool" value="true"/>
+     <property name="oxygen_drain_rate" type="float" value="1.0"/>
+    </properties>
+   </property>
+   <property name="presentation" type="class" propertytype="water_volume_presentation">
+    <properties>
+     <property name="splash_effect" type="bool" value="true"/>
+     <property name="tint_color" type="string" value=""/>
+    </properties>
+   </property>
+   <property name="mvtk_template_version" type="string" value="2.7.0"/>
+  </properties>
+ </object>
+</template>

@@ -1,0 +1,2147 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Beginner-first, no-code guide to authoring a Microvania game with Tiled and Defold.">
+  <title>Microvania Toolkit — Creator Master Guide</title>
+  <style>
+:root {
+  color-scheme: light;
+  --ink: #192235;
+  --muted: #5f6b7d;
+  --line: #dbe1ea;
+  --panel: #f5f7fb;
+  --panel-strong: #eaf2ff;
+  --accent: #155fc2;
+  --accent-dark: #0c438c;
+  --accent-soft: #dceaff;
+  --success: #147a52;
+  --warning: #a35808;
+  --danger: #a63436;
+  --sidebar: 292px;
+  --shadow: 0 12px 30px rgba(26, 42, 67, 0.09);
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; scroll-padding-top: 74px; }
+body {
+  margin: 0;
+  color: var(--ink);
+  background: #fff;
+  font: 16px/1.62 "Segoe UI", Inter, system-ui, -apple-system, BlinkMacSystemFont, Arial, sans-serif;
+}
+a { color: var(--accent); text-underline-offset: 0.16em; }
+a:hover { color: var(--accent-dark); }
+.skip-link {
+  position: fixed;
+  z-index: 100;
+  top: 8px;
+  left: 8px;
+  transform: translateY(-150%);
+  padding: 9px 13px;
+  border-radius: 6px;
+  background: #fff;
+  box-shadow: var(--shadow);
+}
+.skip-link:focus { transform: none; }
+.topbar {
+  position: sticky;
+  z-index: 30;
+  top: 0;
+  display: flex;
+  align-items: center;
+  min-height: 58px;
+  padding: 8px 18px;
+  color: #fff;
+  background: linear-gradient(110deg, #102b52, #155fc2 65%, #157f83);
+  box-shadow: 0 2px 12px rgba(12, 38, 72, 0.22);
+}
+.brand { display: flex; flex: 1; align-items: baseline; gap: 10px; min-width: 0; }
+.brand strong { font-size: 1.04rem; letter-spacing: 0.015em; }
+.brand span { color: #dceaff; font-size: 0.88rem; }
+.topbar button {
+  border: 1px solid rgba(255,255,255,0.5);
+  border-radius: 6px;
+  padding: 7px 11px;
+  color: #fff;
+  background: rgba(255,255,255,0.1);
+  cursor: pointer;
+}
+.topbar button:hover { background: rgba(255,255,255,0.2); }
+#nav-toggle { display: none; margin-right: 10px; }
+.layout {
+  display: grid;
+  grid-template-columns: var(--sidebar) minmax(0, 1fr);
+  min-height: calc(100vh - 58px);
+}
+.sidebar {
+  position: sticky;
+  top: 58px;
+  align-self: start;
+  height: calc(100vh - 58px);
+  overflow-y: auto;
+  border-right: 1px solid var(--line);
+  background: #f8fafd;
+  padding: 19px 16px 28px;
+}
+.sidebar-title {
+  margin: 0 0 10px;
+  color: var(--muted);
+  font-size: 0.74rem;
+  font-weight: 750;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+}
+.toc-search {
+  width: 100%;
+  margin: 0 0 14px;
+  border: 1px solid #c9d3e2;
+  border-radius: 7px;
+  padding: 8px 10px;
+  color: var(--ink);
+  background: #fff;
+  font: inherit;
+  font-size: 0.9rem;
+}
+.toc-search:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
+.toc { margin: 0; padding: 0; list-style: none; }
+.toc li { margin: 1px 0; }
+.toc a {
+  display: block;
+  border-radius: 6px;
+  padding: 6px 8px;
+  color: #344055;
+  text-decoration: none;
+  font-size: 0.88rem;
+  line-height: 1.3;
+}
+.toc a:hover { color: var(--accent-dark); background: var(--accent-soft); }
+.toc a.active { color: #fff; background: var(--accent); }
+.toc-level-3 a { padding-left: 22px; color: var(--muted); font-size: 0.82rem; }
+.sidebar-foot {
+  margin-top: 20px;
+  border-top: 1px solid var(--line);
+  padding-top: 13px;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+.content { width: 100%; min-width: 0; }
+article {
+  width: 100%;
+  min-width: 0;
+  max-width: 1040px;
+  margin: 0 auto;
+  padding: 42px 48px 76px;
+  overflow-wrap: break-word;
+}
+h1, h2, h3, h4, h5, h6 {
+  position: relative;
+  color: #14213a;
+  line-height: 1.23;
+  text-wrap: balance;
+}
+h1 {
+  margin: 0 0 0.45em;
+  font-size: clamp(2rem, 5vw, 3.25rem);
+  letter-spacing: -0.035em;
+}
+h1 + p { max-width: 850px; color: var(--muted); font-size: 1.18rem; }
+h2 {
+  margin: 2.45em 0 0.75em;
+  border-top: 1px solid var(--line);
+  padding-top: 1.05em;
+  font-size: 1.8rem;
+  letter-spacing: -0.018em;
+}
+h3 { margin: 1.85em 0 0.6em; font-size: 1.28rem; }
+h4 { margin: 1.45em 0 0.5em; font-size: 1.05rem; }
+.heading-link {
+  margin-left: 0.35em;
+  color: transparent;
+  font-size: 0.72em;
+  text-decoration: none;
+}
+h1:hover .heading-link, h2:hover .heading-link, h3:hover .heading-link,
+h4:hover .heading-link, .heading-link:focus { color: #94a2b8; }
+p, ul, ol, blockquote, .table-wrap, .code-wrap { margin: 0 0 1.08rem; }
+ul, ol { padding-left: 1.55rem; }
+li + li { margin-top: 0.34rem; }
+li > ul, li > ol { margin: 0.38rem 0 0.35rem; }
+.task-item { list-style: none; margin-left: -1.25rem; }
+.task-item input { margin-right: 0.38rem; accent-color: var(--accent); }
+code {
+  border: 1px solid #dbe1ea;
+  border-radius: 5px;
+  padding: 0.08rem 0.3rem;
+  color: #18365f;
+  background: var(--panel);
+  font: 0.9em/1.45 "Cascadia Code", Consolas, "Liberation Mono", monospace;
+}
+.code-wrap { position: relative; }
+pre {
+  overflow-x: auto;
+  margin: 0;
+  border-radius: 9px;
+  padding: 17px 18px;
+  color: #edf4ff;
+  background: #101a2b;
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.07);
+}
+pre code { border: 0; padding: 0; color: inherit; background: transparent; font-size: 0.86rem; }
+.copy-code {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  border: 1px solid rgba(255,255,255,0.25);
+  border-radius: 5px;
+  padding: 4px 8px;
+  color: #d8e8ff;
+  background: rgba(255,255,255,0.08);
+  cursor: pointer;
+  font-size: 0.74rem;
+}
+.callout {
+  border: 1px solid #c8d9f3;
+  border-left: 5px solid var(--accent);
+  border-radius: 8px;
+  padding: 0.85rem 1rem;
+  color: #354258;
+  background: #f3f7fd;
+}
+.callout.expected-result { border-color: #b8dfcf; border-left-color: var(--success); background: #f0faf6; }
+.callout.important, .callout.stop-and-fix { border-color: #efd0bd; border-left-color: var(--warning); background: #fff8ef; }
+.callout.scope { border-color: #d7cbed; border-left-color: #7757b0; background: #f8f5fd; }
+.table-wrap {
+  width: 100%;
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  box-shadow: 0 4px 16px rgba(35, 52, 80, 0.04);
+}
+table { width: 100%; border-collapse: collapse; font-size: 0.925rem; }
+th, td { border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); padding: 0.62rem 0.7rem; vertical-align: top; }
+th:last-child, td:last-child { border-right: 0; }
+tbody tr:last-child td { border-bottom: 0; }
+th { text-align: left; color: #22304a; background: #eef3f9; }
+tbody tr:nth-child(even) { background: #fbfcfe; }
+hr { height: 1px; margin: 2.4rem 0; border: 0; background: var(--line); }
+.page-footer {
+  max-width: 1040px;
+  margin: 0 auto;
+  border-top: 1px solid var(--line);
+  padding: 20px 48px 35px;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+.backdrop { display: none; }
+@media (max-width: 940px) {
+  #nav-toggle { display: inline-block; }
+  .print-button { display: none; }
+  .brand span { display: none; }
+  .layout { display: block; width: 100%; max-width: 100vw; overflow-x: hidden; }
+  .content, article { width: 100%; max-width: 100%; }
+  .sidebar {
+    position: fixed;
+    z-index: 40;
+    top: 58px;
+    bottom: 0;
+    left: 0;
+    width: min(86vw, var(--sidebar));
+    height: auto;
+    transform: translateX(-105%);
+    transition: transform 180ms ease;
+    box-shadow: var(--shadow);
+  }
+  body.nav-open .sidebar { transform: none; }
+  .backdrop {
+    position: fixed;
+    z-index: 35;
+    inset: 58px 0 0;
+    background: rgba(13, 28, 48, 0.45);
+  }
+  body.nav-open .backdrop { display: block; }
+  article { padding: 32px 24px 62px; }
+  .page-footer { padding: 20px 24px 32px; }
+}
+@media (max-width: 560px) {
+  body { font-size: 15px; }
+  .topbar { padding-inline: 10px; }
+  article { padding: 26px 15px 52px; }
+  h2 { font-size: 1.5rem; }
+  .page-footer { padding-inline: 15px; }
+}
+@media print {
+  :root { --ink: #000; --muted: #333; --line: #aaa; }
+  html { scroll-padding-top: 0; }
+  body { font-size: 10.5pt; line-height: 1.42; }
+  .topbar, .sidebar, .backdrop, .skip-link, .copy-code, .heading-link { display: none !important; }
+  .layout { display: block; }
+  article, .page-footer { max-width: none; padding: 0; }
+  h1 { font-size: 25pt; }
+  h2 { margin-top: 1.6em; font-size: 17pt; break-after: avoid; }
+  h3, h4 { break-after: avoid; }
+  p, li, blockquote, tr { orphans: 3; widows: 3; }
+  pre, blockquote, .table-wrap { break-inside: avoid; box-shadow: none; }
+  .table-wrap { overflow: visible; }
+  a { color: inherit; text-decoration: none; }
+}
+</style>
+</head>
+<body>
+  <a class="skip-link" href="#main-content">Skip to guide</a>
+  <header class="topbar">
+    <button id="nav-toggle" type="button" aria-controls="sidebar" aria-expanded="false">Contents</button>
+    <div class="brand"><strong>Microvania Toolkit</strong><span>Creator Master Guide</span></div>
+    <button class="print-button" type="button" onclick="window.print()">Print / Save PDF</button>
+  </header>
+  <div class="layout">
+    <aside class="sidebar" id="sidebar" aria-label="Guide contents">
+      <p class="sidebar-title">Guide contents</p>
+      <label for="toc-search" class="sidebar-title">Filter sections</label>
+      <input class="toc-search" id="toc-search" type="search" placeholder="Search contents…" autocomplete="off">
+      <nav aria-label="Table of contents"><ul class="toc"><li class="toc-level-2"><a href="#start-here-make-three-rooms-then-play" data-title="start here — make three rooms, then play">Start here — make three rooms, then play</a></li>
+<li class="toc-level-2"><a href="#returning-creator-quick-reference" data-title="returning creator quick reference">Returning Creator Quick Reference</a></li>
+<li class="toc-level-2"><a href="#1-understand-the-two-programs" data-title="1. understand the two programs">1. Understand The Two Programs</a></li>
+<li class="toc-level-3"><a href="#essential-words" data-title="essential words">Essential words</a></li>
+<li class="toc-level-2"><a href="#2-install-and-open-the-toolkit" data-title="2. install and open the toolkit">2. Install And Open The Toolkit</a></li>
+<li class="toc-level-3"><a href="#install-the-required-versions" data-title="install the required versions">Install the required versions</a></li>
+<li class="toc-level-3"><a href="#put-the-toolkit-where-you-will-keep-it" data-title="put the toolkit where you will keep it">Put the toolkit where you will keep it</a></li>
+<li class="toc-level-3"><a href="#open-defold-and-set-up-the-toolkit" data-title="open defold and set up the toolkit">Open Defold and set up the toolkit</a></li>
+<li class="toc-level-3"><a href="#open-tiled" data-title="open tiled">Open Tiled</a></li>
+<li class="toc-level-3"><a href="#run-one-sanity-build" data-title="run one sanity build">Run one sanity build</a></li>
+<li class="toc-level-3"><a href="#starting-over" data-title="starting over">Starting over</a></li>
+<li class="toc-level-2"><a href="#3-create-your-first-tileset" data-title="3. create your first tileset">3. Create Your First Tileset</a></li>
+<li class="toc-level-3"><a href="#pick-a-simple-first-tilesheet" data-title="pick a simple first tilesheet">Pick a simple first tilesheet</a></li>
+<li class="toc-level-3"><a href="#create-the-external-tsx" data-title="create the external .tsx">Create the external <code>.tsx</code></a></li>
+<li class="toc-level-3"><a href="#import-single-images-collection-of-images-tileset" data-title="import single images (collection of images tileset)">Import single images (Collection of Images tileset)</a></li>
+<li class="toc-level-3"><a href="#add-tile-collision-shapes" data-title="add tile collision shapes">Add tile collision shapes</a></li>
+<li class="toc-level-2"><a href="#4-build-a-three-room-starter-world-in-tiled" data-title="4. build a three-room starter world in tiled">4. Build A Three-Room Starter World In Tiled</a></li>
+<li class="toc-level-3"><a href="#create-startroom" data-title="create startroom">Create <code>start_room</code></a></li>
+<li class="toc-level-3"><a href="#add-your-external-tileset-to-the-room" data-title="add your external tileset to the room">Add your external tileset to the room</a></li>
+<li class="toc-level-3"><a href="#know-the-tiled-workspace" data-title="know the tiled workspace">Know the Tiled workspace</a></li>
+<li class="toc-level-3"><a href="#paint-visible-art-bounds-and-collision" data-title="paint visible art, bounds, and collision">Paint visible art, bounds, and collision</a></li>
+<li class="toc-level-3"><a href="#let-painted-tiled-art-replace-a-template-placeholder" data-title="let painted tiled art replace a template placeholder">Let painted Tiled art replace a template placeholder</a></li>
+<li class="toc-level-3"><a href="#place-the-player-start" data-title="place the player start">Place the player start</a></li>
+<li class="toc-level-3"><a href="#paint-the-first-door-marker" data-title="paint the first door marker">Paint the first door marker</a></li>
+<li class="toc-level-3"><a href="#add-optional-room-music" data-title="add optional room music">Add optional room music</a></li>
+<li class="toc-level-3"><a href="#save-and-export-startroom" data-title="save and export startroom">Save and export <code>start_room</code></a></li>
+<li class="toc-level-3"><a href="#create-middleroom" data-title="create middleroom">Create <code>middle_room</code></a></li>
+<li class="toc-level-3"><a href="#create-goalroom" data-title="create goalroom">Create <code>goal_room</code></a></li>
+<li class="toc-level-3"><a href="#author-rooms-outside-the-toolkit-folder" data-title="author rooms outside the toolkit folder">Author rooms outside the toolkit folder</a></li>
+<li class="toc-level-2"><a href="#5-turn-tiled-exports-into-playable-defold-rooms" data-title="5. turn tiled exports into playable defold rooms">5. Turn Tiled Exports Into Playable Defold Rooms</a></li>
+<li class="toc-level-3"><a href="#what-each-command-does" data-title="what each command does">What each command does</a></li>
+<li class="toc-level-2"><a href="#6-tune-the-player-with-game-settings" data-title="6. tune the player with game settings">6. Tune The Player With Game Settings</a></li>
+<li class="toc-level-3"><a href="#use-the-optional-spine-add-on" data-title="use the optional spine add-on">Use the optional Spine add-on</a></li>
+<li class="toc-level-2"><a href="#7-arrange-and-publish-the-world-in-layout-editor" data-title="7. arrange and publish the world in layout editor">7. Arrange And Publish The World In Layout Editor</a></li>
+<li class="toc-level-3"><a href="#use-a-world-already-arranged-in-tiled" data-title="use a world already arranged in tiled">Use a world already arranged in Tiled</a></li>
+<li class="toc-level-3"><a href="#place-the-three-rooms" data-title="place the three rooms">Place the three rooms</a></li>
+<li class="toc-level-3"><a href="#export-the-layout" data-title="export the layout">Export the layout</a></li>
+<li class="toc-level-2"><a href="#8-play-and-verify-the-first-world" data-title="8. play and verify the first world">8. Play And Verify The First World</a></li>
+<li class="toc-level-2"><a href="#9-common-creator-recipes" data-title="9. common creator recipes">9. Common Creator Recipes</a></li>
+<li class="toc-level-3"><a href="#understand-grouped-template-properties" data-title="understand grouped template properties">Understand grouped template properties</a></li>
+<li class="toc-level-3"><a href="#replace-the-player-sprite" data-title="replace the player sprite">Replace the player sprite</a></li>
+<li class="toc-level-3"><a href="#resize-the-player" data-title="resize the player">Resize the player</a></li>
+<li class="toc-level-3"><a href="#add-custom-enemy-art-and-place-an-enemy" data-title="add custom enemy art and place an enemy">Add custom enemy art and place an enemy</a></li>
+<li class="toc-level-3"><a href="#tune-enemy-movement-and-attacks-in-tiled" data-title="tune enemy movement and attacks in tiled">Tune enemy movement and attacks in Tiled</a></li>
+<li class="toc-level-3"><a href="#keep-dash-difficulty-and-first-use-hints" data-title="keep dash, difficulty and first-use hints">Keep Dash, difficulty and first-use hints</a></li>
+<li class="toc-level-3"><a href="#add-a-collectible-key-and-chest" data-title="add a collectible, key, and chest">Add a collectible, key, and chest</a></li>
+<li class="toc-level-3"><a href="#add-an-ability-pickup-and-gate" data-title="add an ability pickup and gate">Add an ability pickup and gate</a></li>
+<li class="toc-level-3"><a href="#add-checkpoints-save-points-and-teleporters" data-title="add checkpoints, save points, and teleporters">Add checkpoints, save points, and teleporters</a></li>
+<li class="toc-level-3"><a href="#add-hazards-secrets-and-breakable-walls" data-title="add hazards, secrets, and breakable walls">Add hazards, secrets, and breakable walls</a></li>
+<li class="toc-level-3"><a href="#add-simple-traversal" data-title="add simple traversal">Add simple traversal</a></li>
+<li class="toc-level-3"><a href="#build-a-compact-boss-encounter" data-title="build a compact boss encounter">Build a compact boss encounter</a></li>
+<li class="toc-level-3"><a href="#add-npcs-signs-hints-and-dialogue" data-title="add npcs, signs, hints, and dialogue">Add NPCs, signs, hints, and dialogue</a></li>
+<li class="toc-level-3"><a href="#add-switches-and-stations" data-title="add switches and stations">Add switches and stations</a></li>
+<li class="toc-level-3"><a href="#add-ambience-particles-camera-and-screen-effects" data-title="add ambience, particles, camera, and screen effects">Add ambience, particles, camera, and screen effects</a></li>
+<li class="toc-level-3"><a href="#light-a-dark-room" data-title="light a dark room">Light a dark room</a></li>
+<li class="toc-level-3"><a href="#change-the-ui-theme-without-framework-code" data-title="change the ui theme without framework code">Change the UI theme without framework code</a></li>
+<li class="toc-level-2"><a href="#10-complete-supported-template-catalog" data-title="10. complete supported template catalog">10. Complete Supported Template Catalog</a></li>
+<li class="toc-level-3"><a href="#abilities-1" data-title="abilities — 1">Abilities — 1</a></li>
+<li class="toc-level-3"><a href="#audio-visual-3" data-title="audio/visual — 3">Audio/visual — 3</a></li>
+<li class="toc-level-3"><a href="#bosses-5" data-title="bosses — 5">Bosses — 5</a></li>
+<li class="toc-level-3"><a href="#collectibles-5" data-title="collectibles — 5">Collectibles — 5</a></li>
+<li class="toc-level-3"><a href="#enemies-1" data-title="enemies — 1">Enemies — 1</a></li>
+<li class="toc-level-3"><a href="#environment-10" data-title="environment — 10">Environment — 10</a></li>
+<li class="toc-level-3"><a href="#interaction-12" data-title="interaction — 12">Interaction — 12</a></li>
+<li class="toc-level-3"><a href="#navigation-14" data-title="navigation — 14">Navigation — 14</a></li>
+<li class="toc-level-3"><a href="#physics-5" data-title="physics — 5">Physics — 5</a></li>
+<li class="toc-level-3"><a href="#logic-1" data-title="logic — 1">Logic — 1</a></li>
+<li class="toc-level-2"><a href="#11-assets-where-your-files-go" data-title="11. assets: where your files go">11. Assets: Where Your Files Go</a></li>
+<li class="toc-level-2"><a href="#12-configuration-without-coding" data-title="12. configuration without coding">12. Configuration Without Coding</a></li>
+<li class="toc-level-3"><a href="#beginner-safe-task-to-file-map" data-title="beginner-safe task-to-file map">Beginner-safe task-to-file map</a></li>
+<li class="toc-level-3"><a href="#understand-precedence" data-title="understand precedence">Understand precedence</a></li>
+<li class="toc-level-3"><a href="#generated-or-internal-do-not-hand-edit" data-title="generated or internal: do not hand-edit">Generated or internal: do not hand-edit</a></li>
+<li class="toc-level-3"><a href="#controls-and-input" data-title="controls and input">Controls and input</a></li>
+<li class="toc-level-2"><a href="#13-troubleshooting-by-stage" data-title="13. troubleshooting by stage">13. Troubleshooting By Stage</a></li>
+<li class="toc-level-3"><a href="#installation-or-first-defold-build-fails" data-title="installation or first defold build fails">Installation or first Defold build fails</a></li>
+<li class="toc-level-3"><a href="#a-property-type-error-appears-after-updating-the-toolkit" data-title="a property type error appears after updating the toolkit">A property type error appears after updating the toolkit</a></li>
+<li class="toc-level-3"><a href="#tiled-toolkit-menus-or-templates-are-missing" data-title="tiled toolkit menus or templates are missing">Tiled toolkit menus or templates are missing</a></li>
+<li class="toc-level-3"><a href="#export-says-required-exporters-not-found" data-title="export says &quot;required exporters not found&quot;">Export says &quot;Required exporters not found&quot;</a></li>
+<li class="toc-level-3"><a href="#tiled-cannot-detect-the-project-root-or-exports-go-to-another-toolkit" data-title="tiled cannot detect the project root, or exports go to another toolkit">Tiled cannot detect the project root, or exports go to another toolkit</a></li>
+<li class="toc-level-3"><a href="#export-says-a-tileset-is-unsaved-or-missing" data-title="export says a tileset is unsaved or missing">Export says a tileset is unsaved or missing</a></li>
+<li class="toc-level-3"><a href="#tiles-are-invisible-or-use-the-wrong-art" data-title="tiles are invisible or use the wrong art">Tiles are invisible or use the wrong art</a></li>
+<li class="toc-level-3"><a href="#the-player-falls-through-floors-or-hits-invisible-walls" data-title="the player falls through floors or hits invisible walls">The player falls through floors or hits invisible walls</a></li>
+<li class="toc-level-3"><a href="#prepare-check-fails" data-title="prepare &amp; check fails">Prepare &amp; Check fails</a></li>
+<li class="toc-level-3"><a href="#a-room-is-missing-from-layout-editor" data-title="a room is missing from layout editor">A room is missing from Layout Editor</a></li>
+<li class="toc-level-3"><a href="#rooms-do-not-snap-or-transitions-fail" data-title="rooms do not snap or transitions fail">Rooms do not snap or transitions fail</a></li>
+<li class="toc-level-3"><a href="#the-wrong-room-or-position-loads" data-title="the wrong room or position loads">The wrong room or position loads</a></li>
+<li class="toc-level-3"><a href="#a-tiled-object-does-not-appear" data-title="a tiled object does not appear">A Tiled object does not appear</a></li>
+<li class="toc-level-3"><a href="#enemy-art-or-animations-are-missing" data-title="enemy art or animations are missing">Enemy art or animations are missing</a></li>
+<li class="toc-level-3"><a href="#music-or-ambience-is-silent" data-title="music or ambience is silent">Music or ambience is silent</a></li>
+<li class="toc-level-3"><a href="#boss-arena-or-phases-do-not-link" data-title="boss arena or phases do not link">Boss arena or phases do not link</a></li>
+<li class="toc-level-3"><a href="#layout-changes-appear-in-editor-but-not-play-game" data-title="layout changes appear in editor but not play game">Layout changes appear in editor but not Play Game</a></li>
+<li class="toc-level-2"><a href="#14-validate-release-and-report-bugs" data-title="14. validate, release, and report bugs">14. Validate, Release, And Report Bugs</a></li>
+<li class="toc-level-3"><a href="#final-creator-validation-checklist" data-title="final creator validation checklist">Final creator validation checklist</a></li>
+<li class="toc-level-3"><a href="#create-a-standalone-release-project" data-title="create a standalone release project">Create a standalone release project</a></li>
+<li class="toc-level-3"><a href="#file-a-useful-bug-report" data-title="file a useful bug report">File a useful bug report</a></li>
+<li class="toc-level-2"><a href="#15-maintainer-appendix" data-title="15. maintainer appendix">15. Maintainer Appendix</a></li>
+<li class="toc-level-3"><a href="#architecture-and-ownership" data-title="architecture and ownership">Architecture and ownership</a></li>
+<li class="toc-level-3"><a href="#current-editor-command-surface" data-title="current editor command surface">Current editor command surface</a></li>
+<li class="toc-level-3"><a href="#validation-commands" data-title="validation commands">Validation commands</a></li>
+<li class="toc-level-2"><a href="#printable-first-world-checklist" data-title="printable first-world checklist">Printable First-World Checklist</a></li>
+<li class="toc-level-2"><a href="#prepare-publish-and-finish-a-game" data-title="prepare, publish, and finish a game">Prepare, publish, and finish a game</a></li>
+<li class="toc-level-2"><a href="#designer-tools" data-title="designer tools">Designer tools</a></li></ul></nav>
+      <p class="sidebar-foot">Offline and self-contained. Use the browser’s Find command to search the full guide.</p>
+    </aside>
+    <div class="backdrop" aria-hidden="true"></div>
+    <div class="content">
+      <article id="main-content">
+<h1 id="microvania-toolkit-creator-master-guide">Microvania Toolkit — Creator Master Guide<a class="heading-link" href="#microvania-toolkit-creator-master-guide" aria-label="Link to this section">#</a></h1>
+<p>This is the master guide for making a small exploration platformer with the Microvania Toolkit. It assumes you have never used Tiled or Defold. Follow the first-world walkthrough in order once; after that, use the recipes and quick reference when you return to your project.</p>
+<p>The supported workflow is visual and Tiled-first. You create rooms and place objects in Tiled, arrange rooms in a Tiled world or the Layout Editor, run menu commands in Defold, and play. You should not need to edit Lua code or anything under <code>mvtk/</code>.</p>
+<blockquote class="callout scope"><strong>Scope:</strong> Microvania is for compact two-to-three-hour exploration games. It supports simple enemies, collectibles, gates, hazards, traversal, lightweight NPC/dialogue objects, audio/visual zones, and the compact five-template boss set.</blockquote>
+<blockquote class="callout beginner-note"><strong>Beginner note:</strong> Menu names in this guide are written exactly as they appear. <code>File ▸ new_room_blank</code> means open the <strong>File</strong> menu in Tiled and click <strong>new_room_blank</strong>. Text in <code>code style</code> is a filename, folder, property, or value.</blockquote>
+<h2 id="start-here-make-three-rooms-then-play">Start here — make three rooms, then play<a class="heading-link" href="#start-here-make-three-rooms-then-play" aria-label="Link to this section">#</a></h2>
+<p><strong>You only need this path to get started.</strong> Use the linked instructions when you need help. The object recipes, art options, and configuration reference later in this guide are for features you choose to add.</p>
+<div class="table-wrap" role="region" aria-label="Scrollable table">
+<table>
+<thead><tr>
+<th>Step</th>
+<th>Do this</th>
+<th>You are done when</th>
+</tr></thead>
+<tbody>
+<tr>
+<td>1. Open the tools</td>
+<td><a href="#2-install-and-open-the-toolkit">Extract the toolkit</a>. Open <code>game.project</code> in Defold and run <strong>Project ▸ Set Up This Toolkit</strong>. In Tiled, tick the <strong>defold</strong> and <strong>lua</strong> plugins under <strong>Edit ▸ Preferences... ▸ Plugins</strong>, open <code>MVTK.tiled-project</code> and click <strong>Enable Extensions</strong> if Tiled asks.</td>
+<td>Tiled has <strong>File ▸ new_room_blank</strong> and <strong>File ▸ Export Current Room</strong>.</td>
+</tr>
+<tr>
+<td>2. Make three rooms</td>
+<td><a href="#3-create-your-first-tileset">Make a tileset for your art</a>, with collision shapes on its solid tiles. Then follow <a href="#4-build-a-three-room-starter-world-in-tiled">the room walkthrough</a>: use your art&#x27;s tile size, paint the room, collision and door markers, and place one player start. Save/export each room.</td>
+<td>All three rooms have a <code>.lua</code> and <code>.tilemap</code> export.</td>
+</tr>
+<tr>
+<td>3. Prepare the game</td>
+<td>Stop the game. In Defold run <strong>Reload Editor Scripts → Prepare &amp; Check → Build</strong>, in that order. <a href="#5-turn-tiled-exports-into-playable-defold-rooms">Exact clicks</a>.</td>
+<td>Validation passes and the title screen opens.</td>
+</tr>
+<tr>
+<td>4. Connect and play</td>
+<td>Open <strong>Layout Editor</strong>, click <strong>Rescan Rooms</strong>, snap matching doors, click <strong>Export</strong>, wait, then <strong>Menu → Play Game</strong> with an empty slot. <a href="#7-arrange-and-publish-the-world-in-layout-editor">Exact clicks</a>.</td>
+<td>You can walk between the rooms, save, quit, and continue.</td>
+</tr>
+</tbody></table>
+</div>
+<p>Keep the starting presets for this first pass. Use <a href="#6-tune-the-player-with-game-settings">Game Settings</a> after Prepare &amp; Check when you want to change movement or abilities. Stop the game first, open <strong>Project ▸ Game Settings…</strong>, then save and Build to test. You do not need to tune every setting before making your first world.</p>
+<p><strong>The room layers you need:</strong></p>
+<div class="table-wrap" role="region" aria-label="Scrollable table">
+<table>
+<thead><tr>
+<th>Layer</th>
+<th>Put this on it</th>
+</tr></thead>
+<tbody>
+<tr>
+<td><code>bounds</code></td>
+<td>An unbroken one-tile ring marking the room footprint. Keep it closed at doors too.</td>
+</tr>
+<tr>
+<td><code>art/environment</code> and <code>solid</code></td>
+<td>Visible art and blocking tiles. Give solid tiles collision shapes in the tileset.</td>
+</tr>
+<tr>
+<td><code>grapple</code></td>
+<td>Paint where the hook may catch. Add visible hook markers on the art layers; this layer adds no art or player collision.</td>
+</tr>
+<tr>
+<td><code>exit/door_left</code>, <code>door_right</code>, <code>door_top</code>, <code>door_bottom</code></td>
+<td>Exit markers where rooms should connect. Leave a real opening in the art/collision.</td>
+</tr>
+<tr>
+<td><code>templates</code></td>
+<td>Ready-made objects, including the one intended <code>player_start</code>.</td>
+</tr>
+</tbody></table>
+</div>
+<p>If a step fails, fix its first error before continuing. The <a href="#13-troubleshooting-by-stage">troubleshooting section</a> is arranged in the same order. Do not edit generated room files or framework code to get past an error.</p>
+<h2 id="returning-creator-quick-reference">Returning Creator Quick Reference<a class="heading-link" href="#returning-creator-quick-reference" aria-label="Link to this section">#</a></h2>
+<p><strong>After editing a room:</strong> save/export it in Tiled → stop the game → <strong>Prepare &amp; Check → Build</strong> → <strong>Layout Editor: Rescan Rooms → Export</strong> → <strong>Play Game</strong>.</p>
+<div class="table-wrap" role="region" aria-label="Scrollable table">
+<table>
+<thead><tr>
+<th>What changed?</th>
+<th>What to do next</th>
+</tr></thead>
+<tbody>
+<tr>
+<td>Room art, collision, objects, tileset, or room music</td>
+<td>Follow the room-edit loop above for every changed room.</td>
+</tr>
+<tr>
+<td>Toolkit/editor scripts</td>
+<td><strong>Reload Editor Scripts</strong> first, then follow the room-edit loop.</td>
+</tr>
+<tr>
+<td>Room placement only</td>
+<td><strong>Layout Editor ▸ Export</strong>, then Play Game.</td>
+</tr>
+<tr>
+<td>One room&#x27;s content</td>
+<td>Save the active map, then <strong>File → Export Current Room</strong>. In Defold, <strong>Prepare &amp; Check → Build</strong>; the exported world placement stays the same.</td>
+</tr>
+<tr>
+<td>Tiled world placement, membership, or room size</td>
+<td><strong>File → Export All Maps and Tiled World</strong>, then Defold <strong>Prepare &amp; Check → Build → Play Game</strong>. <a href="#use-a-world-already-arranged-in-tiled">World workflow</a>.</td>
+</tr>
+<tr>
+<td>Movement or ability tuning</td>
+<td>Stop the game, use <strong>Project ▸ Game Settings… → Save and Prepare &amp; Check</strong>, then <strong>Build</strong> and test. Published values override baseline config files.</td>
+</tr>
+<tr>
+<td>Enemy PNG frames or separate music files</td>
+<td><strong>Prepare &amp; Check</strong> syncs both; then Build.</td>
+</tr>
+<tr>
+<td>Ready to distribute your game</td>
+<td>Follow <a href="#14-validate-release-and-report-bugs">the release steps</a>.</td>
+</tr>
+</tbody></table>
+</div>
+<p><strong>Export choices:</strong> Tiled exports a room or all maps plus a world. <strong>Prepare &amp; Check</strong> publishes a selected Tiled world; Layout Editor <strong>Export</strong> publishes manual placement. Defold <strong>Export Game</strong> creates the separate project you bundle for players. <strong>Build</strong> starts the game for testing.</p>
+<h2 id="1-understand-the-two-programs">1. Understand The Two Programs<a class="heading-link" href="#1-understand-the-two-programs" aria-label="Link to this section">#</a></h2>
+<p>You will use two applications, each for a different job:</p>
+<div class="table-wrap" role="region" aria-label="Scrollable table">
+<table>
+<thead><tr>
+<th>Program</th>
+<th>What you do there</th>
+</tr></thead>
+<tbody>
+<tr>
+<td><strong>Tiled</strong></td>
+<td>Draw each room, paint collision and door markers, place ready-made templates, and export the room.</td>
+</tr>
+<tr>
+<td><strong>Defold</strong></td>
+<td>Import art, generate playable rooms, validate the project, run the Layout Editor, and build/play the game.</td>
+</tr>
+</tbody></table>
+</div>
+<p>The toolkit connects them. A normal room passes through this sequence:</p>
+<div class="code-wrap"><pre><code class="language-text">Your .tmx room in Tiled
+        ↓  Export Current Room
+&lt;room&gt;.lua + &lt;room&gt;.tilemap
+        ↓  Prepare &amp; Check
+Defold collection + factory + baked game objects
+        ↓  Layout Editor Export
+Published world layout used by Play Game</code></pre></div>
+<h3 id="essential-words">Essential words<a class="heading-link" href="#essential-words" aria-label="Link to this section">#</a></h3>
+<div class="table-wrap" role="region" aria-label="Scrollable table">
+<table>
+<thead><tr>
+<th>Word</th>
+<th>Plain-language meaning</th>
+</tr></thead>
+<tbody>
+<tr>
+<td><strong>Room</strong></td>
+<td>One level map. One Tiled <code>.tmx</code> becomes one playable Defold room.</td>
+</tr>
+<tr>
+<td><strong>Tile</strong></td>
+<td>One grid-sized piece of art, such as one 32 × 32 floor block.</td>
+</tr>
+<tr>
+<td><strong>Tilesheet</strong></td>
+<td>A PNG containing many same-size tiles.</td>
+</tr>
+<tr>
+<td><strong>Tileset</strong></td>
+<td>A Tiled <code>.tsx</code> file that tells Tiled how to cut and use a tilesheet.</td>
+</tr>
+<tr>
+<td><strong>Layer</strong></td>
+<td>A named drawing/object surface inside a Tiled map. Layers have specific toolkit jobs.</td>
+</tr>
+<tr>
+<td><strong>Template</strong></td>
+<td>A ready-made <code>.tx</code> object, such as <code>enemy</code>, <code>checkpoint</code>, or <code>solid_box</code>.</td>
+</tr>
+<tr>
+<td><strong>Property</strong></td>
+<td>A setting attached to a map, layer, or object in Tiled&#x27;s Properties panel.</td>
+</tr>
+<tr>
+<td><strong>Export</strong></td>
+<td>Tiled creates the <code>.lua</code> and <code>.tilemap</code> files that the Defold tools consume.</td>
+</tr>
+<tr>
+<td><strong>Editor script</strong></td>
+<td>A command added to Defold&#x27;s <strong>Project</strong> menu. You click it; you do not write it.</td>
+</tr>
+<tr>
+<td><strong>Collection/factory</strong></td>
+<td>Generated Defold resources used to load a playable room.</td>
+</tr>
+<tr>
+<td><strong>Layout Editor</strong></td>
+<td>The in-game tool for positioning rooms and snapping matching doors.</td>
+</tr>
+<tr>
+<td><strong>Source</strong></td>
+<td>A file you own and edit, such as <code>.tmx</code>, <code>.tsx</code>, PNG, WAV, or commented config.</td>
+</tr>
+<tr>
+<td><strong>Generated</strong></td>
+<td>A file written by toolkit commands. Regenerate it instead of hand-editing it.</td>
+</tr>
+</tbody></table>
+</div>
+<h2 id="2-install-and-open-the-toolkit">2. Install And Open The Toolkit<a class="heading-link" href="#2-install-and-open-the-toolkit" aria-label="Link to this section">#</a></h2>
+<h3 id="install-the-required-versions">Install the required versions<a class="heading-link" href="#install-the-required-versions" aria-label="Link to this section">#</a></h3>
+<ul>
+<li>Install <strong>Defold 1.14.0</strong> from its release page, <a href="https://github.com/defold/defold/releases/tag/1.14.0">https://github.com/defold/defold/releases/tag/1.14.0</a>. Later 1.14.x hotfixes are fine. (<a href="https://defold.com/download/">https://defold.com/download/</a> always offers the newest Defold, which may be a later version than this toolkit supports.)</li>
+<li>Install <strong>Tiled 1.12.2</strong>, or a verified compatible Tiled 1.12.x build, from <a href="https://github.com/mapeditor/tiled/releases/tag/v1.12.2">https://github.com/mapeditor/tiled/releases/tag/v1.12.2</a> or <a href="https://www.mapeditor.org/">https://www.mapeditor.org/</a>.</li>
+</ul>
+<h3 id="put-the-toolkit-where-you-will-keep-it">Put the toolkit where you will keep it<a class="heading-link" href="#put-the-toolkit-where-you-will-keep-it" aria-label="Link to this section">#</a></h3>
+<p>Extract the entire toolkit zip to a writable folder, such as <code>Documents/MyGame_Toolkit</code>. Do not work inside the zip viewer.</p>
+<p>No separate toolkit installation is needed after extraction. Keep your Tiled maps in their own folder <strong>outside</strong> the toolkit, such as <code>Documents/Tiled_worlds</code>.</p>
+<p>Windows is the verified beta platform. macOS and Linux use the same steps but remain experimental.</p>
+<ul>
+<li><strong>Every platform:</strong> keep each map&#x27;s <strong>Tile Layer Format</strong> at <strong>CSV</strong>. Rooms made with <strong>new_room_blank</strong> or <strong>Start a New World...</strong> already use it; for other maps, change it in Tiled&#x27;s map properties. Compressed tile layer data needs Python 3 installed, and Zstandard compression is not supported.</li>
+<li><strong>macOS:</strong> install the Defold download matching your Mac (<code>arm64</code> for Apple Silicon or <code>x86_64</code> for Intel).</li>
+<li><strong>Linux:</strong> the verified target is an x86_64 glibc distribution, with Ubuntu 22.04 or later as the reference. Use Tiled&#x27;s AppImage or a normal distribution package; Flatpak/Snap builds may use sandboxed paths and permissions and are not yet part of the verified setup. Install ImageMagick (<code>sudo apt install imagemagick</code> on Ubuntu) if you author picture objects or breakable background tiles from your own sheet.</li>
+</ul>
+<blockquote class="callout expected-result"><strong>Expected result:</strong> The toolkit folder contains <code>game.project</code>, <code>MVTK.tiled-project</code>, <code>START_HERE.txt</code>, <code>START_HERE.html</code>, <code>developer/</code>, <code>mvtk/</code>, <code>tiled/</code>, and <code>docs/</code>. <code>START_HERE.html</code> shows a picture of every set-up step.</blockquote>
+<h3 id="open-defold-and-set-up-the-toolkit">Open Defold and set up the toolkit<a class="heading-link" href="#open-defold-and-set-up-the-toolkit" aria-label="Link to this section">#</a></h3>
+<ol>
+<li>Start Defold.</li>
+<li>Click <strong>Open Project</strong>.</li>
+<li>Select the toolkit&#x27;s root <code>game.project</code>.</li>
+<li>Wait until dependency loading and file indexing finish.</li>
+<li>Choose <strong>Project ▸ Set Up This Toolkit</strong>. Click <strong>Choose Maps Folder...</strong> and pick the folder for your Tiled worlds (create one if needed), or click <strong>Set Up Without Folder</strong>. If no maps folder is listed yet, running Set Up after <strong>Start a New World...</strong> in Tiled offers the worlds folder you picked; click <strong>Set Up</strong>. If it asks instead, click <strong>Choose Maps Folder...</strong> and pick that same folder (the folder that holds your world folder, not the world folder itself). To change an already listed folder, click <strong>Change Maps Folder...</strong>.</li>
+</ol>
+<p>Set Up writes only inside the toolkit folder: it records where the toolkit is, lists your maps folder in Tiled&#x27;s Project panel, and writes <code>WHERE_THINGS_ARE.txt</code> with the paths you open and export to. Listing the maps folder only makes it easy to find in Tiled; it does not import or export any maps. If Tiled already has the project open, open it again to show the new folder. Run Set Up again after moving or copying the toolkit folder.</p>
+<blockquote class="callout expected-result"><strong>Expected result:</strong> Defold&#x27;s Assets pane shows <code>developer</code>, <code>mvtk</code>, and <code>tiled</code>, without a red error popup, and the toolkit folder contains <code>WHERE_THINGS_ARE.txt</code>. Open this HTML guide from your toolkit folder; documentation is excluded from Defold&#x27;s asset loading.</blockquote>
+<p>The <strong>Assets</strong> pane is the project file tree. The <strong>Outline</strong> and <strong>Properties</strong> panes show the selected Defold resource; beginners rarely need them during room authoring. The <strong>Console</strong> at the bottom shows editor-command, validation, and game output. Keep it visible and treat the first red <code>[ERROR]</code> as the useful starting point when something fails. The toolkit commands used in this guide are under Defold&#x27;s top <strong>Project</strong> menu.</p>
+<h3 id="open-tiled">Open Tiled<a class="heading-link" href="#open-tiled" aria-label="Link to this section">#</a></h3>
+<ol>
+<li>Start Tiled.</li>
+<li>Choose <strong>Edit ▸ Preferences...</strong> (on macOS it is in the <strong>Tiled</strong> menu) and click the <strong>Plugins</strong> tab.</li>
+<li>Tick <strong>defold</strong> and <strong>lua</strong>, then close the window. Tiled lists them by file name: <code>defold.dll</code> and <code>lua.dll</code> on Windows, <code>libdefold.so</code> and <code>liblua.so</code> on Linux. Every room export writes its <code>.tilemap</code> and <code>.lua</code> through these two plugins; <code>defoldcollection</code> is not needed. Tiled remembers the setting.</li>
+<li>Choose <strong>File ▸ Open File or Project...</strong>. (Tiled 1.12 has no Project ▸ Open Project item.)</li>
+<li>Open the toolkit folder, set the file type list at the bottom right to **Tiled Projects (\*.tiled-project)**, and open the root <code>MVTK.tiled-project</code>, not an individual room.</li>
+<li>If Tiled shows a yellow bar at the top right saying the project contains scripted extensions, click <strong>Enable Extensions</strong>. No bar appears when you enabled them before, or when the commands are installed in Tiled itself (see the optional step below).</li>
+</ol>
+<blockquote class="callout expected-result"><strong>Expected result:</strong> Tiled&#x27;s <strong>File</strong> menu contains <strong>new_room_blank</strong>, <strong>Export Current Room</strong>, <strong>Export All Maps and Tiled World</strong>, and <strong>Start a New World...</strong>, and the Templates panel shows toolkit categories. The maps folder you chose in Defold appears in the Project panel.</blockquote>
+<p>Tiled exports to the toolkit whose <code>MVTK.tiled-project</code> is open. To work in another toolkit copy, open that copy&#x27;s <code>MVTK.tiled-project</code>.</p>
+<p>Then take <strong>one</strong> of these routes:</p>
+<ul>
+<li><strong>Your own game:</strong> first <a href="#3-create-your-first-tileset">create a tileset for your art</a> (section 3). It fixes your tile size and holds the collision shapes. Then <strong>File ▸ Start a New World...</strong> asks for a name, the first room&#x27;s size and that tile size, and creates a world folder with one blank room in your maps folder. That room is not playable yet: <a href="#4-build-a-three-room-starter-world-in-tiled">section 4</a> uses it as your start room, adds two more rooms, then exports, prepares and plays them.</li>
+<li><strong>A sample pack</strong> (a separate download): unzip it outside the toolkit folder and follow the <code>START_HERE.txt</code> inside the pack instead. It starts from a fresh toolkit, one per pack. You copy the pack&#x27;s <code>developer</code> folder into the toolkit by hand (with Defold closed, because it replaces some of the toolkit&#x27;s settings and art), then open the pack&#x27;s <code>.world</code> with <strong>File ▸ Open File or Project...</strong> where you unzipped it, exactly like a world of your own.</li>
+</ul>
+<p>If the Templates panel is hidden, enable it from Tiled&#x27;s <strong>View ▸ Views and Toolbars</strong> menu. If the toolkit File commands are absent, see <a href="#tiled-toolkit-menus-or-templates-are-missing">Tiled toolkit menus or templates are missing</a>.</p>
+<h4 id="optional-the-tiled-commands-outside-the-toolkit-project">Optional: the Tiled commands outside the toolkit project<a class="heading-link" href="#optional-the-tiled-commands-outside-the-toolkit-project" aria-label="Link to this section">#</a></h4>
+<p>You do not need this when you open <code>MVTK.tiled-project</code> as described above. To also get the export commands when you open a room without the toolkit project, install them into Tiled&#x27;s own extensions folder from the toolkit folder you work in:</p>
+<ul>
+<li><strong>Windows:</strong> run <code>tools\set_tiled_export_path.bat</code>.</li>
+<li><strong>macOS/Linux:</strong> in a terminal in the toolkit folder, run <code>sh tools/set_tiled_export_path.sh</code>.</li>
+</ul>
+<p>Exports from rooms opened that way go to the toolkit where you last ran it.</p>
+<h3 id="run-one-sanity-build">Run one sanity build<a class="heading-link" href="#run-one-sanity-build" aria-label="Link to this section">#</a></h3>
+<p>In Defold, choose <strong>Project ▸ Build</strong> or press <strong>Ctrl+B</strong> on Windows/Linux or <strong>Cmd+B</strong> on macOS. The sample project should open at a title screen containing <strong>Play Game</strong> and <strong>Layout Editor</strong>. Player preferences are in Settings in the pause menu. Stop the game before editing or running editor commands.</p>
+<blockquote class="callout stop-and-fix"><strong>Stop and fix:</strong> If the initial untouched project does not build, solve that installation problem before authoring rooms. Record the first red Console error; later errors are often consequences of the first one.</blockquote>
+<h3 id="starting-over">Starting over<a class="heading-link" href="#starting-over" aria-label="Link to this section">#</a></h3>
+<p>The toolkit release starts empty. To clear an existing project, use <strong>Project ▸ Reset Project to Empty (destructive)</strong> only when you intend to remove imported content, generated rooms, layout, music and saved settings. The command checks external originals and backs up removed content under <code>developer/.trash/</code> before restoring the empty-project baseline.</p>
+<h2 id="3-create-your-first-tileset">3. Create Your First Tileset<a class="heading-link" href="#3-create-your-first-tileset" aria-label="Link to this section">#</a></h2>
+<p>Choose the art and its real tile size before tuning Game Settings. Imported art establishes the project tile size.</p>
+<h3 id="pick-a-simple-first-tilesheet">Pick a simple first tilesheet<a class="heading-link" href="#pick-a-simple-first-tilesheet" aria-label="Link to this section">#</a></h3>
+<p>Start with one PNG whose tiles are all the same size. Common sizes are 16 × 16, 32 × 32, or 64 × 64 pixels, but <code>new_room_blank</code> accepts any positive size. Square tiles are the safest beginner path because some validation and gameplay assumptions warn about non-square art.</p>
+<p>You can use your own art or properly licensed third-party art. Keep the license and attribution information with your project.</p>
+<h3 id="create-the-external-tsx">Create the external <code>.tsx</code><a class="heading-link" href="#create-the-external-tsx" aria-label="Link to this section">#</a></h3>
+<p>In Tiled:</p>
+<ol>
+<li>Choose <strong>File ▸ New ▸ New Tileset…</strong>.</li>
+<li>Choose <strong>Based on Tileset Image</strong>.</li>
+<li>Browse to the tilesheet PNG.</li>
+<li>Enter the PNG&#x27;s exact <strong>Tile Width</strong> and <strong>Tile Height</strong>.</li>
+<li>Leave margin and spacing at zero unless the art pack explicitly uses them.</li>
+<li>Save the tileset as an external <code>.tsx</code> beside your source art or in your authoring folder.</li>
+</ol>
+<blockquote class="callout expected-result"><strong>Expected result:</strong> A Tileset editor opens and displays individual selectable tiles rather than one undivided image.</blockquote>
+<h3 id="import-single-images-collection-of-images-tileset">Import single images (Collection of Images tileset)<a class="heading-link" href="#import-single-images-collection-of-images-tileset" aria-label="Link to this section">#</a></h3>
+<p>Use this when some of your art is <strong>separate PNG files</strong> — one file per prop, decoration, or background piece — rather than packed into one gridded sheet. Tiled calls this a <strong>Collection of Images</strong> tileset, and the toolkit imports each image for you.</p>
+<ol>
+<li>In Tiled, choose <strong>File ▸ New ▸ New Tileset…</strong>.</li>
+<li>Set <strong>Type</strong> to <strong>Collection of Images</strong> (instead of <em>Based on Tileset Image</em>).</li>
+<li>Name the tileset and save it as an external <code>.tsx</code> beside your art or in your authoring folder.</li>
+<li>With the tileset open in the Tileset editor, click the <strong>Add Tiles</strong> (<strong>+</strong>) button and select one or more PNGs. Each image becomes one tile you can place. The images may be different sizes.</li>
+<li>Save the <code>.tsx</code> with <strong>Ctrl+S</strong>.</li>
+</ol>
+<p>Add this tileset to a room the same way as a gridded one — <strong>Map ▸ Add External Tileset…</strong>. Select the <code>art/background</code> object layer, select an image in the <strong>Tilesets</strong> panel, choose the <strong>Insert Tile</strong> tool (<strong>T</strong>), and click the canvas to place the image as a tile object. Do not paint collection images onto <code>art/environment</code>; that is a tile layer reserved for the room&#x27;s primary gridded tilesheet.</p>
+<p>When you run <strong>Export Current Room</strong>, the toolkit copies every image in the collection into <code>developer/assets/tiled/backgrounds/</code> and relinks the exported room and tileset to those project-local copies. <strong>Prepare &amp; Check</strong> then consumes the localized assets. You do not move the files yourself.</p>
+<blockquote class="callout important"><strong>Important:</strong> A room&#x27;s painted <strong>tile layers</strong> still use one primary gridded tilesheet for its floors and walls (see the collision note below). A Collection of Images tileset, image layers, and image-collection object art are <strong>additional</strong> art that coexists with that primary sheet — they are not a replacement for it, and single images are not where you paint the <code>solid</code> collision layer.</blockquote>
+<p>For keys, save points, chests, NPCs and other gameplay objects, use the <a href="TILED_OBJECT_ART.md">Tiled object artwork workflow</a>. Draw the interaction area with the rectangle template and link collection-image objects using <code>owner_ref</code>, or place a single image object with its own behavior. That guide also covers catalog artwork for drops, optional state images, and interaction particles.</p>
+<h3 id="add-tile-collision-shapes">Add tile collision shapes<a class="heading-link" href="#add-tile-collision-shapes" aria-label="Link to this section">#</a></h3>
+<p>Collision is not inferred from tile numbers or visible pixels.</p>
+<ol>
+<li>Open the external tileset for editing.</li>
+<li>Select a tile that should be solid.</li>
+<li>In the Tileset editor, switch to <strong>Tile Collision Editor</strong>. If that view is hidden, enable it from <strong>View ▸ Views and Toolbars</strong> while the <code>.tsx</code> is open.</li>
+<li>Choose the rectangle or polygon tool and draw around the solid part of the tile.</li>
+<li>Repeat for every solid tile you plan to paint.</li>
+<li>Save the <code>.tsx</code> with <strong>Ctrl+S</strong>.</li>
+</ol>
+<p>The toolkit exporter rejects unsaved referenced tilesets because exporting stale collision would produce a room that looks correct but plays incorrectly.</p>
+<p>For simple invisible blocks or slopes, you may instead place the <code>solid_box</code> or <code>solid_slope</code> template later. Those are object-based collision shapes.</p>
+<h2 id="4-build-a-three-room-starter-world-in-tiled">4. Build A Three-Room Starter World In Tiled<a class="heading-link" href="#4-build-a-three-room-starter-world-in-tiled" aria-label="Link to this section">#</a></h2>
+<p>This walkthrough makes three horizontal rooms:</p>
+<div class="code-wrap"><pre><code class="language-text">start_room  --right/left--  middle_room  --right/left--  goal_room</code></pre></div>
+<h3 id="create-startroom">Create <code>start_room</code><a class="heading-link" href="#create-startroom" aria-label="Link to this section">#</a></h3>
+<p>You need the tileset from <a href="#3-create-your-first-tileset">section 3</a> before you paint. Make it first if you skipped that section.</p>
+<p><strong>If you used File ▸ Start a New World...</strong>, its blank room <code>rooms/&lt;name&gt;_01.tmx</code> is your start room and is already open. Do not create another one: skip to <a href="#add-your-external-tileset-to-the-room">Add your external tileset to the room</a>, and read <code>&lt;name&gt;_01</code> wherever this walkthrough says <code>start_room</code>.</p>
+<p>Otherwise, create the start room now:</p>
+<ol>
+<li>In Tiled, choose <strong>File ▸ new_room_blank</strong>.</li>
+<li>Enter a room size in tiles, such as <code>40x23</code>.</li>
+<li>Enter your tilesheet&#x27;s pixel tile size, such as <code>32</code> or <code>32x32</code>.</li>
+<li>Save the map as <code>start_room.tmx</code> in your maps folder.</li>
+</ol>
+<p>Save originals outside the Defold project, on any accessible drive. The folders under <code>developer/assets/</code> contain disposable exported copies. Export rejects original maps, tilesets, images, and file-property assets inside the project.</p>
+<p>Use a simple filename matching this pattern:</p>
+<div class="code-wrap"><pre><code class="language-text">[A-Za-z0-9_][A-Za-z0-9_-]*</code></pre></div>
+<p>That means letters, digits, or underscore first; letters, digits, underscore, or hyphen afterward. Avoid spaces for beginner projects.</p>
+<blockquote class="callout expected-result"><strong>Expected result:</strong> Tiled creates a map with top-level <code>bounds</code>, <code>grapple</code>, <code>solid</code>, and <code>templates</code> layers; an <code>exit</code> group containing <code>door_left</code>, <code>door_right</code>, <code>door_top</code>, and <code>door_bottom</code>; and an <code>art</code> group containing the visual layers including <code>environment</code>.</blockquote>
+<p>Do not rename or remove the generated structural layers.</p>
+<h3 id="add-your-external-tileset-to-the-room">Add your external tileset to the room<a class="heading-link" href="#add-your-external-tileset-to-the-room" aria-label="Link to this section">#</a></h3>
+<p>With <code>start_room.tmx</code> open, choose <strong>Map ▸ Add External Tileset…</strong> and select the <code>.tsx</code> you created. The exact wording can vary slightly across Tiled 1.12.x, but the result must be the external tileset visible in the room&#x27;s Tilesets panel.</p>
+<h3 id="know-the-tiled-workspace">Know the Tiled workspace<a class="heading-link" href="#know-the-tiled-workspace" aria-label="Link to this section">#</a></h3>
+<p>Before painting, identify these five areas:</p>
+<div class="table-wrap" role="region" aria-label="Scrollable table">
+<table>
+<thead><tr>
+<th>Area</th>
+<th>What it is for</th>
+</tr></thead>
+<tbody>
+<tr>
+<td>Center canvas</td>
+<td>The room you paint and the objects you position.</td>
+</tr>
+<tr>
+<td><strong>Layers</strong> panel</td>
+<td>Selects whether you are painting art, bounds, collision, doors, or placing templates. Always check the selected layer before editing.</td>
+</tr>
+<tr>
+<td><strong>Tilesets</strong> panel</td>
+<td>Shows tiles from the external <code>.tsx</code>; click a tile here before painting the canvas.</td>
+</tr>
+<tr>
+<td><strong>Templates</strong> panel</td>
+<td>Holds the ready-made gameplay objects you drag onto the top-level <code>templates</code> layer.</td>
+</tr>
+<tr>
+<td><strong>Properties</strong> panel</td>
+<td>Shows settings for the selected map, layer, tile, or template object. Click the item first, then edit its property here.</td>
+</tr>
+</tbody></table>
+</div>
+<p>Use <strong>View ▸ Views and Toolbars</strong> to restore a hidden panel. The most common beginner mistake is painting or dragging while the wrong layer is selected, so confirm the Layers highlight before every new kind of edit.</p>
+<h4 id="room-layers-at-a-glance">Room layers at a glance<a class="heading-link" href="#room-layers-at-a-glance" aria-label="Link to this section">#</a></h4>
+<p><code>new_room_blank</code> creates these layers for you. Do not rename or delete them.</p>
+<div class="table-wrap" role="region" aria-label="Scrollable table">
+<table>
+<thead><tr>
+<th>Layer</th>
+<th>Job</th>
+</tr></thead>
+<tbody>
+<tr>
+<td><code>bounds</code></td>
+<td>The room&#x27;s outer footprint. Paint a closed one-tile ring; keep it unbroken even at doorways.</td>
+</tr>
+<tr>
+<td><code>solid</code></td>
+<td>Collision. Paint only tiles that have Tile Collision Editor shapes and should block the player.</td>
+</tr>
+<tr>
+<td><code>grapple</code></td>
+<td>Hook tags. Paint the ceiling&#x27;s bottom rock row or hanging anchor cells; give them visible art. The tags are hidden in game and bake into editable Grapple Surface gameobjects.</td>
+</tr>
+<tr>
+<td><code>art/environment</code></td>
+<td>Visible floors, walls, and decoration. Add more art layers for foreground/background as needed.</td>
+</tr>
+<tr>
+<td><code>exit/door_left</code>, <code>door_right</code>, <code>door_top</code>, <code>door_bottom</code></td>
+<td>Exit markers. One painted tile shows the Layout Editor where this room connects.</td>
+</tr>
+<tr>
+<td><code>templates</code> (top level)</td>
+<td>Where you drag ready-made objects — player start, enemies, collectibles, hazards, NPCs, and so on.</td>
+</tr>
+</tbody></table>
+</div>
+<p>Painting on the wrong layer is the most common first-world mistake. Confirm the highlighted layer in the <strong>Layers</strong> panel before each new kind of edit.</p>
+<h3 id="paint-visible-art-bounds-and-collision">Paint visible art, bounds, and collision<a class="heading-link" href="#paint-visible-art-bounds-and-collision" aria-label="Link to this section">#</a></h3>
+<p>Paint in this order so each layer has one clear job:</p>
+<ol>
+<li>Select <code>art/environment</code> and paint the visible floor, walls, and decoration.</li>
+<li>Select <code>bounds</code> and paint a one-tile outer room outline.</li>
+<li>Select <code>solid</code> and paint only tiles that have Tile Collision Editor shapes and should block the player.</li>
+<li>If the room uses grappling, paint a <code>grapple</code> layer where the hook may catch. Use visible hooks, rings or rails on the art layers to mark these spots. See <a href="GRAPPLING.md">Grappling</a> for tagged surfaces and the Game Settings Grapple tab.</li>
+</ol>
+<p>Keep foreground decoration on the appropriate foreground art layer so it does not accidentally become collision.</p>
+<blockquote class="callout expected-result"><strong>Expected result:</strong> The room looks like a small platforming space, <code>bounds</code> outlines it, and <code>solid</code> contains only collision-bearing tiles.</blockquote>
+<h3 id="let-painted-tiled-art-replace-a-template-placeholder">Let painted Tiled art replace a template placeholder<a class="heading-link" href="#let-painted-tiled-art-replace-a-template-placeholder" aria-label="Link to this section">#</a></h3>
+<p>Player starts, checkpoints, and save points are invisible gameplay markers. Paint any artwork for them on Tiled&#x27;s visible art layers. They never add a Defold placeholder sprite, even when an older map still has <code>use_defold_sprite=true</code>.</p>
+<p>Some gameplay templates include a simple Defold sprite so the object remains visible before final art exists. When you paint the finished object art on a visible Tiled tile layer, select the template object and set <code>use_defold_sprite=false</code>. <strong>Prepare &amp; Check</strong> then keeps the object&#x27;s scripts, collision, effects, and behavior while omitting only its embedded Defold component named <code>sprite</code>.</p>
+<p>Leave <code>use_defold_sprite=true</code> when the Defold prefab should draw the object. Platforms and volumes that normally expect painted art—one-way platforms, gates, breakable walls, pressure plates, water volumes, bounce pads, conveyors, timed doors, and wall-jump surfaces—default to <code>false</code>; the other supported templates default to <code>true</code>. Water distortion remains available because it is a separate effect, not the placeholder sprite.</p>
+<p>After changing the property, save and export the room, then run <strong>Prepare &amp; Check</strong>. Validation warns when the placeholder is disabled but no visible non-control tile is painted beneath the object.</p>
+<p>For example, to replace a teleporter placeholder, paint the teleporter art on a visible tile layer directly beneath the <code>teleporter</code> template object, set that object&#x27;s <code>use_defold_sprite</code> property to <code>false</code>, export, and run the three commands above. Set the property back to <code>true</code> whenever you want the prefab&#x27;s built-in teleporter sprite again.</p>
+<h3 id="place-the-player-start">Place the player start<a class="heading-link" href="#place-the-player-start" aria-label="Link to this section">#</a></h3>
+<ol>
+<li>Select the visible top-level <code>templates</code> object layer.</li>
+<li>In the Templates panel, open <strong>Navigation</strong>.</li>
+<li>Drag <code>player_start</code> into a safe open point above the floor.</li>
+<li>Leave its defaults (<code>spawn_type=player</code>, <code>is_default=true</code>, and <code>checkpoint_id=start</code>) for this first world.</li>
+</ol>
+<p>For the Layout Editor route, one <code>player_start</code> is enough to identify the starting room. <strong>Export All Maps and Tiled World</strong> also needs the boolean map property <code>is_starting_room=true</code> on exactly one room of the world: <strong>Start a New World...</strong> sets it on its first room; for another world, add it in the start room&#x27;s Map Properties. Avoid multiple starting rooms because selection can then depend on ordering or saved state.</p>
+<h3 id="paint-the-first-door-marker">Paint the first door marker<a class="heading-link" href="#paint-the-first-door-marker" aria-label="Link to this section">#</a></h3>
+<p>Select <code>exit/door_right</code> and paint at least one tile where the right exit should connect. Door connectivity comes from these painted <code>door_*</code> layers, not from a door template and not from the <code>solid</code> layer.</p>
+<p>Leave a real opening in visible/collision art so the player can pass through the edge. A painted door marker tells Layout Editor where rooms connect; it does not automatically carve a hole through your wall art.</p>
+<h3 id="add-optional-room-music">Add optional room music<a class="heading-link" href="#add-optional-room-music" aria-label="Link to this section">#</a></h3>
+<ol>
+<li>Choose <strong>Map ▸ Map Properties</strong>.</li>
+<li>Find or add <code>music</code> as a <strong>file</strong> property.</li>
+<li>Select an Ogg Vorbis <code>.ogg</code> or WAV <code>.wav</code> file.</li>
+</ol>
+<p>The file may be outside the toolkit. Prepare &amp; Check copies and registers it. Empty <code>music</code> means “keep the current track.” Adjacent rooms using the same file continue the song instead of restarting it.</p>
+<p>Defold does not use MP3 for this workflow. Convert MP3, FLAC, M4A, AAC, or Opus to <code>.ogg</code> or <code>.wav</code> first. For example:</p>
+<div class="code-wrap"><pre><code class="language-bat">ffmpeg -i song.mp3 song.ogg</code></pre></div>
+<p>The <code>biome</code> property controls visual/environment metadata; it does not choose the room&#x27;s music.</p>
+<h3 id="save-and-export-startroom">Save and export <code>start_room</code><a class="heading-link" href="#save-and-export-startroom" aria-label="Link to this section">#</a></h3>
+<ol>
+<li>Save the map with <strong>Ctrl+S</strong>.</li>
+<li>Save the <code>.tsx</code> too if you edited collision.</li>
+<li>Choose <strong>File ▸ Export Current Room</strong>.</li>
+<li>Read the export summary and correct any error before continuing.</li>
+</ol>
+<blockquote class="callout expected-result"><strong>Expected result:</strong> The project contains <code>developer/assets/tiled/maps/start_room.lua</code> and <code>developer/assets/tiled/maps/start_room.tilemap</code>.</blockquote>
+<h3 id="create-middleroom">Create <code>middle_room</code><a class="heading-link" href="#create-middleroom" aria-label="Link to this section">#</a></h3>
+<p>Rooms two and three are new maps. Create each with <strong>File ▸ new_room_blank</strong> (also when your first room came from Start a New World) and save it in the same folder as the start room:</p>
+<ol>
+<li>Use the same tile size and add the same external <code>.tsx</code>.</li>
+<li>Paint environment, bounds, and solid collision.</li>
+<li>Do not add another <code>player_start</code>.</li>
+<li>Paint one tile on <code>door_left</code> and one on <code>door_right</code>.</li>
+<li>Add one easy recipe object, such as <code>checkpoint</code>, <code>collectible</code>, <code>enemy</code>, or <code>sign</code>, on the top-level <code>templates</code> layer.</li>
+<li>Save as <code>middle_room.tmx</code> and export it.</li>
+</ol>
+<h3 id="create-goalroom">Create <code>goal_room</code><a class="heading-link" href="#create-goalroom" aria-label="Link to this section">#</a></h3>
+<p>Repeat once more:</p>
+<ol>
+<li>Use the same tile size and add the same external <code>.tsx</code>.</li>
+<li>Paint environment, bounds, and collision.</li>
+<li>Paint one <code>door_left</code> marker.</li>
+<li>Add a <code>save_point</code>, chest, or other simple reward.</li>
+<li>Save as <code>goal_room.tmx</code> and export it.</li>
+</ol>
+<blockquote class="callout expected-result"><strong>Expected result:</strong> All three rooms have matching horizontal doors: <code>start_room</code> right ↔ <code>middle_room</code> left, and <code>middle_room</code> right ↔ <code>goal_room</code> left.</blockquote>
+<blockquote class="callout note"><strong>Started with Start a New World?</strong> New rooms are not added to its world automatically, and this walkthrough does not need them there: you export each room and arrange the rooms in the Layout Editor (section 7). To keep every room in the Tiled world instead, open the start room, select the <strong>World Tool</strong> on Tiled&#x27;s toolbar, click <strong>Add another map to the current world</strong>, choose the new room, and drag it beside its neighbor so the doors line up. Then follow <a href="#use-a-world-already-arranged-in-tiled">Use a world already arranged in Tiled</a>.</blockquote>
+<h3 id="author-rooms-outside-the-toolkit-folder">Author rooms outside the toolkit folder<a class="heading-link" href="#author-rooms-outside-the-toolkit-folder" aria-label="Link to this section">#</a></h3>
+<p>Keep original <code>.tmx</code>, <code>.tsx</code>, <code>.world</code>, tilesheet PNG, image layers, and music in your own art/level folder outside the Defold project, including on another drive.</p>
+<ol>
+<li>Open <code>MVTK.tiled-project</code> first so the toolkit menus and templates are loaded.</li>
+<li>Open or create the external room.</li>
+<li>Keep editing the original external files.</li>
+<li>Save the map and every referenced <code>.tsx</code>.</li>
+<li>Run <strong>File ▸ Export Current Room</strong> after each change.</li>
+</ol>
+<p>The exporter creates project-local copies:</p>
+<div class="table-wrap" role="region" aria-label="Scrollable table">
+<table>
+<thead><tr>
+<th>External source</th>
+<th>Project-local destination</th>
+</tr></thead>
+<tbody>
+<tr>
+<td>Localized map copy</td>
+<td><code>developer/assets/tiled/maps/&lt;room&gt;.tmx</code></td>
+</tr>
+<tr>
+<td>Generated room data</td>
+<td><code>developer/assets/tiled/maps/&lt;room&gt;.lua</code></td>
+</tr>
+<tr>
+<td>Generated Defold tilemap</td>
+<td><code>developer/assets/tiled/maps/&lt;room&gt;.tilemap</code></td>
+</tr>
+<tr>
+<td>External <code>.tsx</code></td>
+<td><code>developer/assets/tiled/tilesets/</code></td>
+</tr>
+<tr>
+<td>Single-sheet tileset image</td>
+<td><code>developer/assets/tilesheets/</code></td>
+</tr>
+<tr>
+<td>Image-collection and image-layer art</td>
+<td><code>developer/assets/tiled/backgrounds/</code></td>
+</tr>
+<tr>
+<td>Room music after Prepare &amp; Check</td>
+<td><code>developer/assets/music/</code></td>
+</tr>
+</tbody></table>
+</div>
+<p>The localized <code>.tmx</code> contains an <code>mvtk-localized-from</code> provenance comment. It lets later exports recognize the original source and protects unrelated same-named project maps from silent overwrite.</p>
+<p>Export also writes <code>.mvtk-source</code> receipts beside copied maps and assets. Reset Project checks that originals are readable outside the project and that copies have not been edited since export. Missing receipts, unavailable originals, or changed copies stop reset before any files move. Reconnect the source drive or preserve local edits in the external originals, then export again. The toolkit&#x27;s shipped <code>tiled/templates/</code> files remain framework-owned and survive reset.</p>
+<blockquote class="callout important"><strong>Important:</strong> Never edit the localized <code>.tmx</code>, <code>.tsx</code>, or copied image inside the toolkit when the original lives elsewhere. Edit the original source and export again. External <code>.tx</code> templates are not localized; place the templates shipped under <code>tiled/templates/</code>.</blockquote>
+<h2 id="5-turn-tiled-exports-into-playable-defold-rooms">5. Turn Tiled Exports Into Playable Defold Rooms<a class="heading-link" href="#5-turn-tiled-exports-into-playable-defold-rooms" aria-label="Link to this section">#</a></h2>
+<p>Stop the running game, then run these commands in this exact order:</p>
+<ol>
+<li><strong>Project ▸ Reload Editor Scripts</strong></li>
+<li><strong>Project ▸ Prepare &amp; Check</strong></li>
+<li><strong>Project ▸ Build</strong></li>
+</ol>
+<h3 id="what-each-command-does">What each command does<a class="heading-link" href="#what-each-command-does" aria-label="Link to this section">#</a></h3>
+<div class="table-wrap" role="region" aria-label="Scrollable table">
+<table>
+<thead><tr>
+<th>Command</th>
+<th>Purpose</th>
+</tr></thead>
+<tbody>
+<tr>
+<td><strong>Reload Editor Scripts</strong></td>
+<td>Loads editor commands after installation or an update. Changed Lua modules can require restarting Defold first.</td>
+</tr>
+<tr>
+<td><strong>Prepare &amp; Check</strong></td>
+<td>Applies saved player settings, imports changed assets, creates rooms, synchronizes enemy art/music, and validates the result. It also publishes placement when Tiled owns the world.</td>
+</tr>
+<tr>
+<td><strong>Preparation Status</strong></td>
+<td>Explains what needs exporting, preparing, publishing or rebuilding.</td>
+</tr>
+<tr>
+<td><strong>Build</strong></td>
+<td>Compiles and launches the prepared project.</td>
+</tr>
+</tbody></table>
+</div>
+<p>The Console still names the internal Import Assets, Create Rooms and Validate All stages. They run in the required order inside Prepare &amp; Check; they are no longer separate menu choices.</p>
+<p>Watch the Defold Console. Fix the first red error before moving on.</p>
+<p>For within-room connections, use Tiled&#x27;s optional <code>target_ref</code>, <code>boss_ref</code>, and <code>arena_ref</code> object pickers. String IDs still support cross-room links and switches with several listeners. See <a href="AUTHORED_RELATIONSHIPS.md">Connecting authored objects</a> for supported targets, diagnostic navigation, and freshness warnings.</p>
+<p>Tiled export, Prepare &amp; Check, Build, Layout Export, and Export Game check authored relationships. Blocking errors preserve the previous published outputs; warnings identify facts that still need review. Prepare &amp; Check refresh the project index used by Tiled. After a toolkit update, rerun path setup and restart Tiled to load the new extension.</p>
+<p>After a toolkit upgrade, run <strong>Prepare &amp; Check</strong> again. Room resources load ahead of entry; startup, respawn and fast travel wait until the destination is ready. If loading fails, the game reports it instead of moving the player into an empty room. Advanced load limits are commented in <code>developer/config/stream_settings.lua</code>.</p>
+<blockquote class="callout expected-result"><strong>Expected result:</strong> The Console names all three rooms, reports imported tiles/resources and generated rooms, Prepare &amp; Check succeeds, and Build opens the title screen.</blockquote>
+<p>Important generated outputs include:</p>
+<ul>
+<li><code>developer/rooms/collections/&lt;room&gt;.collection</code></li>
+<li><code>developer/rooms/factories/&lt;room&gt;_factory.collectionfactory</code></li>
+<li><code>developer/rooms/generated/</code></li>
+<li><code>developer/config/rooms_config.lua</code></li>
+<li><code>mvtk/editor_host/rooms_manifest.collection</code></li>
+<li><code>developer/config/tile_settings.lua</code></li>
+</ul>
+<p>Do not hand-edit those to fix an authoring problem. Correct the Tiled source or creator config, then regenerate.</p>
+<h2 id="6-tune-the-player-with-game-settings">6. Tune The Player With Game Settings<a class="heading-link" href="#6-tune-the-player-with-game-settings" aria-label="Link to this section">#</a></h2>
+<p>Stop the game, then choose <strong>Project ▸ Game Settings…</strong> in Defold. Prepare &amp; Check should already have read your real tilesheet and generated <code>developer/config/tile_settings.lua</code>. Imported art owns tile size; Game Settings does not choose it or create rooms.</p>
+<ol>
+<li>On <strong>Player</strong>, choose <strong>Current</strong>, <strong>Balanced</strong>, <strong>Fast</strong> or <strong>Heavy</strong> in the Preset dropdown, then click <strong>Apply preset</strong>. Current restores saved values; the other presets change only the draft.</li>
+<li>Leave <strong>Player size (1 = 100%)</strong> at <code>1.00</code> for art drawn at its in-game size. The numeric field accepts sizes from <code>1/7</code> to <code>8</code>. With <strong>Scale movement</strong> enabled, the runtime scales world-pixel movement and traversal values once.</li>
+<li>On <strong>Abilities</strong>, check what the player should own when a new game begins. Unchecked abilities stay locked until a matching pickup is collected. Advanced and Grapple values apply whenever the ability becomes available, including restored saves and checkpoints; starting checkboxes do not disable that tuning.</li>
+<li>Review the settings you need on <strong>Advanced</strong>, <strong>Combat</strong>, <strong>Combat features</strong>, <strong>Grapple</strong> and <strong>Game</strong>. Hover over a name or field to read its help.</li>
+<li>Use <strong>Player art</strong>, <strong>Ending</strong>, <strong>Camera</strong>, <strong>HUD and prompts</strong>, <strong>Map</strong>, <strong>Saves and checkpoints</strong>, or <strong>Movement test</strong> for those tasks. These tabs share the same draft. <a href="DESIGNER_TOOLS.md">Designer tools</a> explains imports and previews.</li>
+<li>Click <strong>Save and Prepare &amp; Check</strong>, finish the preparation prompts, and close the window when preparation completes. Choose <strong>Project ▸ Build</strong> to play with the saved settings. <strong>Save</strong> on its own publishes settings without running preparation.</li>
+</ol>
+<p>The name of a field is blue when it differs from the toolkit default. Its <strong>x</strong> button restores that default; Save publishes the reset. Values outside the allowed range show an error on the field and block Save. Dependent fields are disabled when they do not apply; hover over them for the reason. Enter confirms a typed value without closing the window.</p>
+<p>The header counts settings that differ from defaults and unsaved changes. Close with an unsaved draft offers <strong>Discard</strong> or <strong>Keep editing</strong>. Keep editing retains the draft and reopens on Player. Import, preview and line-editor actions also return to Player; this is a native tab-selection limitation.</p>
+<p><strong>Game name and ID:</strong> on the <strong>Game</strong> tab, give the game its own name. Save writes it into <code>game.project</code>. A toolkit placeholder name shows a warning on the field without blocking Save. The first Save quietly assigns a permanent ID, shown in the read-only <strong>Game ID</strong> row. Renaming the title keeps the ID and Continue data. For a project copy intended as a different game, clear <code>game_id</code> in the copy&#x27;s <code>developer/config/persistence_settings.lua</code>, then Save once. The window does not copy older player data or import machine-local authoring settings; beta saves are disposable. <a href="SAVE_COMPATIBILITY.md">Compatibility details</a>.</p>
+<p>Game Settings publishes the commented <code>developer/config/creator_settings.lua</code>. Player, starting-ability and combat configuration files remain the authored baseline. Published overrides travel with the project and exported game. Player preferences and save-slot progress remain separate; change player preferences through Settings in the game&#x27;s pause menu.</p>
+<p>On <strong>Game</strong>, <strong>Death drop</strong> is off by default: death restores inventory and currency from the last save. When enabled, <strong>Currency dropped</strong> sets the loss fraction and <strong>Minimum dropped</strong> sets a minimum, capped by the saved amount. The amount fields are disabled while Death drop is off. A new drop replaces an uncollected one. See the death-and-saves recipe for placement and persistence.</p>
+<p>The <strong>Grapple</strong> tab selects Swing or Pull, hook targets, Stay hooked, rope extension, range, power, speed and release behaviour. Use <strong>Camera ▸ Launch room preview</strong> to try the unsaved draft in a copy of your published rooms. See <a href="GRAPPLING.md">Grappling</a>.</p>
+<p>Changing Player size adjusts supported resources while retaining custom atlas, prototype, animation, collision-mask and material references. Main body geometry uses the authored collider half-width and half-height. Other collider geometry and the Spine visual child&#x27;s proportions scale with Player size. Supported resources include one embedded sprite, the existing <code>spine_visual</code> collection instance, and box, sphere and capsule collision shapes. Ambiguous or unsupported structures stop the save with the affected file named; existing files remain intact. External sprite components and arbitrary multi-shape main bodies need asset-tool support before they can be scaled automatically.</p>
+<p>The generated <code>player_resources_generated.lua</code> records previous dimensions so repeated saves and Prepare &amp; Check do not compound scale. Keep it with the project. For an existing custom player, save its current size once in Game Settings before directly changing the baseline size. Reset Project and empty toolkit packaging restore baseline geometry before clearing project overrides.</p>
+<p>The window stays open after Save and shows the result. Opening Game Settings or running <strong>Prepare &amp; Check</strong> recovers an interrupted project transaction. If an interrupted save prevents a build, restart Defold, run <strong>Reload Editor Scripts</strong>, then <strong>Prepare &amp; Check</strong>. Preparation remains the owner of <code>tile_settings.lua</code>.</p>
+<h3 id="use-the-optional-spine-add-on">Use the optional Spine add-on<a class="heading-link" href="#use-the-optional-spine-add-on" aria-label="Link to this section">#</a></h3>
+<p>Spine is <strong>off in a fresh toolkit</strong>. Sprite games need no Spine runtime or resources. Enable the add-on only for a Spine player or boss. Everyone building with it needs their own Spine Editor license (Essential or higher); the free Trial does not cover the runtime. See the <a href="https://esotericsoftware.com/spine-editor-license">Spine Editor License Agreement</a>.</p>
+<ol>
+<li>Stop the game. Choose <strong>Project ▸ Spine Add-on…</strong>, then <strong>Turn On</strong>.</li>
+<li>Read the license notice and confirm <strong>Turn On</strong>. Close the completion message and wait for the command to fetch libraries. If it instead asks for <strong>Project ▸ Fetch Libraries</strong>, follow that instruction.</li>
+<li>Reopen Defold if it has not picked up the <code>.defignore</code> change. Run <strong>Project ▸ Prepare &amp; Check</strong> before <strong>Build</strong> or <strong>Export Game</strong>.</li>
+</ol>
+<p>Turning it on leaves your chosen player unchanged. For the bundled Spine player, set <code>player.player_type = &quot;spine&quot;</code> in <code>developer/config/game_config.lua</code>. Published overrides in <code>developer/config/creator_settings.lua</code> take priority. A sprite player can share a game with Spine bosses. The <a href="../developer/addons/spine/README.md">Spine add-on guide</a> explains how to add a boss component to <code>boss_runtime.go</code>, register it in <code>boss_visuals.lua</code>, and select it through the boss preset or Tiled properties. Keep the rig&#x27;s resources under <code>developer/addons/spine/bosses/&lt;your_boss&gt;/</code>; placed Tiled bosses remain editable gameobject instances baked into the room collection.</p>
+<p>The bundled player&#x27;s resources now live together under <code>developer/addons/spine/player/</code>: the <code>rig/</code> folder, <code>player_spine_visual.go</code>, <code>player.collection</code> and <code>player_spine.collection</code>. Keep these together when updating the bundled player; mixing versions changes its displayed size. Preserve your own custom geometry and <code>developer/config/player_resources_generated.lua</code> scale history. Game Settings saves and <strong>Prepare &amp; Check</strong> keep both add-on collections and the core bone colliders in sync with <strong>Player Size</strong>, even while Spine is off. A replacement rig also needs matching animation mappings and bone names; the add-on guide lists the configuration files.</p>
+<p>To turn it off, select a sprite player and replace Spine bosses with sprites. Export the changed Tiled rooms and run <strong>Prepare &amp; Check</strong> while Spine is still on, so baked collections use the new selections. Remove Spine component and resource references outside the add-on folder, including any explicit add-on custom-resource declaration in <code>game.project</code>. Choose <strong>Project ▸ Spine Add-on…</strong>, then <strong>Turn Off</strong>. The command names any remaining files or settings to change and refuses until they are clear. Let it refresh libraries, reopen Defold if requested, then run <strong>Prepare &amp; Check</strong> before <strong>Build</strong> or <strong>Export Game</strong>. The add-on files remain available for later use. If the dialog reports <strong>Mixed</strong>, choose <strong>Turn On</strong> or <strong>Turn Off</strong> again to repair the project state.</p>
+<h2 id="7-arrange-and-publish-the-world-in-layout-editor">7. Arrange And Publish The World In Layout Editor<a class="heading-link" href="#7-arrange-and-publish-the-world-in-layout-editor" aria-label="Link to this section">#</a></h2>
+<h3 id="use-a-world-already-arranged-in-tiled">Use a world already arranged in Tiled<a class="heading-link" href="#use-a-world-already-arranged-in-tiled" aria-label="Link to this section">#</a></h3>
+<p>Layout Editor is optional when you arrange the rooms in a saved Tiled <code>.world</code>.</p>
+<ol>
+<li>Open the world in Tiled. Use finite orthogonal TMX maps with the project&#x27;s tile dimensions, matching painted door openings, and exactly one starting room: the room with the <code>player_start</code>, marked with the boolean map property <code>is_starting_room=true</code> (<strong>Start a New World...</strong> marks its first room).</li>
+<li>Choose <strong>File → Export All Maps and Tiled World</strong>. This saves modified member maps, referenced tilesets and the world, exports every member through the normal Lua/tilemap exporter, and records their placements. A canceled save or failed batch keeps the previous exported generation.</li>
+<li>Stop the game in Defold. After installing toolkit changes, restart Defold to clear cached Lua modules, then <strong>Project → Reload Editor Scripts</strong>.</li>
+<li>Run <strong>Project → Prepare &amp; Check</strong>. On the first import choose <strong>Use Tiled World Layout</strong>. Preparation imports assets, creates editable room collections, checks connections and elevators, and publishes the layout and minimap together.</li>
+<li>Build and choose <strong>Play Game</strong> with an empty save slot. No Layout Editor export is needed.</li>
+</ol>
+<h4 id="world-name-and-room-defaults">World name and room defaults<a class="heading-link" href="#world-name-and-room-defaults" aria-label="Link to this section">#</a></h4>
+<p>Open <strong>MVTK.tiled-project</strong> with its extensions enabled, then create or open a world. Open <strong>World Properties</strong> from Tiled’s world controls: the five toolkit fields are added automatically, preserving any existing choices. There is no setup command and no code editing. Save the world after editing; world export also saves it. This applies only inside the toolkit project.</p>
+<div class="table-wrap" role="region" aria-label="Scrollable table">
+<table>
+<thead><tr>
+<th>Property</th>
+<th>Type / meaning</th>
+</tr></thead>
+<tbody>
+<tr>
+<td><code>world_name</code></td>
+<td>String. Displayed above the full world map. Empty keeps <strong>World Map</strong>. It does not rename the game or change save identity.</td>
+</tr>
+<tr>
+<td><code>default_biome</code></td>
+<td><code>biomes</code> dropdown. Used when a room&#x27;s <code>biome</code> is missing, empty, or <strong>inherit</strong>.</td>
+</tr>
+<tr>
+<td><code>default_music</code></td>
+<td><code>music_tracks</code> dropdown. Synced track ID used when room <code>music</code> is missing, empty, or <strong>inherit</strong>. Prepare &amp; Check populates this list.</td>
+</tr>
+<tr>
+<td><code>default_ambience</code></td>
+<td><code>ambient_sounds</code> dropdown. Ambient loop independent of music; must have a configured sound component. Room <code>ambient_sound</code> overrides it.</td>
+</tr>
+<tr>
+<td><code>default_map_color</code></td>
+<td>Color. Fallback map tint for rooms without <code>biome_color</code>. Leave alpha at zero to use biome/project colors; otherwise choose an opaque tint.</td>
+</tr>
+</tbody></table>
+</div>
+<p>Explicit room selections win. New blank rooms use <strong>inherit</strong> for their biome; existing rooms keep their choices, including <strong>default</strong>. To inherit music, clear the room&#x27;s music value or select <strong>inherit</strong>. New world defaults start at <strong>inherit</strong>, preserving existing room behavior. Once you select a track or <strong>none</strong> for <code>default_music</code>, an explicit room <strong>none</strong> means silence. World music <strong>none</strong> supplies silence to inheriting rooms. An absent, empty, or <strong>inherit</strong> world music default retains the older <strong>room none = keep current music</strong> behavior. Ambient <strong>none</strong> means no world/room ambient loop; placed sound objects remain independent. The old room property <code>ambience</code> remains a music alias; use <code>ambient_sound</code> for ambient loops (String or the <code>ambient_sounds</code> custom type).</p>
+<p>Music triggers temporarily override the selected track. A trigger with <strong>stop_on_exit</strong> and no explicit exit track restores the room/world music. Room-to-room ambient changes stop the previous loop, and rooms sharing a loop keep it playing. Sound playback still requires your configured audio assets.</p>
+<p>Room <code>biome_color</code> wins over the world tint; otherwise the world tint wins over the biome color. The project&#x27;s biome-color switch and map opacity still apply. These colors affect the minimap and full map, not the room background.</p>
+<p>After changing world properties, run <strong>Export All Maps and Tiled World → Prepare &amp; Check → Build</strong>. The selected Tiled world&#x27;s defaults are published with its layout; unrelated maps and other worlds do not inherit them. Unknown default biome, music, or ambient IDs fail preparation with the relevant config path.</p>
+<p>Re-exporting the same world updates its layout on the next successful preparation. For an edit inside one room, save that map and choose <strong>File → Export Current Room</strong>, then <strong>Prepare &amp; Check → Build</strong> in Defold. This exports only the active room&#x27;s Lua and tilemap and retains the existing world placement. Use the full world export when moving, adding, removing, or resizing rooms, changing the starting room, world properties, or shared tilesets/templates used across the world. Negative positions and gaps remain as authored; touching rooms only connect when their opposing door spans overlap. Overlaps and ambiguous connections are errors. World patterns are resolved by Tiled; <code>onlyShowAdjacentMaps</code> does not limit export. Changed pattern membership or unavailable world sources require another export.</p>
+<p><strong>Keep Layout Editor Layout</strong> retains manual placement. <strong>Project → Use Tiled World Layout</strong> can switch later and shows the number of moved, added and removed rooms. Opening Layout Editor while Tiled owns placement shows the published world for inspection. Pan and zoom work; <strong>Edit Here</strong> explicitly takes a manual copy. <strong>Restore Draft</strong> resumes the backed-up manual placement instead. After either switch, stop the game and run <strong>Prepare &amp; Check → Build</strong> before adding rooms that were exported separately from the Tiled world. Then reopen Layout Editor and click <strong>Rescan Rooms</strong>. World preparation only builds that world&#x27;s members; manual preparation includes all exported rooms. Rescan refreshes the built room list, so it cannot import or build a newly exported room by itself. The previous manual draft is backed up in <code>developer/runtime/layout/manual_backup.lua</code>. Tags stay with unchanged room IDs; the previous published placement and removed tags are also retained in <code>developer/runtime/layout/previous_world_layout.lua</code>. Source switching never rewrites your <code>.world</code>.</p>
+<p>For preparation, use <strong>Prepare &amp; Check → Build</strong>. Exported world data is under <code>developer/assets/tiled/worlds/</code>; one world owns the runtime layout at a time. If an export is interrupted, run <strong>Export All Maps and Tiled World</strong> again to recover its journal before preparing. Individual map export remains available.</p>
+<p>Use <strong>Progression</strong> to analyze current placement and preview starting abilities, item counts and flags. Areas, gates and objectives show reachable, blocked or unknown results with explanations. Optional Tiled logical areas prevent internal barriers from being treated as free passage. See <a href="PROGRESSION_ANALYSIS.md">Checking progression</a>. <strong>Project → Analyze Progression</strong> checks the published world. Prepare &amp; Check and export also reject invalid model references; uncertain movement/puzzles remain playtest warnings.</p>
+<h3 id="place-the-three-rooms">Place the three rooms<a class="heading-link" href="#place-the-three-rooms" aria-label="Link to this section">#</a></h3>
+<ol>
+<li>At the title screen, click <strong>Layout Editor</strong>.</li>
+<li>Click <strong>Rescan Rooms</strong>.</li>
+<li>If you want to replace the existing placement, click <strong>Clear</strong>. This removes layout placements, not your Tiled source files.</li>
+<li>Click <code>start_room</code>, <code>middle_room</code>, and <code>goal_room</code> in the Rooms sidebar to add them.</li>
+<li>Drag <code>middle_room</code> beside <code>start_room</code> until right ↔ left door markers align and snap.</li>
+<li>Drag <code>goal_room</code> beside <code>middle_room</code> until their matching markers snap.</li>
+</ol>
+<p>Right connects to left. Top connects to bottom. If rooms will not snap, inspect the painted <code>door_*</code> layers in Tiled, re-export, rebuild, and rescan.</p>
+<h3 id="export-the-layout">Export the layout<a class="heading-link" href="#export-the-layout" aria-label="Link to this section">#</a></h3>
+<p>Adding and moving rooms autosaves Layout Editor working state, but gameplay prefers the published runtime layout. You must explicitly export.</p>
+<ol>
+<li>Click <strong>Export</strong> in Layout Editor.</li>
+<li>Wait for the success/status message to finish.</li>
+<li>Only then click <strong>Menu</strong> to return to the title screen.</li>
+</ol>
+<p>Layout Export publishes resources including:</p>
+<ul>
+<li><code>developer/runtime/layout/world_layout.local.lua</code></li>
+<li>minimap PNG/metadata under <code>developer/assets/minimap/</code></li>
+<li><code>export/developer/runtime/layout/world_layout.lua</code></li>
+</ul>
+<blockquote class="callout important"><strong>Important:</strong> <strong>Menu</strong> only returns to the title screen. It does not export. Skipping Export can make Play Game load an older layout even though Layout Editor appeared to autosave.</blockquote>
+<h2 id="8-play-and-verify-the-first-world">8. Play And Verify The First World<a class="heading-link" href="#8-play-and-verify-the-first-world" aria-label="Link to this section">#</a></h2>
+<ol>
+<li>Click <strong>Play Game</strong>.</li>
+<li>Choose an empty save slot.</li>
+<li>Confirm the player begins in <code>start_room</code>.</li>
+<li>Walk through the opening into <code>middle_room</code>.</li>
+<li>Continue into <code>goal_room</code>.</li>
+<li>Check collision, placed objects, music changes, and room transitions.</li>
+</ol>
+<p>Use an empty slot after changing the starting room or world layout. A valid checkpoint in an older save can correctly override the newly authored start.</p>
+<blockquote class="callout expected-result"><strong>Expected result:</strong> You can traverse all three authored rooms; their art, collision, templates, doors, and room music match Tiled.</blockquote>
+<h2 id="9-common-creator-recipes">9. Common Creator Recipes<a class="heading-link" href="#9-common-creator-recipes" aria-label="Link to this section">#</a></h2>
+<p>All placed objects go on the visible top-level <code>templates</code> layer unless a recipe says otherwise. Select a template instance to edit its properties in Tiled&#x27;s Properties panel. Leave <code>mvtk_template_version</code> unchanged.</p>
+<h3 id="understand-grouped-template-properties">Understand grouped template properties<a class="heading-link" href="#understand-grouped-template-properties" aria-label="Link to this section">#</a></h3>
+<p>Most templates keep the property that identifies the object, such as <code>enemy_type</code>, plus its required ID at the top level. Less-common settings are organized into one-level collapsible groups such as <code>movement_and_attacks</code>, <code>stats</code>, <code>interaction</code>, or <code>feedback_and_visuals</code>. Expand only the group you need; a collapsed group still contributes its template defaults.</p>
+<p>Six tiny placement templates intentionally stay flat because grouping would add more clicks than clarity: <code>solid_box.tx</code>, <code>solid_slope.tx</code>, <code>grapple_box.tx</code>, <code>grapple_slope.tx</code>, <code>one_way_platform.tx</code>, and <code>player_start.tx</code>.</p>
+<p>Newly placed templates already include these grouped properties. No upgrade step is needed. Maps made before template version 2.7 can keep their legacy flat overrides; export, validation, Prepare &amp; Check, and runtime accept both layouts. Avoid manually keeping both spellings of the same field on one object.</p>
+<h3 id="replace-the-player-sprite">Replace the player sprite<a class="heading-link" href="#replace-the-player-sprite" aria-label="Link to this section">#</a></h3>
+<p>The beginner-safe rule is to keep the existing animation IDs and replace art, not controller code.</p>
+<p>The optional source-driven importer uses:</p>
+<ul>
+<li>Template: <code>developer/assets/source/player_template/Mannequin/</code>, a colour-coded figure in every pose the game uses</li>
+<li>Importer: <code>developer/tools/generate_player_sprite_frames.py</code></li>
+<li>Generated frames: <code>developer/assets/sprites/player/</code></li>
+<li>Generated atlas: <code>developer/assets/atlas/player.atlas</code></li>
+</ul>
+<p>Install Pillow for the Python interpreter you use. Copy the <code>Mannequin</code> folder beside itself, for example as <code>MyPlayer</code>, replace its sheets with your art (same folders, file names and layout), then run:</p>
+<div class="code-wrap"><pre><code class="language-bat">py developer/tools/generate_player_sprite_frames.py --source &quot;developer/assets/source/player_template/MyPlayer&quot;</code></pre></div>
+<p>The bundled player art is the <strong>Wayfarer</strong> pack in <code>developer/assets/source/player_template/Wayfarer/</code>. It is drawn by <code>developer/tools/generate_player_model_pack.py</code>; run <code>py developer/tools/generate_player_model_pack.py</code> to redraw it and import it again. A pack can also add the optional sheets <code>Swim/</code>, <code>Swim Idle/</code>, <code>Ledge Hang/</code>, <code>Grapple/</code>, and <code>Climb Idle (facing back of player)/</code>; when one is missing, the importer uses stand-in frames instead. Ladder climbing always uses the <strong>Climb (facing back of player)</strong> sheet.</p>
+<p>Export frames at their intended in-game pixel size and leave Player Size at <strong>1.00 (100%)</strong>. The bundled template packs use 192 × 192 frames with crisp 4 × 4 pixel blocks; in Aseprite, export the original 48 × 48 drawings at 400%. The importer copies these frames at 1:1 by default, so one image pixel is one world pixel at Player Size 1.00.</p>
+<p><strong>Project ▸ Game Settings… ▸ Player art</strong> can import another PNG sheet or a sequence of frames. Leave displayed width and height at <code>0</code> to use the frame dimensions. Explicit dimensions that differ from the frame stretch the model; the preview shows a note. Export frames at in-game size to keep the art at 1:1.</p>
+<p>To import a pack without changing the sprite&#x27;s in-game size and offset, add <code>--source &lt;pack folder&gt; --keep-geometry</code>. A <code>pack.json</code> in the pack folder can set <code>&quot;keep_geometry&quot;: true</code> and other import settings; see the importer&#x27;s header comment.</p>
+<p>Core player animation IDs include <code>idle</code>, <code>walk</code>, <code>run</code>, <code>jump</code>, <code>fall</code>, <code>land</code>, <code>crouch</code>, <code>slide</code>, <code>dash</code>, <code>air_dash</code>, <code>wall_slide</code>, <code>wall_cling</code>, <code>attack</code>, <code>attack_alt</code>, <code>shoot</code>, <code>hurt</code>, <code>die</code>, and <code>spawn</code>. Optional imported IDs can be remapped through <code>Config.player.animation_overrides</code> in the commented <code>developer/config/game_config.lua</code>; do not edit <code>mvtk/animation</code>.</p>
+<p>The importer&#x27;s <code>--target-height</code> and <code>--upscale</code> options are explicit resampling options for art drawn at another size. Prefer exporting at the intended in-game size. Player Size below stretches the existing art for size experiments.</p>
+<h3 id="resize-the-player">Resize the player<a class="heading-link" href="#resize-the-player" aria-label="Link to this section">#</a></h3>
+<p>Each player model&#x27;s files define its normal in-game size. Keep Player Size at <strong>1.00 (100%)</strong> for art exported at that size. Change the single <code>player_scale</code> value to experiment with a larger or smaller body and model.</p>
+<ol>
+<li>Stop the game and open <strong>Project ▸ Game Settings… ▸ Player</strong>. Set <strong>Player size (1 = 100%)</strong> between <code>1/7</code> and <code>8</code> using its numeric field.</li>
+<li>Leave <code>scale_movement = true</code> to scale speeds, jump height, gravity, and traversal ranges with the body. Set it to <code>false</code> when you want to retune those movement values by hand.</li>
+<li>Click <strong>Save</strong> in Game Settings to write the scale and rebake the player sprite size and all player collision resources. If you edited the config file directly, stop the game and run <strong>Project ▸ Prepare &amp; Check</strong> instead.</li>
+<li>Run a normal <strong>Build</strong>, then use a fresh playtest to check floors, walls, ladders, one-way platforms, low roll/slide gaps, melee reach, and jump feel.</li>
+</ol>
+<p>Values such as collider halves, speeds, jump height, gravity, and ranges in <code>player_settings.lua</code> and in the Game Settings fields are world-pixel numbers at Player Size 1.00. With the <code>scale_movement = true</code> default, runtime applies <code>player_scale</code> exactly once to movement and traversal values. Changing the config value does not require <strong>Reload Editor Scripts</strong>, but direct config edits still require the explicit <strong>Prepare &amp; Check</strong> bake.</p>
+<h3 id="add-custom-enemy-art-and-place-an-enemy">Add custom enemy art and place an enemy<a class="heading-link" href="#add-custom-enemy-art-and-place-an-enemy" aria-label="Link to this section">#</a></h3>
+<p><strong>Recommended: link the original art from Tiled.</strong> Keep one snake_case folder per skin outside the Defold project, for example <code>enemies/moss_bug/</code> beside your original maps.</p>
+<ol>
+<li>Add individual numbered PNG frames to that folder, using <code>&lt;state&gt;_&lt;number&gt;.png</code>. Every linked skin needs <code>idle_01.png</code>; additional states can use <code>walk_01.png</code>, <code>walk_02.png</code>, <code>attack_01.png</code>, <code>hurt_01.png</code>, and <code>death_01.png</code>.</li>
+<li>Make art face right; the runtime flips it when moving left. Keep the frames for each state the same size. Slice sprite strips or sheets into individual frames before using this workflow.</li>
+<li>In Tiled, place <code>templates/enemies/enemy.tx</code>. Set its optional <strong>art</strong> file property to any numbered frame in the original folder, such as <code>enemies/moss_bug/idle_01.png</code>. Export copies numbered frames from that folder. The folder name supplies the skin ID.</li>
+<li>Keep <code>enemy_type=default</code> to use that ID as the enemy type. To give the art an existing preset&#x27;s behavior, choose that preset in <code>enemy_type</code> instead: for example, <code>enemy_type=bat_enemy</code> with a frame from <code>ghost_enemy/</code> keeps bat stats, movement, attacks, audio, and animation choices while using ghost art.</li>
+<li>Export the room, then run <strong>Project ▸ Prepare &amp; Check → Build</strong> in Defold. Export copies the skin into <code>developer/assets/enemies/&lt;skin_id&gt;/</code>; Prepare &amp; Check syncs it and bakes each enemy into the room collection. Select the enemy there to inspect its linked art and instance settings.</li>
+</ol>
+<p>After editing, adding, or removing original frames, export the room again, then Prepare &amp; Check and Build. Links into the Defold project are refused; use an external original or the folder workflow below. If two original folders have the same skin ID, the exporter keeps the existing project copy and warns. Give unrelated skins different folder names.</p>
+<p><strong>Folder workflow:</strong> dropping art straight into the project still works. Create <code>developer/assets/enemies/moss_bug/</code> with individual PNG frames. This workflow also accepts single-state names such as <code>idle.png</code>; each skin needs <code>idle.png</code> or <code>idle_01.png</code>. Run <strong>Project ▸ Prepare &amp; Check</strong>, then choose <code>moss_bug</code> from Tiled&#x27;s <code>enemy_type</code> dropdown. Leave <strong>art</strong> empty, export, prepare, and build.</p>
+<p>Only synced folder IDs appear in Tiled&#x27;s <code>enemy_type</code> dropdown. When an ID matches a preset in <code>developer/config/enemy_types.lua</code>, that preset supplies its behavior. A new ID inherits starter defaults until you add a matching, commented preset. The toolkit ships only the <code>default/</code> fallback skin; sample and training worlds bring their own art. Keep <code>default/</code> unless you supply another synced default.</p>
+<p>After a toolkit update, fully restart Tiled to load the exporter and template changes. Restart Defold after editor-module changes, then run <strong>Project ▸ Reload Editor Scripts → Prepare &amp; Check → Build</strong>. Run Prepare &amp; Check again before Export Game.</p>
+<h3 id="tune-enemy-movement-and-attacks-in-tiled">Tune enemy movement and attacks in Tiled<a class="heading-link" href="#tune-enemy-movement-and-attacks-in-tiled" aria-label="Link to this section">#</a></h3>
+<p>Select the placed enemy and start with <code>enemy_type</code>, the first custom property. It chooses the art, stats, animations, movement, and attacks supplied by that enemy&#x27;s preset. In most cases that is the only property you need to change. Expand <code>movement_and_attacks</code> only when this placement should behave differently; the <code>stats</code>, <code>rewards</code>, and <code>tuning</code> groups hold less-common overrides. A group&#x27;s <code>-1</code> numeric defaults inherit the selected type instead of replacing it.</p>
+<p>The behavior fields are independent per-instance overrides:</p>
+<ul>
+<li><code>movement=type_default</code> keeps the selected enemy type&#x27;s movement.</li>
+<li><code>attack_pattern=type_default</code> and <code>attack_pattern2=type_default</code> keep its attacks. Changing only movement no longer removes a preset attack, and changing only an attack no longer stops preset movement.</li>
+<li><code>attack_pattern=disabled</code> deliberately removes the inherited attack in that slot while retaining contact damage. If a preset uses two attacks, set both attack slots to <code>disabled</code>. Use <code>stationary</code> when an enemy should stop moving without losing its configured attack.</li>
+<li>Older exported values <code>none</code> and <code>inherit</code> remain aliases for <code>type_default</code>. Older movement names such as <code>patrol</code> and <code>chase</code> still load, but the explicit choices below make ground/air behavior clearer.</li>
+</ul>
+<p>Common movement choices are:</p>
+<div class="table-wrap" role="region" aria-label="Scrollable table">
+<table>
+<thead><tr>
+<th>Movement</th>
+<th>Result</th>
+</tr></thead>
+<tbody>
+<tr>
+<td><code>ground_patrol</code></td>
+<td>Walks back and forth around its placement point.</td>
+</tr>
+<tr>
+<td><code>ground_patrol_chase</code></td>
+<td>Patrols, chases a detected player on the ground, then returns after losing aggro.</td>
+</tr>
+<tr>
+<td><code>ground_chase</code></td>
+<td>Chases a detected player horizontally without leaving the ground.</td>
+</tr>
+<tr>
+<td><code>flying_chase</code></td>
+<td>Chases in both horizontal and vertical directions.</td>
+</tr>
+<tr>
+<td><code>vertical_patrol</code></td>
+<td>Moves up and down around the placement point.</td>
+</tr>
+<tr>
+<td><code>hover</code></td>
+<td>Uses the configured aerial hover/patrol range.</td>
+</tr>
+<tr>
+<td><code>flee</code></td>
+<td>Moves away from a detected player.</td>
+</tr>
+<tr>
+<td><code>zigzag</code></td>
+<td>Moves in a repeating zigzag.</td>
+</tr>
+<tr>
+<td><code>stationary</code></td>
+<td>Does not move; configured attacks still run.</td>
+</tr>
+<tr>
+<td><code>ghost_float</code></td>
+<td>Uses the ghost&#x27;s floating follow and close-range rise behavior.</td>
+</tr>
+</tbody></table>
+</div>
+<p>Ground movers stop at drops, and patrollers turn back there. The ledge settings in <code>developer/config/enemy_defaults.lua</code> are measured in tiles of your project&#x27;s tile size, so they work at any tile size. <code>stop_at_ledges</code> turns the check on. <code>ledge_margin_tiles</code> sets how close the enemy&#x27;s centre gets to an edge (a quarter tile). <code>ledge_probe_depth_tiles</code> sets how far below the centre it looks for floor; keep it deeper than your tallest enemy&#x27;s feet. <code>ledge_step_tolerance_tiles</code> lets enemies walk over small steps down (an eighth of a tile). Per enemy type in <code>developer/config/enemy_types.lua</code>, you can set <code>stop_at_ledges</code>, or <code>ledge_margin</code> in pixels for an enemy that is unusually wide or narrow for your tiles. Ground movers never move up or down to follow the floor, so a downhill slope that drops more than the step tolerance within the margin counts as a drop: the enemy stops at the top of it.</p>
+<p>Use <code>detection_range</code> to set the aggro radius and <code>chase_speed</code> for the base chase speed in pixels per second. A value of <code>0</code> inherits the enemy type&#x27;s value. A positive <code>chase_speed_mult</code> multiplies the resolved chase speed; <code>0</code> inherits the preset multiplier. Keep values proportional to your art scale and test one enemy before applying them to a whole room.</p>
+<p>The shipped enemy types are already paired with their intended behavior:</p>
+<div class="table-wrap" role="region" aria-label="Scrollable table">
+<table>
+<thead><tr>
+<th>Enemy type</th>
+<th>Preset movement</th>
+<th>Preset attack</th>
+</tr></thead>
+<tbody>
+<tr>
+<td><code>bat_enemy</code></td>
+<td>Ceiling ambush and continuous aerial darts</td>
+<td><code>swoop_attack</code></td>
+</tr>
+<tr>
+<td><code>ghost_enemy</code></td>
+<td><code>ghost_float</code></td>
+<td>Contact damage</td>
+</tr>
+<tr>
+<td><code>mummy_enemy</code></td>
+<td>Ground chase</td>
+<td><code>melee_swipe</code></td>
+</tr>
+<tr>
+<td><code>tumbleweed_enemy</code></td>
+<td>Ground chase</td>
+<td><code>dash_attack</code></td>
+</tr>
+<tr>
+<td><code>cactus_enemy</code></td>
+<td>Stationary</td>
+<td><code>shoot_circle</code></td>
+</tr>
+</tbody></table>
+</div>
+<p>After changing enemy properties, export the room again and run <strong>Project ▸ Prepare &amp; Check</strong>. Validation reports the effective movement and attacks for each placed enemy and warns about conflicting combinations. Treat those reports as the final behavior contract—the <code>.lua</code> export and baked room collection are generated outputs, so do not repair them by hand.</p>
+<h3 id="keep-dash-difficulty-and-first-use-hints">Keep Dash, difficulty and first-use hints<a class="heading-link" href="#keep-dash-difficulty-and-first-use-hints" aria-label="Link to this section">#</a></h3>
+<p>On <strong>Project ▸ Game Settings… ▸ Abilities</strong>, <strong>Dash</strong> unlocks the ground slide-to-run movement. Enable <strong>Slide</strong> too. Hold the <strong>Slide / Air Dash</strong> action through the end of a ground slide to continue at <strong>Run Speed</strong>; release it to return to walking. Air Dash uses that same action while airborne and has its own unlock. The action can be rebound in Settings. Baseline movement tuning lives in <code>developer/config/player_settings.lua</code>, including <code>slide_to_run</code>.</p>
+<p>Choose the game&#x27;s starting difficulty with <code>current</code> in <code>developer/config/difficulty_settings.lua</code>. Its named profiles tune incoming and outgoing damage; <strong>normal</strong> uses 1.0 for both. Keep those multipliers positive. A placed enemy&#x27;s <strong>Difficulty Override</strong> can choose a named profile for that enemy&#x27;s health and damage; empty inherits its defaults. This is file and Tiled configuration, and is not a Game Settings difficulty control.</p>
+<p>Edit <code>developer/config/tutorial_popups.lua</code> for first-use popups. The <code>first_jump</code>, <code>first_dash</code> and <code>opened_map</code> events run on an accepted Jump, Slide / Air Dash or World Map press. Each popup&#x27;s <code>trigger_flag</code> prevents repeat display and is saved with normal story flags. Use <code>title</code> and <code>body</code> for literal wording, or explicit <code>title_key</code> / <code>body_key</code> for localization; missing translations fall back to the literal text. Mention actions rather than fixed keys so the hint still makes sense after rebinding.</p>
+<h3 id="add-a-collectible-key-and-chest">Add a collectible, key, and chest<a class="heading-link" href="#add-a-collectible-key-and-chest" aria-label="Link to this section">#</a></h3>
+<ul>
+<li>Place <code>collectible</code>; choose <code>collectible_type</code> and set <code>amount</code>.</li>
+<li>Place <code>key</code>; choose a <code>key_id</code> such as the key used by your door/gate.</li>
+<li>Place <code>chest</code>; give it a unique <code>chest_id</code>, set <code>contents</code> such as <code>currency:25</code>, and optionally set <code>locked</code> plus <code>requires_key</code>.</li>
+</ul>
+<p>Prepare &amp; Check bakes every placed chest into an editable gameobject in the room collection.</p>
+<h3 id="add-an-ability-pickup-and-gate">Add an ability pickup and gate<a class="heading-link" href="#add-an-ability-pickup-and-gate" aria-label="Link to this section">#</a></h3>
+<ol>
+<li>Place <code>ability_pickup</code> and select the ability it grants.</li>
+<li>Place <code>gate</code> where passage should be blocked.</li>
+<li>Give the gate a unique <code>gate_id</code>.</li>
+<li>Choose a <code>gate_type</code> and set the matching requirement: <code>required_ability</code>, <code>required_key</code>, <code>required_item</code>, or <code>required_action</code>.</li>
+<li>Leave <code>persist_unlock=true</code> when the gate should remain open after success.</li>
+</ol>
+<p>For a simple physical locked door, use <code>locked_door</code> instead. Set a unique <code>door_id</code> and one of <code>require_ability</code>, <code>require_key</code>, or <code>require_item</code>.</p>
+<h3 id="add-checkpoints-save-points-and-teleporters">Add checkpoints, save points, and teleporters<a class="heading-link" href="#add-checkpoints-save-points-and-teleporters" aria-label="Link to this section">#</a></h3>
+<ul>
+<li><code>checkpoint</code>: set a unique <code>checkpoint_id</code>; touching it changes respawn location.</li>
+<li><code>save_point</code>: set a unique <code>save_id</code>; choose whether it heals/restores energy and requires interaction.</li>
+<li><code>teleporter</code>: create a pair with unique <code>teleporter_id</code> values and matching <code>pair_id</code>, or set an explicit <code>target_id</code>. Keep IDs exact and case-consistent.</li>
+</ul>
+<h4 id="death-and-saves">Death and saves<a class="heading-link" href="#death-and-saves" aria-label="Link to this section">#</a></h4>
+<p>Death reloads the last saved world and inventory. With <strong>Death drop</strong> on, the loss is calculated from the restored currency, never from unsaved pickups. The slot immediately records the reduced currency and one recoverable drop; quitting and choosing Continue keeps that penalty. The checkpoint location and other saved items, flags and abilities keep their saved values.</p>
+<p>The drop waits at the last safe grounded position in the death room and returns its currency when collected. If no trustworthy safe ground was recorded there, the game waives that death&#x27;s loss and keeps any earlier drop. Dying again with a valid safe position replaces the previous drop; its old amount is lost. A zero-loss result clears the previous drop.</p>
+<p>In <code>developer/config/game_config.lua</code>, <code>progression.death</code> also offers <code>max_loss</code> (0 means no extra cap), <code>drop_lifetime</code> (0 lasts until collection or replacement), <code>drop_pickup_radius</code> in world pixels and <code>drop_sound</code>. The marker follows room streaming and survives a save/load round trip. Collection needs no immediate save: another death before saving restores the reduced currency and drop together. Place save points when you want recovered currency and current progress committed to the slot.</p>
+<h3 id="add-hazards-secrets-and-breakable-walls">Add hazards, secrets, and breakable walls<a class="heading-link" href="#add-hazards-secrets-and-breakable-walls" aria-label="Link to this section">#</a></h3>
+<ul>
+<li><code>hazard</code>: choose <code>hazard_type</code>, damage, interval, and whether it is instant kill or retractable.</li>
+<li><code>secret</code>: give it a unique <code>secret_id</code>, choose how it reveals, and optionally set a reward.</li>
+<li><code>breakable_wall</code>: give it a unique <code>wall_id</code>, choose health/required ability, and optionally link <code>reveals_secret</code> to a secret ID.</li>
+<li><code>timed_door</code>: use for a door controlled by a duration or trigger rather than inventory progression.</li>
+</ul>
+<p>Template rectangles define active areas. Resize them in Tiled to cover the intended region.</p>
+<h3 id="add-simple-traversal">Add simple traversal<a class="heading-link" href="#add-simple-traversal" aria-label="Link to this section">#</a></h3>
+<ul>
+<li><code>one_way_platform</code>: a passthrough platform area.</li>
+<li><code>moving_platform</code>: choose motion type, speed, distance, wait time, and loop mode.</li>
+<li><code>elevator</code> + <code>elevator_node</code>: build a persistent vertical cabin that can cross streamed rooms. Follow the dedicated workflow below; this is not a tall single-room moving platform.</li>
+<li><code>conveyor</code>: choose direction and speed.</li>
+<li><code>crumble_platform</code>: tune crumble and respawn timing.</li>
+<li><code>bounce_pad</code>: tune the launch force.</li>
+<li><code>ladder</code>: resize the rectangle over the climbable art. If the climb animation looks off-center for your rig, tune <code>climb_offset_x</code> instead of moving the rectangle; it only applies when <code>snap_to_center=true</code> and uses unscaled world pixels.</li>
+<li><code>wall_jump_surface</code>: resize over the wall that permits wall behavior.</li>
+<li><code>water_volume</code>: resize the region and tune swim, current, damage, drag, and oxygen properties. <code>buoyancy</code> is a 0–1 factor that becomes an upward cap of 0–200 px/s, <code>current_strength</code> is px/s, and <code>water_drag</code> is per-second drift retention (0–1). Swimming requires the <code>swim</code> ability unless <code>game_config.player.swim.require_ability = false</code>.</li>
+</ul>
+<h4 id="place-a-grapple-point-or-pushable-block">Place a grapple point or pushable block<a class="heading-link" href="#place-a-grapple-point-or-pushable-block" aria-label="Link to this section">#</a></h4>
+<p>Place <strong>Navigation ▸ Grapple Point</strong> on the top-level <code>templates</code> object layer for a small hook target. It bakes as an editable static <code>grapple</code> collider, with no script overrides. Pair it with visible anchor art. See <a href="GRAPPLING.md">Grappling</a> for surfaces, exact shapes and hook-target tuning.</p>
+<p>Place <strong>Physics ▸ Pushable Block</strong>, resize its rectangle and paint its art. Walk against it to push. Hold <strong>Interact</strong> beside it to grab, then move toward or away to push or pull; release Interact to let go. Set <code>mass</code> and <code>gravity_scale</code> for the body, and <code>move_embedded_tiles</code> to move captured art with it. Use a stable <code>block_id</code> when you need identity; an empty value is generated from the placed object. To hold a pressure plate down, set the plate&#x27;s <code>allow_world</code> to true so the block&#x27;s <code>world</code> body can activate it. Both objects become gameobjects in the room collection.</p>
+<h4 id="water-swimming-troubleshooting">Water &amp; swimming troubleshooting<a class="heading-link" href="#water-swimming-troubleshooting" aria-label="Link to this section">#</a></h4>
+<p>On water entry, use the console output to identify the active path: <code>Trigger water gate</code> only (without <code>Water entry swim gate</code> or <code>[WATER] Entity entered water</code>) means a trigger armed no swim state; both gate lines with <code>has_swim=false</code> mean the swim ability is locked and the intended sink-and-lock gate is active; both lines with <code>has_swim=true</code> mean swimming is armed and any remaining issue is movement tuning. Current builds also print <code>[SWIM] armed ...</code> for every source, including bare <code>water</code> triggers; paste that line into a bug report.</p>
+<p>For a first game, prefer horizontal/vertical moving platforms. <code>path_name</code> requires a correctly named Tiled polyline path and is an advanced option.</p>
+<h4 id="build-an-elevator-across-streamed-rooms">Build an elevator across streamed rooms<a class="heading-link" href="#build-an-elevator-across-streamed-rooms" aria-label="Link to this section">#</a></h4>
+<p>Use one <code>elevator</code> rectangle for the cabin and one <code>elevator_node</code> point for every landing or room-seam waypoint. The cabin is world-owned while moving; adjacent room collections can unload normally once the trip ends.</p>
+<ol>
+<li>In the lower/start room, paint the cabin itself on the <code>environment</code> tile layer. Snap its outer edges to the tile grid.</li>
+<li>Place the <code>elevator</code> rectangle exactly around those tiles. Set a globally unique <code>elevator_id</code>, such as <code>mine_lift_a</code>, and set <code>start_node_id</code> to the node where this painted cabin begins.</li>
+<li>Put an <code>elevator_node</code> point at the cabin floor, horizontally centered on the shaft. Give it the same <code>elevator_id</code>, a unique <code>node_id</code>, <code>node_kind=landing</code>, and <code>stop=bottom</code>.</li>
+<li>In the upper room, place the matching centered point with the same <code>elevator_id</code>, another unique <code>node_id</code>, <code>node_kind=landing</code>, and <code>stop=top</code>.</li>
+<li>Paint a vertical <code>door</code> opening between each connected room pair. The lower room must connect upward and the upper room downward. Make the opening at least as wide as the cabin plus <code>shaft_clearance</code>. When a pair has multiple openings, the validator selects the opening aligned closest to the shaft.</li>
+<li>For a shaft through additional rooms, add a centered <code>node_kind=pass_through</code> / <code>stop=none</code> node in each intermediate room. Keep route nodes strictly bottom-to-top, and do not leave and later re-enter the same room along one route.</li>
+<li>Run <strong>Prepare &amp; Check</strong>, then rescan/connect the rooms in <strong>Layout Editor</strong> and click <strong>Export</strong>. Run <strong>Prepare &amp; Check</strong> once more, then <strong>Build</strong> so validation uses the final exported room positions and doors.</li>
+</ol>
+<p>Prepare &amp; Check validates the route identities and cabin art together, cuts the cabin tiles out of the source room tilemap, and creates a persistent tilemap, collision child, collection, factory, and generated route index. Prepare &amp; Check then resolves that index against the exported layout and rejects non-adjacent rooms, one-way or horizontal links, misaligned shafts, and openings that are too narrow. At runtime the elevator pins the ordered route while travelling, commits room ownership exactly at each door seam, and gives the camera a temporary shaft-scoped focus. It releases both streaming and camera leases on arrival, cancel, player death, reset, or a dead cabin owner.</p>
+<p>Hidden <code>elevator</code> and <code>elevator_node</code> objects are excluded, including markers inside a hidden parent group. This is useful for parking an unfinished draft route, but never hide a node that a visible controller names as its <code>start_node_id</code>; Prepare &amp; Check reports that reference as an error. Generated cabin assets live only in reserved <code>_mvtk_elevators/</code> subdirectories below the generated, collections, and factories folders. Prepare &amp; Check reconciles those folders against the current manifest, so deleting or renaming an elevator does not leave an old cabin factory behind.</p>
+<p>Choose <code>activation_mode=on_board</code> for the usual Metroidvania behavior; <code>require_interact=true</code> changes that mode into a button press while the player is aboard. <code>automatic</code> continuously shuttles between the two landings (and, when <code>require_rider=true</code>, only schedules trips while at least one player collider is aboard). <code>trigger_only</code> moves only when its <code>elevator_id</code> or optional <code>trigger_id</code> receives an elevator call. The two-terminal route is always ping-pong. With the persistence defaults enabled, only completed bottom/top landings are saved and restored; an interrupted mid-shaft position is never written to the save.</p>
+<p>Keep <code>floor_offset</code> equal to the rectangle height when the walking surface is the cabin&#x27;s top edge (the 32-pixel template defaults already match). If you resize the cabin vertically, update this value too; use a smaller value only when the walkable floor is intentionally inside the captured art. The <code>co_y_offset</code> and <code>sensor_y_offset</code> fields are fine collision-tuning controls, not substitutes for <code>floor_offset</code>.</p>
+<p>The baked landing marker receives <code>elevator_doors_closing</code>, <code>elevator_departed</code>, <code>elevator_incoming</code>, <code>elevator_arrived</code>, <code>elevator_doors_opening</code>, and <code>elevator_trip_completed</code> messages while its room is loaded. Those are extension hooks for a custom animated shaft-door prefab; the elevator templates themselves use the painted shaft opening and do not create or permanently unlock an inventory/ability door.</p>
+<p>If generation stops, fix the first reported route error in Tiled. Common causes are an off-grid cabin rectangle, no painted tiles under it, duplicate IDs, missing bottom/top stops, a node that is not at the cabin centerline, a start node in another room, non-reciprocal up/down room links, or a shaft opening narrower than the cabin. Do not hand-edit <code>elevators_generated.lua</code> or any generated cabin resource, including files below <code>_mvtk_elevators/</code>.</p>
+<p>Tune <code>climb_offset_x</code> in small 8-16 px steps and keep its absolute value within roughly half the ladder rectangle&#x27;s width. The player&#x27;s collision body moves with the offset, so a large value can push it into nearby walls or outside the trigger box; after jumping off, the player must re-enter that box to grab the ladder again. If the rig is off-center on every ladder, fix the art or an <code>animation_overrides</code> setting and reserve this property for individual spots.</p>
+<h3 id="build-a-compact-boss-encounter">Build a compact boss encounter<a class="heading-link" href="#build-a-compact-boss-encounter" aria-label="Link to this section">#</a></h3>
+<p>The supported boss surface contains exactly five templates:</p>
+<ol>
+<li>Place a <code>boss_arena</code> rectangle over the fight space. Give it an <code>arena_id</code>, such as <code>guardian_arena</code>, and choose camera/locking behavior.</li>
+<li>Place one <code>boss</code> point inside. Give it a <code>boss_id</code>, such as <code>guardian</code>, and set its <code>arena_id</code> to <code>guardian_arena</code>.</li>
+<li>Place <code>boss_phase</code> point objects for authored boss phases. Give each the same <code>boss_id</code>/<code>arena_id</code>, set <code>phase</code>, health range, attacks, and movement profile.</li>
+<li>Optionally place <code>boss_phase_trigger</code> rectangles when entering an area should force a boss phase.</li>
+<li>Optionally place <code>boss_weak_point</code> rectangles and link them with the same <code>boss_id</code>.</li>
+</ol>
+<p>Use consistent IDs across every object. Start with one arena, one boss, and one boss phase. Add triggers/weak points only after the basic encounter validates. <code>boss_arena</code> supplies the arena rectangle and entry-lock behavior; do not look for old arena-boundary, hazard-spawner, or add-spawner templates.</p>
+<p>Boss movement and charge difficulty is authored directly on those placed objects:</p>
+<ul>
+<li>On <code>boss</code>, expand <code>attack_tuning</code> to set the base <code>chase_speed</code>, <code>charge_speed</code>, <code>charge_distance</code>, <code>charge_telegraph_time</code>, <code>charge_duration</code>, <code>charge_cooldown</code>, and <code>charge_recovery</code>.</li>
+<li>On <code>boss_phase</code>, use <code>attack_sequence</code> for the boss phase attack list, attack interval/range, and optional charge overrides. Use <code>movement</code> for the boss phase <code>chase_speed</code> and <code>speed_multiplier</code>. A boss phase override wins over the boss value; the speed multiplier is then applied to movement and charge speed.</li>
+<li>On <code>boss_arena</code>, expand <code>encounter</code> and set <code>charge_edge_padding</code> to keep a charge endpoint away from the rectangle&#x27;s left and right edges.</li>
+</ul>
+<p>The optional tuning fields default to <code>-1</code>, meaning <strong>inherit</strong>. Leave them at <code>-1</code> when that object should use its boss, preset, or attack-pattern value. After changing any of these properties, save the TMX, run <strong>File ▸ Export Current Room</strong>, and run <strong>Project ▸ Prepare &amp; Check</strong> in Defold.</p>
+<p>Leave the map&#x27;s room-wide <code>room_zone</code> at <code>exploration</code> or <code>platforming</code>. Do not select the old <code>boss_arena</code> room preset: it can lock the camera from the room&#x27;s entry position. The placed <code>boss_arena</code> rectangle is the supported owner of the fight&#x27;s lock and camera behavior.</p>
+<h3 id="add-npcs-signs-hints-and-dialogue">Add NPCs, signs, hints, and dialogue<a class="heading-link" href="#add-npcs-signs-hints-and-dialogue" aria-label="Link to this section">#</a></h3>
+<ul>
+<li><code>sign</code>: use inline <code>title</code>/<code>text</code> for the simplest readable sign.</li>
+<li><code>hint_stone</code>: use for short contextual guidance.</li>
+<li><code>npc</code>: set a stable <code>npc_id</code>, display name, and inline dialogue or a <code>dialogue_id</code>.</li>
+<li><code>dialogue_trigger</code>: resize the trigger area and set the <code>dialogue_id</code>; tune one-shot/flag behavior if needed.</li>
+<li><code>lore_item</code>: use for collectible story text.</li>
+</ul>
+<p>Long reusable dialogue entries live in the commented <code>developer/config/narrative/dialogues.lua</code>. Use these entries for conversations, readable text, and story flags.</p>
+<h3 id="add-switches-and-stations">Add switches and stations<a class="heading-link" href="#add-switches-and-stations" aria-label="Link to this section">#</a></h3>
+<ul>
+<li>Link <code>pressure_plate</code> and <code>lever</code> to supported targets with matching IDs.</li>
+<li>Use <code>health_station</code> and <code>energy_station</code> for refill interactions.</li>
+<li>Use <code>map_station</code> to reveal/update map information.</li>
+</ul>
+<p>Start with unique lowercase snake_case IDs. Copy-pasted objects must not keep an ID that is supposed to be unique.</p>
+<h3 id="add-ambience-particles-camera-and-screen-effects">Add ambience, particles, camera, and screen effects<a class="heading-link" href="#add-ambience-particles-camera-and-screen-effects" aria-label="Link to this section">#</a></h3>
+<ul>
+<li>Set room-wide music with the map <code>music</code> file property.</li>
+<li><code>music_trigger</code> changes registered tracks inside a rectangle.</li>
+<li><code>ambience_zone</code> blends a registered ambient sound inside a rectangle.</li>
+<li><code>particle_emitter</code> plays a registered effect at a point/area.</li>
+<li><code>camera_zone</code> changes camera follow, locks, focus, zoom, or fitting within its rectangle.</li>
+<li><code>screen_effect_zone</code> applies the supported screen treatment while the player is inside.</li>
+<li><code>map_marker</code> adds a point of interest to the map.</li>
+</ul>
+<p>Music files go under <code>developer/assets/music/</code> after sync. Sound effects and ambient files are registered through the project&#x27;s audio/config resources. Use <strong>Prepare &amp; Check</strong> after changing music; music synchronization is included.</p>
+<h3 id="light-a-dark-room">Light a dark room<a class="heading-link" href="#light-a-dark-room" aria-label="Link to this section">#</a></h3>
+<p>Set the map&#x27;s <code>darkness</code> float to the desired overlay strength: 0 is clear, and 0.9 is the darkest supported value. Rooms without the property use <code>visual.default_room_darkness</code> in <code>developer/config/game_config.lua</code>.</p>
+<p>Place <strong>Environment ▸ Light Source</strong> on the top-level <code>templates</code> object layer. Set its radius, intensity and enabled state; <code>track_position</code> is useful if you later move its authored gameobject. Place <strong>Interaction ▸ Torch</strong> for a light the player can switch with Interact. Choose <code>starts_lit</code>, <code>require_interact</code> and <code>allow_extinguish</code>, plus its light radius/intensity. Paint visible torch art in Tiled. Optional labels, sound IDs and <code>set_flag</code> can give it room-specific feedback. Empty light/torch IDs are generated from the placed objects. Export and Prepare &amp; Check bakes each light and torch into an editable gameobject in its room.</p>
+<h3 id="change-the-ui-theme-without-framework-code">Change the UI theme without framework code<a class="heading-link" href="#change-the-ui-theme-without-framework-code" aria-label="Link to this section">#</a></h3>
+<p>Begin with the commented creator configs:</p>
+<ul>
+<li><code>developer/config/ui_theme.lua</code> for colors, fonts, and spacing.</li>
+<li><code>developer/config/hud_layout.lua</code> for HUD positions/sizes.</li>
+<li><code>developer/config/settings_defaults.lua</code> for default user settings.</li>
+</ul>
+<p>Build after edits. Avoid editing GUI scripts or <code>mvtk/</code> until you intentionally leave the no-code creator workflow.</p>
+<h2 id="10-complete-supported-template-catalog">10. Complete Supported Template Catalog<a class="heading-link" href="#10-complete-supported-template-catalog" aria-label="Link to this section">#</a></h2>
+<p>The live Microvania catalog contains <strong>57 templates in 10 categories</strong>. The <code>.tx</code> files are the source of truth. The generated detailed reference at <a href="../tiled/templates/README.html">MVTKINLINETOKEN1END</a> lists every property, default, and description; this master table tells beginners what each object is for.</p>
+<h3 id="abilities-1">Abilities — 1<a class="heading-link" href="#abilities-1" aria-label="Link to this section">#</a></h3>
+<div class="table-wrap" role="region" aria-label="Scrollable table">
+<table>
+<thead><tr>
+<th>Template</th>
+<th>Purpose</th>
+</tr></thead>
+<tbody>
+<tr>
+<td><code>ability_pickup</code></td>
+<td>Grants a configured movement/combat ability when collected.</td>
+</tr>
+</tbody></table>
+</div>
+<h3 id="audio-visual-3">Audio/visual — 3<a class="heading-link" href="#audio-visual-3" aria-label="Link to this section">#</a></h3>
+<div class="table-wrap" role="region" aria-label="Scrollable table">
+<table>
+<thead><tr>
+<th>Template</th>
+<th>Purpose</th>
+</tr></thead>
+<tbody>
+<tr>
+<td><code>ambience_zone</code></td>
+<td>Plays/blends registered environmental ambience in a rectangle.</td>
+</tr>
+<tr>
+<td><code>music_trigger</code></td>
+<td>Changes registered music when the player enters a rectangle.</td>
+</tr>
+<tr>
+<td><code>particle_emitter</code></td>
+<td>Plays a configured particle effect, once or looping.</td>
+</tr>
+</tbody></table>
+</div>
+<h3 id="bosses-5">Bosses — 5<a class="heading-link" href="#bosses-5" aria-label="Link to this section">#</a></h3>
+<div class="table-wrap" role="region" aria-label="Scrollable table">
+<table>
+<thead><tr>
+<th>Template</th>
+<th>Purpose</th>
+</tr></thead>
+<tbody>
+<tr>
+<td><code>boss</code></td>
+<td>Places the boss identity, stats, visuals, rewards, and encounter link.</td>
+</tr>
+<tr>
+<td><code>boss_arena</code></td>
+<td>Defines arena bounds, entry lock, camera, phases, and battle music.</td>
+</tr>
+<tr>
+<td><code>boss_phase</code></td>
+<td>Authors one boss phase&#x27;s attacks, movement, health range, and transition.</td>
+</tr>
+<tr>
+<td><code>boss_phase_trigger</code></td>
+<td>Forces a linked boss phase when its rectangle is triggered.</td>
+</tr>
+<tr>
+<td><code>boss_weak_point</code></td>
+<td>Adds a linked vulnerable/damage-multiplier region.</td>
+</tr>
+</tbody></table>
+</div>
+<h3 id="collectibles-5">Collectibles — 5<a class="heading-link" href="#collectibles-5" aria-label="Link to this section">#</a></h3>
+<div class="table-wrap" role="region" aria-label="Scrollable table">
+<table>
+<thead><tr>
+<th>Template</th>
+<th>Purpose</th>
+</tr></thead>
+<tbody>
+<tr>
+<td><code>chest</code></td>
+<td>Places a persistent chest with inline contents and optional key requirement.</td>
+</tr>
+<tr>
+<td><code>collectible</code></td>
+<td>Places currency, health, energy, and other configured pickups.</td>
+</tr>
+<tr>
+<td><code>key</code></td>
+<td>Places a key collectible with a specific key ID.</td>
+</tr>
+<tr>
+<td><code>lore_item</code></td>
+<td>Places an interactable/collectible story item.</td>
+</tr>
+<tr>
+<td><code>map_fragment</code></td>
+<td>Places a collectible that reveals map progress/content.</td>
+</tr>
+</tbody></table>
+</div>
+<h3 id="enemies-1">Enemies — 1<a class="heading-link" href="#enemies-1" aria-label="Link to this section">#</a></h3>
+<div class="table-wrap" role="region" aria-label="Scrollable table">
+<table>
+<thead><tr>
+<th>Template</th>
+<th>Purpose</th>
+</tr></thead>
+<tbody>
+<tr>
+<td><code>enemy</code></td>
+<td>Places a synced enemy type with per-instance movement/stat/drop overrides.</td>
+</tr>
+</tbody></table>
+</div>
+<h3 id="environment-10">Environment — 10<a class="heading-link" href="#environment-10" aria-label="Link to this section">#</a></h3>
+<div class="table-wrap" role="region" aria-label="Scrollable table">
+<table>
+<thead><tr>
+<th>Template</th>
+<th>Purpose</th>
+</tr></thead>
+<tbody>
+<tr>
+<td><code>camera_zone</code></td>
+<td>Overrides camera behavior inside a rectangle.</td>
+</tr>
+<tr>
+<td><code>hazard</code></td>
+<td>Creates a damage or instant-kill area.</td>
+</tr>
+<tr>
+<td><a href="../tiled/templates/environment/light_source.tx">MVTKINLINETOKEN0END</a></td>
+<td>Places a point light with radius, intensity, and enabled state.</td>
+</tr>
+<tr>
+<td><code>locked_door</code></td>
+<td>Creates a physical door requiring an ability, key, or item.</td>
+</tr>
+<tr>
+<td><code>map_marker</code></td>
+<td>Adds a map point/label.</td>
+</tr>
+<tr>
+<td><code>one_way_platform</code></td>
+<td>Creates a passthrough platform rectangle.</td>
+</tr>
+<tr>
+<td><code>screen_effect_zone</code></td>
+<td>Applies a configured screen effect inside a rectangle.</td>
+</tr>
+<tr>
+<td><code>secret</code></td>
+<td>Defines a discoverable hidden area and optional reward.</td>
+</tr>
+<tr>
+<td><code>timed_door</code></td>
+<td>Creates a trigger/timer-controlled door.</td>
+</tr>
+<tr>
+<td><code>water_volume</code></td>
+<td>Defines swim/current/oxygen/damage behavior in a rectangle.</td>
+</tr>
+</tbody></table>
+</div>
+<h3 id="interaction-12">Interaction — 12<a class="heading-link" href="#interaction-12" aria-label="Link to this section">#</a></h3>
+<div class="table-wrap" role="region" aria-label="Scrollable table">
+<table>
+<thead><tr>
+<th>Template</th>
+<th>Purpose</th>
+</tr></thead>
+<tbody>
+<tr>
+<td><code>breakable_wall</code></td>
+<td>Creates a destructible/reveal-linked wall.</td>
+</tr>
+<tr>
+<td><code>dialogue_trigger</code></td>
+<td>Starts dialogue when a rectangle is entered.</td>
+</tr>
+<tr>
+<td><code>energy_station</code></td>
+<td>Places an energy-refill interaction.</td>
+</tr>
+<tr>
+<td><code>gate</code></td>
+<td>Creates a configurable progression requirement/barrier.</td>
+</tr>
+<tr>
+<td><code>health_station</code></td>
+<td>Places a health-refill interaction.</td>
+</tr>
+<tr>
+<td><code>hint_stone</code></td>
+<td>Places a short guidance interaction.</td>
+</tr>
+<tr>
+<td><code>lever</code></td>
+<td>Places a switch linked to another authored object/flag.</td>
+</tr>
+<tr>
+<td><code>map_station</code></td>
+<td>Places a map reveal/update station.</td>
+</tr>
+<tr>
+<td><code>npc</code></td>
+<td>Places a lightweight named/dialogue NPC.</td>
+</tr>
+<tr>
+<td><code>pressure_plate</code></td>
+<td>Places an area switch linked to another object/flag.</td>
+</tr>
+<tr>
+<td><code>sign</code></td>
+<td>Places readable inline text or linked dialogue.</td>
+</tr>
+<tr>
+<td><a href="../tiled/templates/interaction/torch.tx">MVTKINLINETOKEN0END</a> (<code>torch_holder</code>)</td>
+<td>Places an interactable light with ignition, feedback, and optional persistence.</td>
+</tr>
+</tbody></table>
+</div>
+<h3 id="navigation-14">Navigation — 14<a class="heading-link" href="#navigation-14" aria-label="Link to this section">#</a></h3>
+<div class="table-wrap" role="region" aria-label="Scrollable table">
+<table>
+<thead><tr>
+<th>Template</th>
+<th>Purpose</th>
+</tr></thead>
+<tbody>
+<tr>
+<td><code>bounce_pad</code></td>
+<td>Launches the player from a rectangle.</td>
+</tr>
+<tr>
+<td><code>checkpoint</code></td>
+<td>Updates the current respawn point.</td>
+</tr>
+<tr>
+<td><code>conveyor</code></td>
+<td>Moves standing passengers in a direction.</td>
+</tr>
+<tr>
+<td><code>crumble_platform</code></td>
+<td>Creates a platform that falls and optionally respawns.</td>
+</tr>
+<tr>
+<td><code>elevator</code></td>
+<td>Captures painted cabin tiles and controls a persistent cross-room elevator.</td>
+</tr>
+<tr>
+<td><code>elevator_node</code></td>
+<td>Marks a landing or pass-through waypoint in a streamed room.</td>
+</tr>
+<tr>
+<td><a href="../tiled/templates/navigation/grapple_point.tx">MVTKINLINETOKEN0END</a></td>
+<td>Places a fixed circular hook target with no script overrides.</td>
+</tr>
+<tr>
+<td><code>grapple_surface</code></td>
+<td>Marks a rectangular hook target; prefer Physics ▸ Grapple Box for new work.</td>
+</tr>
+<tr>
+<td><code>ladder</code></td>
+<td>Defines a climbable rectangle.</td>
+</tr>
+<tr>
+<td><code>moving_platform</code></td>
+<td>Creates horizontal, vertical, or path-driven platform motion.</td>
+</tr>
+<tr>
+<td><code>player_start</code></td>
+<td>Marks the default player spawn and starting room.</td>
+</tr>
+<tr>
+<td><code>save_point</code></td>
+<td>Places an interactive save/heal station.</td>
+</tr>
+<tr>
+<td><code>teleporter</code></td>
+<td>Links paired or explicitly targeted teleport points.</td>
+</tr>
+<tr>
+<td><code>wall_jump_surface</code></td>
+<td>Marks a wall area for wall movement behavior.</td>
+</tr>
+</tbody></table>
+</div>
+<h3 id="physics-5">Physics — 5<a class="heading-link" href="#physics-5" aria-label="Link to this section">#</a></h3>
+<div class="table-wrap" role="region" aria-label="Scrollable table">
+<table>
+<thead><tr>
+<th>Template</th>
+<th>Purpose</th>
+</tr></thead>
+<tbody>
+<tr>
+<td><code>grapple_box</code></td>
+<td>Marks an exact rectangular hook target; adds no player collision.</td>
+</tr>
+<tr>
+<td><code>grapple_slope</code></td>
+<td>Marks an exact polygon or sloped-ceiling hook target; adds no player collision.</td>
+</tr>
+<tr>
+<td><a href="../tiled/templates/physics/pushable_block.tx">MVTKINLINETOKEN0END</a></td>
+<td>Places a movable block that can hold a pressure plate down.</td>
+</tr>
+<tr>
+<td><code>solid_box</code></td>
+<td>Creates editable rectangular collision without a painted collision tile.</td>
+</tr>
+<tr>
+<td><code>solid_slope</code></td>
+<td>Creates editable polygon/slope collision.</td>
+</tr>
+</tbody></table>
+</div>
+<h3 id="logic-1">Logic — 1<a class="heading-link" href="#logic-1" aria-label="Link to this section">#</a></h3>
+<div class="table-wrap" role="region" aria-label="Scrollable table">
+<table>
+<thead><tr>
+<th>Template</th>
+<th>Purpose</th>
+</tr></thead>
+<tbody>
+<tr>
+<td><code>end_game</code></td>
+<td>Marks a completion region for the ending configured in Game Settings ▸ Ending.</td>
+</tr>
+</tbody></table>
+</div>
+<h2 id="11-assets-where-your-files-go">11. Assets: Where Your Files Go<a class="heading-link" href="#11-assets-where-your-files-go" aria-label="Link to this section">#</a></h2>
+<div class="table-wrap" role="region" aria-label="Scrollable table">
+<table>
+<thead><tr>
+<th>What you own/edit</th>
+<th>Normal location or workflow</th>
+</tr></thead>
+<tbody>
+<tr>
+<td>Original Tiled rooms and worlds</td>
+<td>Your authoring folder outside the Defold project.</td>
+</tr>
+<tr>
+<td>Original <code>.tsx</code> tilesets</td>
+<td>Your authoring folder; exporter localizes them to <code>developer/assets/tiled/tilesets/</code>.</td>
+</tr>
+<tr>
+<td>Primary tilesheet PNGs</td>
+<td>Your authoring folder; exporter/import puts project copies under <code>developer/assets/tilesheets/</code>.</td>
+</tr>
+<tr>
+<td>Image-layer/image-collection art</td>
+<td>Localized to <code>developer/assets/tiled/backgrounds/</code>.</td>
+</tr>
+<tr>
+<td>Room music</td>
+<td>Any source folder; Prepare &amp; Check copies it to <code>developer/assets/music/</code>.</td>
+</tr>
+<tr>
+<td>Sound effects</td>
+<td><code>developer/assets/sfx/</code> plus the commented sound registries.</td>
+</tr>
+<tr>
+<td>Original enemy frame folders</td>
+<td>Outside the Defold project; link a frame through an enemy&#x27;s Tiled <code>art</code> file property.</td>
+</tr>
+<tr>
+<td>Imported or directly supplied enemy frames</td>
+<td><code>developer/assets/enemies/&lt;enemy_id&gt;/</code>; Prepare &amp; Check syncs them.</td>
+</tr>
+<tr>
+<td>Optional player source pack</td>
+<td><code>developer/assets/source/player_template/</code>.</td>
+</tr>
+<tr>
+<td>Generated player frames/atlas</td>
+<td><code>developer/assets/sprites/player/</code> and <code>developer/assets/atlas/player.atlas</code>.</td>
+</tr>
+<tr>
+<td>Fonts</td>
+<td><code>developer/assets/fonts/</code>.</td>
+</tr>
+<tr>
+<td>Particle/visual assets</td>
+<td><code>developer/assets/fx/</code> and the configured particle registries.</td>
+</tr>
+</tbody></table>
+</div>
+<p>Keep stable filenames when replacing a placeholder that is already referenced. If you rename an asset, update the creator-facing atlas/config reference and run the appropriate import/sync command. Do not solve a missing asset by hardcoding its path in framework code.</p>
+<h2 id="12-configuration-without-coding">12. Configuration Without Coding<a class="heading-link" href="#12-configuration-without-coding" aria-label="Link to this section">#</a></h2>
+<p>Configuration files are Lua tables, but creator-facing files are data: change values beside clear comments and keep punctuation/commas intact. Make one small change, build, and test it before changing many systems at once.</p>
+<p>The game keeps a 16:9 picture as the window changes shape, with bars around it. Set their RGB colour in <code>developer/config/display_settings.lua</code>. Custom GUI nodes should use <strong>Fit</strong> without edge anchors, or sit under a Fit 1920 x 1080 root with <strong>Parent</strong> adjust reference. Camera pixel snapping stays on the design grid; fractional window scaling can produce slight sub-pixel shimmer.</p>
+<h3 id="beginner-safe-task-to-file-map">Beginner-safe task-to-file map<a class="heading-link" href="#beginner-safe-task-to-file-map" aria-label="Link to this section">#</a></h3>
+<div class="table-wrap" role="region" aria-label="Scrollable table">
+<table>
+<thead><tr>
+<th>Task</th>
+<th>File</th>
+</tr></thead>
+<tbody>
+<tr>
+<td>Player movement/stats</td>
+<td><code>developer/config/player_settings.lua</code></td>
+</tr>
+<tr>
+<td>Abilities unlocked at a new game</td>
+<td><code>developer/config/ability_defaults.lua</code></td>
+</tr>
+<tr>
+<td>Baseline combat tuning</td>
+<td><code>developer/config/combat_overrides.lua</code></td>
+</tr>
+<tr>
+<td>Enemy presets</td>
+<td><code>developer/config/enemy_types.lua</code></td>
+</tr>
+<tr>
+<td>Collectible definitions</td>
+<td><code>developer/config/collectible_types.lua</code></td>
+</tr>
+<tr>
+<td>Gate types</td>
+<td><code>developer/config/gate_types.lua</code></td>
+</tr>
+<tr>
+<td>Hazard types</td>
+<td><code>developer/config/hazard_types.lua</code></td>
+</tr>
+<tr>
+<td>Reusable dialogue</td>
+<td><code>developer/config/narrative/dialogues.lua</code></td>
+</tr>
+<tr>
+<td>UI theme/HUD</td>
+<td><code>developer/config/ui_theme.lua</code>, <code>developer/config/hud_layout.lua</code></td>
+</tr>
+<tr>
+<td>Letterbox bar colour</td>
+<td><code>developer/config/display_settings.lua</code></td>
+</tr>
+<tr>
+<td>Default settings</td>
+<td><code>developer/config/settings_defaults.lua</code></td>
+</tr>
+<tr>
+<td>Fog of war and exploration reveal</td>
+<td><code>developer/config/map_discovery_settings.lua</code></td>
+</tr>
+<tr>
+<td>Permanent game/save identity</td>
+<td><code>developer/config/persistence_settings.lua</code></td>
+</tr>
+<tr>
+<td>Debug switches</td>
+<td><code>developer/config/debug_config.lua</code></td>
+</tr>
+<tr>
+<td>Boss presets</td>
+<td><code>developer/config/boss_types.lua</code> and the other commented <code>boss_*.lua</code> configs</td>
+</tr>
+</tbody></table>
+</div>
+<h3 id="understand-precedence">Understand precedence<a class="heading-link" href="#understand-precedence" aria-label="Link to this section">#</a></h3>
+<p>Maps begin hidden and uncover the area shown by the gameplay camera, including an entire room when it fits on screen. Scrolling and zoom changes reveal newly visible cells even while the player stands still. A visible neighboring room can appear on the map before the player enters it; preloading alone does not reveal terrain, and hidden-secret rules still apply. Map stations reveal their configured areas, and discovery is saved independently in each slot. The default <code>mode = &quot;nearby&quot;</code> also reveals an optional radius around the player; <code>mode = &quot;room&quot;</code> reveals the whole current room on entry, even beyond the screen. The commented <code>map_discovery_settings.lua</code> controls that extra radius, cell size, and <code>edge_softness</code>: the world-pixel radius that rounds and feathers the fog on both maps. Increase it for softer edges, or set it to <code>0</code> for hard edges; it does not change saved exploration or marker visibility. Tiled markers explicitly marked <code>visible_from_start</code> can still point toward unknown areas.</p>
+<p>Set a unique, permanent <code>game_id</code> in <code>persistence_settings.lua</code> before releasing your game. When left empty, the title in <code>game.project</code> determines the save directory, so changing that title changes the save location. Old shared toolkit saves remain untouched; start with a fresh slot after upgrading. See the <a href="../developer/config/README.md#save-identity-and-upgrades">configuration handbook</a> for preserving a verified older save.</p>
+<p>There is no single override order for every subsystem. Use these rules:</p>
+<div class="table-wrap" role="region" aria-label="Scrollable table">
+<table>
+<thead><tr>
+<th>Concern</th>
+<th>Higher priority → lower priority</th>
+</tr></thead>
+<tbody>
+<tr>
+<td>Player, starting abilities, combat, game settings</td>
+<td>Published <code>creator_settings.lua</code> overrides → baseline creator config → framework fallback. Machine-local authoring values are not imported.</td>
+</tr>
+<tr>
+<td>Player&#x27;s saved preferences</td>
+<td>Player settings menu → Game Settings defaults → <code>settings_defaults.lua</code>.</td>
+</tr>
+<tr>
+<td>Placed enemy, boss, gate, collectible, and similar objects</td>
+<td>Tiled instance property → selected config preset/type → framework fallback.</td>
+</tr>
+<tr>
+<td>Tile size</td>
+<td>Imported tilesource/Tiled art → generated <code>tile_settings.lua</code> mirror. Do not hand-tune the mirror.</td>
+</tr>
+<tr>
+<td>Playable room resources</td>
+<td>Current Tiled export → Prepare &amp; Check generated collection/factory.</td>
+</tr>
+<tr>
+<td>Runtime world placement</td>
+<td>Latest successful Layout Editor <strong>Export</strong> → older published layout fallback.</td>
+</tr>
+</tbody></table>
+</div>
+<p>If a baseline config edit appears to do nothing, check the published override in Game Settings. Use the row’s <strong>x</strong> to return that field to its default, then Save. Keep tuning overlapping player, ability, combat and game values through <strong>Project ▸ Game Settings…</strong>.</p>
+<h3 id="generated-or-internal-do-not-hand-edit">Generated or internal: do not hand-edit<a class="heading-link" href="#generated-or-internal-do-not-hand-edit" aria-label="Link to this section">#</a></h3>
+<ul>
+<li><code>developer/config/tile_settings.lua</code></li>
+<li><code>developer/config/rooms_config.lua</code></li>
+<li><code>developer/config/elevators_generated.lua</code></li>
+<li><code>developer/config/runtime_settings.lua</code></li>
+<li><code>developer/config/*_generated.lua</code></li>
+<li><code>developer/config/tiled_enemy_overrides.lua</code></li>
+<li><code>developer/config/enemy_skins_generated.lua</code></li>
+<li><code>developer/rooms/generated/</code></li>
+<li><code>developer/rooms/collections/</code></li>
+<li><code>developer/rooms/factories/</code></li>
+<li><code>developer/runtime/layout/world_layout.local.lua</code></li>
+<li>everything under <code>mvtk/</code> for normal creator work</li>
+</ul>
+<p>Regenerate these through Prepare &amp; Check or Layout Editor Export.</p>
+<h3 id="controls-and-input">Controls and input<a class="heading-link" href="#controls-and-input" aria-label="Link to this section">#</a></h3>
+<p>Defold&#x27;s editable input map is <code>developer/input/game.input_binding</code>. Open it in the Defold editor to add or change keyboard, mouse, touch, or gamepad triggers. The current physical-action allowlist and starter high-level mappings live in the <code>inputs</code> and <code>actions</code> tables in <code>developer/config/default_bindings.lua</code>. Physical IDs are device-separated: keyboard inputs use <code>key_*</code>, and standard controller inputs use <code>gamepad_*</code>.</p>
+<p>By default, pressing <strong>M</strong> or <strong>R3</strong> (the right thumbstick click) cycles the gameplay map display through <strong>no map → minimap panel → full-screen map → no map</strong>. The physical <code>key_m</code> and <code>gamepad_rstick_click</code> actions are mapped to <code>MINIMAP_TOGGLE</code>; the separate interactive world-map action remains independently rebindable.</p>
+<p>This toolkit targets Defold 1.14.0&#x27;s built-in SDL controller database. It tracks controller connect/disconnect events and uses the first mapped controller for the single player; unmapped devices remain visible in diagnostics but cannot claim gameplay, and unplugging the active pad clears its held input and selects the next mapped controller. Left- and right-stick direction actions preserve analog strength. <code>game.project</code> owns the one hardware deadzone, so do not add another deadzone in player settings or a project <code>.gamepads</code> compatibility file.</p>
+<p>Runtime remaps use a versioned current-only save. When the binding schema changes, incompatible older remap data is ignored and current defaults are used; there is no legacy alias migration layer. Controller remapping preserves that action&#x27;s keyboard inputs, accepts only real controller events, and moves a controller button away from any previous high-level action.</p>
+<p>Keep action IDs synchronized across both files and any creator-facing config or GUI that listens for them. For example, renaming <code>gamepad_lstick_left</code> in only the input binding does not rename the action expected by the player controller. Prefer changing the key/button attached to an existing action. Add a new action ID only when the corresponding feature already knows how to consume it.</p>
+<p>Build after changing bindings. Use the in-game pause menu’s Settings and rebind UI for player preferences; edit the Defold binding resource when you are changing the project&#x27;s available default actions.</p>
+<h2 id="13-troubleshooting-by-stage">13. Troubleshooting By Stage<a class="heading-link" href="#13-troubleshooting-by-stage" aria-label="Link to this section">#</a></h2>
+<h3 id="installation-or-first-defold-build-fails">Installation or first Defold build fails<a class="heading-link" href="#installation-or-first-defold-build-fails" aria-label="Link to this section">#</a></h3>
+<ul>
+<li>Confirm Defold is 1.14.0 or a later 1.14.x hotfix and the toolkit was fully extracted/installed.</li>
+<li>Keep the project in a writable folder; avoid protected system directories.</li>
+<li>Wait for Defold dependencies to finish loading.</li>
+<li>Read the first red Console error, not only the last one.</li>
+<li>Run <strong>Project ▸ Set Up This Toolkit</strong> again, especially after moving or copying the toolkit folder.</li>
+</ul>
+<h3 id="a-property-type-error-appears-after-updating-the-toolkit">A property type error appears after updating the toolkit<a class="heading-link" href="#a-property-type-error-appears-after-updating-the-toolkit" aria-label="Link to this section">#</a></h3>
+<p>After updating, run <strong>Reload Editor Scripts → Prepare &amp; Check → Build</strong>. Prepare &amp; Check rebuilds the room collections with the current property types.</p>
+<p>A Console error <code>The property &#x27;&lt;name&gt;&#x27; must be of type &#x27;string&#x27;</code> means a room or prefab still stores the old hash type. Run <strong>Prepare &amp; Check</strong>. If the message names one of your own prefabs, re-enter that value in the Defold Properties panel, save the prefab, and Build again.</p>
+<h3 id="tiled-toolkit-menus-or-templates-are-missing">Tiled toolkit menus or templates are missing<a class="heading-link" href="#tiled-toolkit-menus-or-templates-are-missing" aria-label="Link to this section">#</a></h3>
+<ul>
+<li>Open <code>MVTK.tiled-project</code> with <strong>File ▸ Open File or Project...</strong>, not only a <code>.tmx</code>.</li>
+<li>Click <strong>Enable Extensions</strong> in the yellow bar at the top right. If you dismissed it, close the project and open it again.</li>
+<li>Check Tiled&#x27;s <strong>View ▸ Views and Toolbars ▸ Console</strong> for an error that names a file in <code>tiled/extensions</code>.</li>
+<li>Confirm <code>File ▸ new_room_blank</code>, <code>File ▸ Export Current Room</code>, <code>File ▸ Export All Maps and Tiled World</code> and <code>File ▸ Start a New World...</code> appear.</li>
+</ul>
+<h3 id="export-says-required-exporters-not-found">Export says &quot;Required exporters not found&quot;<a class="heading-link" href="#export-says-required-exporters-not-found" aria-label="Link to this section">#</a></h3>
+<p>Tiled&#x27;s <strong>defold</strong> or <strong>lua</strong> plugin is off; the message lists which one (<code>false</code>). Choose <strong>Edit ▸ Preferences...</strong>, click the <strong>Plugins</strong> tab, tick <strong>defold</strong> and <strong>lua</strong> (<code>defold.dll</code> and <code>lua.dll</code> on Windows, <code>libdefold.so</code> and <code>liblua.so</code> on Linux), close the window and export again.</p>
+<h3 id="tiled-cannot-detect-the-project-root-or-exports-go-to-another-toolkit">Tiled cannot detect the project root, or exports go to another toolkit<a class="heading-link" href="#tiled-cannot-detect-the-project-root-or-exports-go-to-another-toolkit" aria-label="Link to this section">#</a></h3>
+<p>Exports go to the toolkit whose <code>MVTK.tiled-project</code> is open. Open the <code>MVTK.tiled-project</code> in the toolkit folder you want (the folder that holds <code>game.project</code>), click <strong>Enable Extensions</strong> if Tiled asks, and export again. <code>WHERE_THINGS_ARE.txt</code> in each toolkit folder lists that toolkit&#x27;s paths.</p>
+<h3 id="export-says-a-tileset-is-unsaved-or-missing">Export says a tileset is unsaved or missing<a class="heading-link" href="#export-says-a-tileset-is-unsaved-or-missing" aria-label="Link to this section">#</a></h3>
+<ul>
+<li>Save the room and every external <code>.tsx</code>.</li>
+<li>Confirm the <code>.tsx</code> still points to the original tilesheet image.</li>
+<li>For external authoring, keep editing the original, not the localized project copy.</li>
+<li>Re-export after fixing the source path.</li>
+</ul>
+<h3 id="tiles-are-invisible-or-use-the-wrong-art">Tiles are invisible or use the wrong art<a class="heading-link" href="#tiles-are-invisible-or-use-the-wrong-art" aria-label="Link to this section">#</a></h3>
+<ul>
+<li>Confirm the room uses one primary tilesheet for painted tile layers.</li>
+<li>Verify Tile Width/Height match the actual image grid.</li>
+<li>Re-export, then run Prepare &amp; Check.</li>
+<li>Check <code>developer/assets/tilesheets/</code> for the localized primary image.</li>
+<li>Read Prepare &amp; Check warnings about tilesource resolution.</li>
+</ul>
+<h3 id="the-player-falls-through-floors-or-hits-invisible-walls">The player falls through floors or hits invisible walls<a class="heading-link" href="#the-player-falls-through-floors-or-hits-invisible-walls" aria-label="Link to this section">#</a></h3>
+<ul>
+<li>Open the <code>.tsx</code> and confirm solid tiles have Tile Collision Editor shapes.</li>
+<li>Save the <code>.tsx</code>, not only the room.</li>
+<li>Paint collision tiles on <code>solid</code>, not just <code>environment</code>.</li>
+<li>Remove accidental collision shapes from decorative tiles.</li>
+<li>Alternatively use <code>solid_box</code>/<code>solid_slope</code>, then export and rebuild.</li>
+</ul>
+<h3 id="prepare-check-fails">Prepare &amp; Check fails<a class="heading-link" href="#prepare-check-fails" aria-label="Link to this section">#</a></h3>
+<ul>
+<li>Stop the running game first.</li>
+<li>Run <strong>Reload Editor Scripts</strong> and try the exact five-command sequence again.</li>
+<li>Fix the first error in Defold Console.</li>
+<li>Open <code>debug_output.txt</code> when Prepare &amp; Check points there.</li>
+<li>Do not patch generated collections to hide the source error.</li>
+</ul>
+<h3 id="a-room-is-missing-from-layout-editor">A room is missing from Layout Editor<a class="heading-link" href="#a-room-is-missing-from-layout-editor" aria-label="Link to this section">#</a></h3>
+<ul>
+<li>Confirm both <code>&lt;room&gt;.lua</code> and <code>&lt;room&gt;.tilemap</code> exist.</li>
+<li>Run Prepare &amp; Check.</li>
+<li>Confirm <code>developer/rooms/collections/&lt;room&gt;.collection</code> exists after generation.</li>
+<li>Open Layout Editor and click <strong>Rescan Rooms</strong>.</li>
+<li>Use a simple unique room filename.</li>
+</ul>
+<h3 id="rooms-do-not-snap-or-transitions-fail">Rooms do not snap or transitions fail<a class="heading-link" href="#rooms-do-not-snap-or-transitions-fail" aria-label="Link to this section">#</a></h3>
+<ul>
+<li>Paint at least one tile on each intended <code>door_*</code> layer.</li>
+<li>Connect right ↔ left or top ↔ bottom.</li>
+<li>Leave a physical opening in art/collision at the marker.</li>
+<li>Export both rooms, rebuild, Rescan Rooms, and place them again.</li>
+<li>Click Layout Editor <strong>Export</strong> after snapping.</li>
+</ul>
+<h3 id="the-wrong-room-or-position-loads">The wrong room or position loads<a class="heading-link" href="#the-wrong-room-or-position-loads" aria-label="Link to this section">#</a></h3>
+<ul>
+<li>Keep exactly one intended <code>player_start</code> for a simple project.</li>
+<li>Avoid multiple maps marked <code>is_starting_room=true</code>.</li>
+<li>Export/rebuild after changing the start.</li>
+<li>Use an empty save slot; an existing checkpoint may override the new start.</li>
+<li>Export the layout before Play Game.</li>
+</ul>
+<h3 id="a-tiled-object-does-not-appear">A Tiled object does not appear<a class="heading-link" href="#a-tiled-object-does-not-appear" aria-label="Link to this section">#</a></h3>
+<ul>
+<li>Put it on the visible top-level <code>templates</code> layer.</li>
+<li>Use a shipped <code>.tx</code> instance rather than drawing an untyped rectangle.</li>
+<li>Keep <code>mvtk_template_version</code> unchanged.</li>
+<li>Fill required IDs/dropdowns and avoid duplicate unique IDs.</li>
+<li>Export, Prepare &amp; Check, and inspect the generated collection in Defold.</li>
+</ul>
+<h3 id="enemy-art-or-animations-are-missing">Enemy art or animations are missing<a class="heading-link" href="#enemy-art-or-animations-are-missing" aria-label="Link to this section">#</a></h3>
+<ul>
+<li>Confirm a linked skin contains <code>idle_01.png</code>; a directly supplied project folder can also use <code>idle.png</code>.</li>
+<li>Use individual PNG frames, not one strip/sheet.</li>
+<li>Use recognized state prefixes and consistent frame dimensions.</li>
+<li>For linked art, confirm <strong>art</strong> points to an existing frame outside the Defold project, named <code>&lt;state&gt;_&lt;number&gt;.png</code>. Export again after changing the original frames.</li>
+<li>For project folders, leave <strong>art</strong> empty and choose the synced folder ID in <code>enemy_type</code>.</li>
+<li>Run Prepare &amp; Check after Defold finishes importing files, then Build.</li>
+<li>Restart Tiled after updating the toolkit&#x27;s exporter or templates.</li>
+</ul>
+<h3 id="music-or-ambience-is-silent">Music or ambience is silent<a class="heading-link" href="#music-or-ambience-is-silent" aria-label="Link to this section">#</a></h3>
+<ul>
+<li>Use <code>.ogg</code> or <code>.wav</code>, not MP3.</li>
+<li>Set map <code>music</code> as a <strong>file</strong> property for room-wide music.</li>
+<li>Save/export the room, then run Prepare &amp; Check.</li>
+<li>Check the Console for an unsupported extension or missing source path.</li>
+<li>For <code>music_trigger</code>/<code>ambience_zone</code>, choose an ID already registered by sync/config.</li>
+</ul>
+<h3 id="boss-arena-or-phases-do-not-link">Boss arena or phases do not link<a class="heading-link" href="#boss-arena-or-phases-do-not-link" aria-label="Link to this section">#</a></h3>
+<ul>
+<li>Give <code>boss</code>, <code>boss_arena</code>, and <code>boss_phase</code> matching <code>boss_id</code>/<code>arena_id</code> values.</li>
+<li>Start with a single boss phase and a known <code>boss_type</code>.</li>
+<li>Keep the boss point inside the arena rectangle.</li>
+<li>Remove optional boss phase triggers/weak points until the base fight validates.</li>
+<li>Re-export and Prepare &amp; Check after every boss-object change.</li>
+</ul>
+<h3 id="layout-changes-appear-in-editor-but-not-play-game">Layout changes appear in editor but not Play Game<a class="heading-link" href="#layout-changes-appear-in-editor-but-not-play-game" aria-label="Link to this section">#</a></h3>
+<p>Click Layout Editor <strong>Export</strong> and wait for completion. <strong>Menu</strong> and placement autosave do not replace the published runtime layout.</p>
+<h2 id="14-validate-release-and-report-bugs">14. Validate, Release, And Report Bugs<a class="heading-link" href="#14-validate-release-and-report-bugs" aria-label="Link to this section">#</a></h2>
+<h3 id="final-creator-validation-checklist">Final creator validation checklist<a class="heading-link" href="#final-creator-validation-checklist" aria-label="Link to this section">#</a></h3>
+<ul>
+<li class="task-item"><input type="checkbox" disabled aria-hidden="true"> Every changed <code>.tmx</code> and <code>.tsx</code> is saved and exported.</li>
+<li class="task-item"><input type="checkbox" disabled aria-hidden="true"> Reload Editor Scripts, Prepare &amp; Check, and Build all succeed.</li>
+<li class="task-item"><input type="checkbox" disabled aria-hidden="true"> Layout Editor <strong>Export</strong> succeeds after the final placement.</li>
+<li class="task-item"><input type="checkbox" disabled aria-hidden="true"> A new empty save starts in the intended room.</li>
+<li class="task-item"><input type="checkbox" disabled aria-hidden="true"> Every door works in both intended directions.</li>
+<li class="task-item"><input type="checkbox" disabled aria-hidden="true"> Checkpoints/save points survive a restart.</li>
+<li class="task-item"><input type="checkbox" disabled aria-hidden="true"> Required abilities, keys, gates, secrets, and boss rewards persist correctly.</li>
+<li class="task-item"><input type="checkbox" disabled aria-hidden="true"> Music/ambience changes are intentional and not restarting unexpectedly.</li>
+<li class="task-item"><input type="checkbox" disabled aria-hidden="true"> No red Console error appears during a full playthrough of the test path.</li>
+</ul>
+<h3 id="create-a-standalone-release-project">Create a standalone release project<a class="heading-link" href="#create-a-standalone-release-project" aria-label="Link to this section">#</a></h3>
+<p><strong>Project ▸ Export Game</strong> is different from Build and from Layout Editor Export. It packages the published room/layout revision into a standalone Defold project under <code>export/</code>. It does not regenerate rooms. Stale or unpublished changes must be prepared, built, and published before exporting.</p>
+<p>Before using it:</p>
+<ol>
+<li>Finish the normal Tiled export and five-command Defold sequence.</li>
+<li>Export the final Layout Editor layout.</li>
+<li>Playtest with a clean save.</li>
+<li>Run <strong>Project ▸ Export Game</strong>.</li>
+<li>Open <code>export/game.project</code> as a separate Defold project, run <strong>Project ▸ Fetch Libraries</strong>, then build/test it.</li>
+<li>Use Defold&#x27;s normal bundle command for the target platform only after that standalone project passes.</li>
+</ol>
+<p>Do not confuse <code>export/</code> with your editable source. Regenerate it from the main toolkit project.</p>
+<p>The standalone title screen shows your game name and opens save-slot selection; Game Settings and Layout Editor stay in the source project. Export includes published room data, referenced runtime art/resources, configuration, and creator-declared custom/bundle resources. By default, source art, Tiled originals, authoring reports, unused room resources, dependency caches, and build folders are omitted. <code>export/EXPORT_MANIFEST.txt</code> lists each included file and why it was selected. Keep dynamically selected custom data in <code>game.project</code>&#x27;s <code>custom_resources</code> or <code>bundle_resources</code> so it is included explicitly. Custom stream paths use the runtime&#x27;s configuration resolver; export reports an error if their Lua configuration cannot be evaluated instead of using other paths.</p>
+<p>Export writes and verifies a staging project before replacing <code>export/</code>. A failed write or publication preserves the previous export; retrying recovers an interrupted directory swap. Changes made directly in <code>export/</code> are replaced by the next export.</p>
+<h3 id="file-a-useful-bug-report">File a useful bug report<a class="heading-link" href="#file-a-useful-bug-report" aria-label="Link to this section">#</a></h3>
+<p>Open an issue at <a href="https://github.com/schlista/Microvania-Toolkit/issues">https://github.com/schlista/Microvania-Toolkit/issues</a>. Include:</p>
+<ul>
+<li>Toolkit version/build information from <code>BUILD_INFO.txt</code> when present.</li>
+<li>Windows version, Defold version, and Tiled version.</li>
+<li>The numbered guide step and exact menu command that failed.</li>
+<li>What you expected and what actually happened.</li>
+<li>The first relevant red Console error and nearby lines.</li>
+<li><code>debug_output.txt</code> if Prepare &amp; Check names it.</li>
+<li>The smallest affected <code>.tmx</code>, <code>.tsx</code>, exported <code>.lua</code>, or config needed to reproduce.</li>
+<li>Whether the source map is inside or outside the toolkit.</li>
+<li>Whether a new empty save slot reproduces the issue.</li>
+</ul>
+<p>Do not attach secrets, paid asset packs you cannot redistribute, or personal paths without redacting them. For a crash, also state whether the editor, game, Tiled, or an editor command crashed.</p>
+<h2 id="15-maintainer-appendix">15. Maintainer Appendix<a class="heading-link" href="#15-maintainer-appendix" aria-label="Link to this section">#</a></h2>
+<p>This section is for toolkit maintainers and advanced diagnosis. First-time creators can stop above.</p>
+<h3 id="architecture-and-ownership">Architecture and ownership<a class="heading-link" href="#architecture-and-ownership" aria-label="Link to this section">#</a></h3>
+<ul>
+<li>Tiled <code>.tmx</code>/<code>.tsx</code> plus source art are authoring truth.</li>
+<li><code>tiled/extensions/export_lua_and_defold.js</code> owns Tiled export/localization.</li>
+<li><code>hooks/editor_commands.lua</code> registers the Defold editor commands.</li>
+<li>Prepare &amp; Check owns tilesource/tilemap preparation and generated tile settings.</li>
+<li>Prepare &amp; Check owns baked room collections/factories and invokes enemy/music sync.</li>
+<li><code>mvtk/editor/layout_editor/</code> owns in-game room placement UX.</li>
+<li>Layout Editor Export owns the published runtime layout/minimap artifacts.</li>
+<li><code>mvtk/rooms/runtime_layout_loader.lua</code> prefers the published local runtime layout.</li>
+</ul>
+<h3 id="current-editor-command-surface">Current editor command surface<a class="heading-link" href="#current-editor-command-surface" aria-label="Link to this section">#</a></h3>
+<p>The toolkit adds these nine items to Defold&#x27;s Project menu:</p>
+<ul>
+<li><code>Prepare &amp; Check</code></li>
+<li><code>Use Tiled World Layout</code></li>
+<li><code>Preparation Status</code></li>
+<li><code>Set Up This Toolkit</code></li>
+<li><code>Game Settings...</code></li>
+<li><code>Spine Add-on...</code></li>
+<li><code>Analyze Progression</code></li>
+<li><code>Export Game</code></li>
+<li><code>Reset Project to Empty (destructive)</code></li>
+</ul>
+<p>There is no separate room-generation shortcut in the Assets context menu. Individual maintenance stages remain available to repository automation through <code>get_maintenance_commands()</code>; creator workflows use Prepare &amp; Check.</p>
+<h3 id="validation-commands">Validation commands<a class="heading-link" href="#validation-commands" aria-label="Link to this section">#</a></h3>
+<p>Prepare &amp; Check runs the project checks for you. To repeat two of them outside the editor while diagnosing a failure, run these from the toolkit folder with Lua 5.1 installed (the Tiled export check needs at least one exported room):</p>
+<div class="code-wrap"><pre><code class="language-text">lua tools/validate_config.lua
+lua tools/validate_tiled_export.lua --quick</code></pre></div>
+<p>The generated catalogs (<code>tiled/templates/README.html</code> and <code>developer/config/INDEX.md</code>) are produced from the live templates and config files; do not hand-edit them. The automated test suite, its fixture project and the documentation generators live in the toolkit&#x27;s source repository and are not part of this download.</p>
+<h2 id="printable-first-world-checklist">Printable First-World Checklist<a class="heading-link" href="#printable-first-world-checklist" aria-label="Link to this section">#</a></h2>
+<ul>
+<li class="task-item"><input type="checkbox" disabled aria-hidden="true"> Defold 1.14.0 (or a later 1.14.x hotfix) and Tiled 1.12.x installed.</li>
+<li class="task-item"><input type="checkbox" disabled aria-hidden="true"> Toolkit extracted to a writable folder; maps folder outside it.</li>
+<li class="task-item"><input type="checkbox" disabled aria-hidden="true"> <code>game.project</code> opened in Defold, <strong>Project ▸ Set Up This Toolkit</strong> run, and sanity Build passed.</li>
+<li class="task-item"><input type="checkbox" disabled aria-hidden="true"> Tiled&#x27;s <strong>defold</strong> and <strong>lua</strong> plugins ticked under <strong>Edit ▸ Preferences... ▸ Plugins</strong>.</li>
+<li class="task-item"><input type="checkbox" disabled aria-hidden="true"> <code>MVTK.tiled-project</code> opened and Tiled extensions enabled.</li>
+<li class="task-item"><input type="checkbox" disabled aria-hidden="true"> External tileset created with the real tile width/height.</li>
+<li class="task-item"><input type="checkbox" disabled aria-hidden="true"> Tile Collision Editor shapes saved in the <code>.tsx</code>.</li>
+<li class="task-item"><input type="checkbox" disabled aria-hidden="true"> <code>start_room</code>, <code>middle_room</code>, and <code>goal_room</code> created with <code>new_room_blank</code>.</li>
+<li class="task-item"><input type="checkbox" disabled aria-hidden="true"> Every room has environment art, bounds, and solid collision.</li>
+<li class="task-item"><input type="checkbox" disabled aria-hidden="true"> Exactly one intended <code>player_start</code> placed.</li>
+<li class="task-item"><input type="checkbox" disabled aria-hidden="true"> Door markers paint right↔left connections between all three rooms.</li>
+<li class="task-item"><input type="checkbox" disabled aria-hidden="true"> All rooms and tilesets saved and exported.</li>
+<li class="task-item"><input type="checkbox" disabled aria-hidden="true"> Reload Editor Scripts completed.</li>
+<li class="task-item"><input type="checkbox" disabled aria-hidden="true"> Prepare &amp; Check completed without errors.</li>
+<li class="task-item"><input type="checkbox" disabled aria-hidden="true"> Build completed.</li>
+<li class="task-item"><input type="checkbox" disabled aria-hidden="true"> Game Settings tuned with the game stopped after imported art established tile size; <strong>Save and Prepare &amp; Check</strong> succeeded, then the game was rebuilt.</li>
+<li class="task-item"><input type="checkbox" disabled aria-hidden="true"> Layout Editor Rescan lists all three rooms.</li>
+<li class="task-item"><input type="checkbox" disabled aria-hidden="true"> Rooms snapped at matching doors.</li>
+<li class="task-item"><input type="checkbox" disabled aria-hidden="true"> Layout Editor <strong>Export</strong> completed before Menu.</li>
+<li class="task-item"><input type="checkbox" disabled aria-hidden="true"> Empty save slot starts in <code>start_room</code> and reaches <code>goal_room</code>.</li>
+</ul>
+<h2 id="prepare-publish-and-finish-a-game">Prepare, publish, and finish a game<a class="heading-link" href="#prepare-publish-and-finish-a-game" aria-label="Link to this section">#</a></h2>
+<p>After Reload Editor Scripts, <strong>Project → Prepare &amp; Check</strong> coordinates asset import, room generation, resource synchronization, player settings and validation with safe cancellation points. <strong>Preparation Status</strong> explains changed files, missing source provenance, publication requirements, and rebuilds. Layout Export still explicitly publishes placements and the minimap; Export Game rejects stale publications.</p>
+<p><strong>Game Settings ▸ Ending</strong> configures a region, flag, or boss ending, presentation and Continue policy. Preview uses temporary state. The <code>end_game</code> template is baked as an editable room gameobject. Completion is saved before presenting credits or leaving gameplay. See <a href="PREPARATION_AND_ENDINGS.md">Preparation and endings</a> for the complete workflow, failure handling, and native acceptance checks.</p>
+<h2 id="designer-tools">Designer tools<a class="heading-link" href="#designer-tools" aria-label="Link to this section">#</a></h2>
+<p>Open <strong>Project ▸ Game Settings…</strong> for player PNG import, camera tuning, HUD and prompt styling, map discovery, save policies and a disposable movement course. These tabs share the window’s draft; <strong>Save and Prepare &amp; Check</strong> publishes and prepares it. Build afterward. Windows previews build a separate project and keep saves inside that copy. See <a href="DESIGNER_TOOLS.md">Designer tools</a> for import naming, controls and troubleshooting.</p>
+      </article>
+      <footer class="page-footer">Generated from <code>docs/CREATOR_WORKFLOW.md</code>. The live Tiled template catalog remains generated from the shipped <code>.tx</code> files.</footer>
+    </div>
+  </div>
+  <script>
+(() => {
+  const body = document.body;
+  const toggle = document.getElementById('nav-toggle');
+  const backdrop = document.querySelector('.backdrop');
+  const tocLinks = [...document.querySelectorAll('.toc a')];
+  const search = document.getElementById('toc-search');
+
+  const closeNav = () => {
+    body.classList.remove('nav-open');
+    toggle?.setAttribute('aria-expanded', 'false');
+  };
+  toggle?.addEventListener('click', () => {
+    const open = body.classList.toggle('nav-open');
+    toggle.setAttribute('aria-expanded', String(open));
+  });
+  backdrop?.addEventListener('click', closeNav);
+  tocLinks.forEach(link => link.addEventListener('click', closeNav));
+
+  search?.addEventListener('input', () => {
+    const query = search.value.trim().toLowerCase();
+    document.querySelectorAll('.toc li').forEach(item => {
+      const title = item.querySelector('a')?.dataset.title || '';
+      item.hidden = Boolean(query) && !title.includes(query);
+    });
+  });
+
+  document.querySelectorAll('.code-wrap').forEach(wrapper => {
+    const code = wrapper.querySelector('code');
+    if (!code || !navigator.clipboard) return;
+    const button = document.createElement('button');
+    button.className = 'copy-code';
+    button.type = 'button';
+    button.textContent = 'Copy';
+    button.addEventListener('click', async () => {
+      await navigator.clipboard.writeText(code.textContent || '');
+      button.textContent = 'Copied';
+      window.setTimeout(() => { button.textContent = 'Copy'; }, 1200);
+    });
+    wrapper.appendChild(button);
+  });
+
+  if ('IntersectionObserver' in window) {
+    const byId = new Map(tocLinks.map(link => [link.hash.slice(1), link]));
+    const observer = new IntersectionObserver(entries => {
+      const visible = entries
+        .filter(entry => entry.isIntersecting)
+        .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top)[0];
+      if (!visible) return;
+      tocLinks.forEach(link => link.classList.remove('active'));
+      byId.get(visible.target.id)?.classList.add('active');
+    }, { rootMargin: '-70px 0px -75% 0px' });
+    document.querySelectorAll('article h2, article h3').forEach(heading => observer.observe(heading));
+  }
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,43 @@
+name: "boot"
+instances {
+  id: "completion"
+  prototype: "/developer/ui/game/completion.go"
+}
+instances {
+  id: "host"
+  prototype: "/mvtk/boot/simple_host.go"
+  position { x: 0.0 y: 0.0 z: 0.0 }
+  rotation { x: 0.0 y: 0.0 z: 0.0 w: 1.0 }
+}
+instances {
+  id: "start_screen"
+  prototype: "/mvtk/boot/start_screen.go"
+  position { x: 0.0 y: 0.0 z: 0.0 }
+  rotation { x: 0.0 y: 0.0 z: 0.0 w: 1.0 }
+}
+instances {
+  id: "save_slots"
+  prototype: "/mvtk/boot/save_slots.go"
+  position { x: 0.0 y: 0.0 z: 0.0 }
+  rotation { x: 0.0 y: 0.0 z: 0.0 w: 1.0 }
+}
+instances {
+  id: "settings_ui"
+  prototype: "/developer/ui/menus/settings.go"
+  position { x: 0.0 y: 0.0 z: 0.0 }
+  rotation { x: 0.0 y: 0.0 z: 0.0 w: 1.0 }
+}
+instances {
+  id: "underwater_overlay"
+  prototype: "/mvtk/boot/underwater_overlay.go"
+  position { x: 0.0 y: 0.0 z: 0.0 }
+  rotation { x: 0.0 y: 0.0 z: 0.0 w: 1.0 }
+}
+embedded_instances {
+  id: "letterbox_bars"
+  data: "components {\n"
+  "  id: \"gui\"\n"
+  "  component: \"/mvtk/ui/letterbox_bars.gui\"\n"
+  "}\n"
+  ""
+}

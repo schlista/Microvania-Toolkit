@@ -1,0 +1,114 @@
+MICROVANIA TOOLKIT — START HERE
+
+Do these steps in order. Each step is one thing to do. START_HERE.html (open it in a
+web browser) shows a picture of every step.
+
+ 1) Install Defold 1.14.0: https://github.com/defold/defold/releases/tag/1.14.0
+    Later 1.14.x updates are fine.
+ 2) Install Tiled 1.12.2: https://github.com/mapeditor/tiled/releases/tag/v1.12.2
+ 3) Download the toolkit ZIP (Microvania_Toolkit_<version>.zip) from
+    https://github.com/schlista/Microvania-Toolkit/releases if you haven't yet.
+
+ 4) Make a folder for your game, for example C:\MyGame on Windows, or a folder named
+    MyGame in your home folder on macOS or Linux. These steps call it MyGame.
+ 5) Inside MyGame, make a folder named Tiled Worlds. Your own maps go there.
+ 6) Move the toolkit ZIP you downloaded into MyGame. (Already unzipped it? Move that
+    folder into MyGame instead, rename it Microvania_Toolkit and go on at step 9.)
+ 7) Right-click the ZIP and choose Extract All... (macOS and Linux: double-click the
+    ZIP, or right-click it and choose Extract Here.)
+ 8) Make the box say C:\MyGame\Microvania_Toolkit and click Extract. (macOS and
+    Linux: rename the unzipped folder to Microvania_Toolkit.)
+ 9) Check: MyGame holds Microvania_Toolkit and Tiled Worlds. You can delete the ZIP.
+10) Check: Microvania_Toolkit holds game.project, MVTK.tiled-project and this
+    START_HERE.
+
+11) Open Defold.
+12) Click Open From Disk...
+13) Open MyGame, then Microvania_Toolkit. Click game.project and click Open.
+14) Wait until the bottom-left corner of Defold says Ready. The first time takes a
+    minute or two.
+15) Choose Project > Set Up This Toolkit.
+16) Click Choose Maps Folder... If a folder was chosen before, the button says
+    Change Maps Folder...: click that instead.
+17) In the folder window, click the Tiled Worlds folder once and click Select
+    Folder.
+18) Click Close on the Toolkit Set Up message.
+
+19) Open Tiled.
+20) Choose Edit > Preferences... (on macOS it is in the Tiled menu).
+21) Click the Plugins tab.
+22) Tick defold and lua. Tiled lists them by file name: defold.dll and lua.dll on
+    Windows, libdefold.so and liblua.so on Linux. Leave boxes that are already
+    ticked as they are; defoldcollection is not needed.
+23) Click Close.
+24) Choose File > Open File or Project...
+25) In the Open File window, open MyGame, then Microvania_Toolkit. At the bottom
+    right, set the file type list to Tiled Projects (*.tiled-project).
+26) Click MVTK.tiled-project and click Open.
+27) If a yellow bar says the project contains scripted extensions, click Enable
+    Extensions. The Project panel lists Tiled Worlds.
+28) Check: the File menu ends with Export Current Room, Export All Maps and Tiled
+    World, new_room_blank and Start a New World...
+
+The toolkit is ready. Next, do ONE of these.
+
+
+TRY A SAMPLE WORLD
+
+  1) Download the sample worlds ZIP from
+     https://github.com/schlista/Microvania-Toolkit/releases
+  2) Unzip it into MyGame, next to Microvania_Toolkit. Never inside it. On Windows,
+     choose Extract All..., click Browse..., pick MyGame and click Extract, so you
+     don't get a folder inside a folder of the same name.
+  3) Open one world's START_HERE.txt and start at its step 7.
+
+  START_HERE.html shows every step of trying a sample world, with pictures.
+
+  Each sample world replaces some of the toolkit's settings and art. For a second
+  world, unzip a fresh toolkit.
+
+
+MAKE YOUR OWN GAME
+
+  1) Open docs/CREATOR_WORKFLOW.html in a web browser.
+  2) Follow its section "Start here — make three rooms, then play".
+
+  Nothing is playable until your rooms are painted in Tiled, exported and prepared.
+
+  To tune movement, starting abilities, player art or an ending, stop the game and
+  choose Project > Game Settings... in Defold. Click Save and Prepare & Check,
+  finish its prompts, then choose Project > Build to play with the saved settings.
+  The title screen has Play Game and Layout Editor. Player preferences are in
+  Settings in the game's pause menu.
+
+
+IF SOMETHING GOES WRONG
+
+  - Tiled's File menu has none of the toolkit's commands: repeat steps 24 to 27.
+  - Export says "Required exporters not found": repeat steps 20 to 23, then export
+    again.
+  - Tiled's Open File window doesn't list MVTK.tiled-project: set the file type list
+    at the bottom right to Tiled Projects (*.tiled-project).
+  - Set Up says to choose another folder: click Choose Again... and pick the Tiled
+    Worlds folder from step 5. It must be outside the Microvania_Toolkit folder.
+  - Anything else: see the troubleshooting section of docs/CREATOR_WORKFLOW.html, or
+    open an issue at https://github.com/schlista/Microvania-Toolkit/issues
+
+
+ABOUT THIS TOOLKIT
+
+  Windows is the verified beta platform. macOS and Linux use the same steps but are
+  experimental; the Creator Guide lists each platform's prerequisites.
+
+  This toolkit ships without example rooms or a ready-made campaign.
+  WHERE_THINGS_ARE.txt (written by Set Up This Toolkit) lists this toolkit's paths.
+
+  Optional, only for rooms you open without MVTK.tiled-project: run
+  tools\set_tiled_export_path.bat (Windows) or sh tools/set_tiled_export_path.sh
+  (macOS/Linux) from the Microvania_Toolkit folder to install the Tiled commands
+  into Tiled itself.
+
+  License: free for personal, non-commercial use. Selling or monetizing a game made
+  with the toolkit requires a paid Commercial License: see LICENSE, or email
+  MVTK@swishermail.com. The included art, music and sound are for demonstration
+  only; replace them before you release a game.

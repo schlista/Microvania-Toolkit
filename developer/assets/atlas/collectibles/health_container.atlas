@@ -1,0 +1,8 @@
+animations { id: "idle" images { image: "/developer/assets/atlas/collectibles/health_container.png" } playback: PLAYBACK_NONE fps: 1 }
+animations { id: "upgrade" images { image: "/developer/assets/atlas/collectibles/health_upgrade.png" } playback: PLAYBACK_NONE fps: 1 }
+animations { id: "health_small" images { image: "/developer/assets/atlas/collectibles/health_small.png" } playback: PLAYBACK_NONE fps: 1 }
+animations { id: "health_medium" images { image: "/developer/assets/atlas/collectibles/health_medium.png" } playback: PLAYBACK_NONE fps: 1 }
+animations { id: "health_large" images { image: "/developer/assets/atlas/collectibles/health_large.png" } playback: PLAYBACK_NONE fps: 1 }
+margin: 2
+extrude_borders: 0
+inner_padding: 0

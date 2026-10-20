@@ -1,0 +1,190 @@
+-- mvtk/prefabs/moving_platform.script
+-- ============================================================================
+-- MOVING PLATFORM
+-- ============================================================================
+-- A platform that moves along a path. Player rides on top and moves with it.
+--
+-- TILED PROPERTIES:
+--   path_name    - Name of polyline object defining path
+--   speed        - Movement speed in pixels/second (default: 100)
+--   wait_time    - Seconds to wait at each waypoint (default: 1.0)
+--   mode         - "loop", "pingpong", "once" (default: "pingpong")
+--   start_delay  - Seconds before platform starts moving
+--   trigger_id   - Only moves when this trigger is activated
+--   player_parent - If true, player moves with platform (default: true)
+--
+-- CONFIGURATION:
+--   All values come from Tiled properties or game_config.lua
+--   DO NOT hardcode values here.
+-- ============================================================================
+
+go.property("platform_id", "")
+go.property("speed", 100)
+go.property("wait_time", 1.0)
+go.property("mode", "pingpong")
+go.property("start_delay", 0)
+go.property("trigger_id", "")
+go.property("player_parent", true)
+
+local PLAYER_GROUP = hash("player")
+local FrameClock = require "mvtk.core.frame_clock"
+
+-----------------------------------------------------------
+-- Local Helper Functions
+-----------------------------------------------------------
+
+local function advance_waypoint(self)
+    local mode = self.mode
+
+    if mode == "loop" then
+        self.current_index = self.current_index + 1
+        if self.current_index > #self.path then
+            self.current_index = 1
+        end
+
+    elseif mode == "pingpong" then
+        self.current_index = self.current_index + self.direction
+        if self.current_index > #self.path then
+            self.direction = -1
+            self.current_index = #self.path - 1
+        elseif self.current_index < 1 then
+            self.direction = 1
+            self.current_index = 2
+        end
+
+    elseif mode == "once" then
+        self.current_index = self.current_index + 1
+        if self.current_index > #self.path then
+            self.triggered = false  -- Stop at end
+            self.current_index = #self.path
+        end
+    end
+end
+
+-----------------------------------------------------------
+-- Lifecycle Functions
+-----------------------------------------------------------
+
+function init(self)
+    self.path = {}
+    self.current_index = 1
+    self.direction = 1  -- 1 = forward, -1 = backward
+    self.waiting = false
+    self.wait_timer = 0
+    self.started = false
+    self.start_timer = self.start_delay
+    self.triggered = self.trigger_id == ""
+    self.player_on_platform = false
+    self.player_url = nil
+    self.last_pos = go.get_position()
+
+    -- Store starting position as first path point if no path provided
+    self.origin = go.get_position()
+end
+
+function on_message(self, message_id, message, sender)
+    if message_id == hash("set_path") then
+        -- Receive path points from spawner
+        if message.points and #message.points > 0 then
+            self.path = message.points
+            -- Offset path points relative to platform origin
+            local origin = self.origin
+            for i, pt in ipairs(self.path) do
+                self.path[i] = vmath.vector3(origin.x + pt.x, origin.y + pt.y, origin.z)
+            end
+        end
+
+    elseif message_id == hash("trigger") or message_id == hash("activate") then
+        -- External trigger to start movement
+        if self.trigger_id ~= "" then
+            self.triggered = true
+        end
+
+    elseif message_id == hash("stop") or message_id == hash("deactivate") then
+        self.triggered = false
+
+    elseif message_id == hash("apply_tiled_props") then
+        -- Apply any additional Tiled properties
+        local props = message.properties or {}
+        if props.speed then self.speed = props.speed end
+        if props.wait_time then self.wait_time = props.wait_time end
+
+    elseif message_id == hash("contact_point_response") then
+        -- Check if player landed on top of platform
+        if message.group == PLAYER_GROUP then
+            local normal = message.normal
+            if normal.y < -0.5 then  -- Player is on top
+                self.player_on_platform = true
+                -- Keep the contacted GO rather than its collision-object URL.
+                -- In Spine physics this is a foot-probe GO whose script proxies
+                -- platform_delta to the collection's player root.
+                self.player_url = message.other_id or message.other_url
+            end
+        end
+    end
+end
+
+function update(self, dt)
+    dt = FrameClock.snap(dt)
+    -- Handle start delay
+    if not self.started then
+        if self.start_timer > 0 then
+            self.start_timer = self.start_timer - dt
+            return
+        end
+        self.started = true
+    end
+
+    -- Check if triggered
+    if not self.triggered then
+        return
+    end
+
+    -- Need at least 2 path points to move
+    if #self.path < 2 then
+        return
+    end
+
+    -- Handle waiting at waypoints
+    if self.waiting then
+        self.wait_timer = self.wait_timer - dt
+        if self.wait_timer <= 0 then
+            self.waiting = false
+            -- Move to next waypoint
+            advance_waypoint(self)
+        end
+        return
+    end
+
+    -- Move toward current target
+    local current_pos = go.get_position()
+    local target = self.path[self.current_index]
+    local to_target = target - current_pos
+    local distance = vmath.length(to_target)
+
+    if distance < 2 then
+        -- Reached waypoint
+        go.set_position(target)
+        self.waiting = true
+        self.wait_timer = self.wait_time
+    else
+        -- Move toward target
+        local move_dist = self.speed * dt
+        if move_dist > distance then move_dist = distance end
+        local move_vec = vmath.normalize(to_target) * move_dist
+        local new_pos = current_pos + move_vec
+        go.set_position(new_pos)
+
+        -- Move player if on platform
+        if self.player_parent and self.player_on_platform and self.player_url then
+            local delta = new_pos - self.last_pos
+            pcall(msg.post, self.player_url, hash("platform_delta"), {
+                dx = delta.x,
+                dy = delta.y,
+            })
+        end
+    end
+
+    self.last_pos = go.get_position()
+    self.player_on_platform = false  -- Reset each frame, set by collision
+end

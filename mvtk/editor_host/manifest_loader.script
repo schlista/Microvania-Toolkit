@@ -1,0 +1,80 @@
+local LayoutIO   = require("mvtk.rooms.layout_io")
+local Geometry   = require("mvtk.rooms.tilemap_geometry")
+local RoomsCfg   = require("developer.config.rooms_config")
+local Settings   = require("developer.config.layout_editor_settings")
+local Tile       = require("developer.config.tile_settings")
+local StreamPaths = require("mvtk.rooms.stream_paths")
+
+local function url_gui()
+	-- Post to the GUI component within the same loaded collection
+	return msg.url(nil, "ui", "gui")
+end
+
+local function save_manifest(entries)
+	local app  = Settings.app_id or "mvtk_layout_editor"
+	local file = Settings.auto_manifest_filename or "rooms_auto"
+	local path = sys.get_save_file(app, file)
+	local ok = sys.save(path, { rooms = entries })
+	print(string.format("[MANIFEST_LOADER] saved %d rooms to %s (ok=%s)", #entries, path, tostring(ok)))
+	local payload = { source = "manifest_loader", rooms = #entries, ok = ok }
+	msg.post(url_gui(), "manifest_saved", payload)
+	msg.post(url_gui(), "rescan_rooms", payload)
+end
+
+local function canonical(id)
+	return LayoutIO.normalize_id(id, Settings.rooms_zero_pad or 2)
+end
+
+local function gather_rooms()
+	local list, seen = {}, {}
+	for path,_ in pairs((RoomsCfg and RoomsCfg.factories) or {}) do
+		local raw = tostring(path or ""):gsub("^developer/rooms/", "")
+		if raw ~= "" then
+			local cid = canonical(raw)
+			if not seen[cid] then
+				seen[cid] = true
+				local geom, err = Geometry.load(raw)
+				if not geom then
+					print(string.format("[MANIFEST_LOADER] geometry load failed for %s: %s", raw, tostring(err)))
+				end
+				local w = geom and geom.width_px or 0
+				local h = geom and geom.height_px or 0
+				if (not geom or w == 0 or h == 0) then
+					print(string.format("[MANIFEST_LOADER] fallback dims for %s", raw))
+					w = w > 0 and w or (Tile.width  * 10)
+					h = h > 0 and h or (Tile.height * 10)
+				end
+				list[#list+1] = {
+					id      = cid,
+					tilemap = StreamPaths.tiled_tilemap(raw),
+					w       = w,
+					h       = h,
+					tile    = Tile.width,
+				}
+			end
+		end
+	end
+	table.sort(list, function(a, b) return a.id < b.id end)
+	return list
+end
+
+local function perform_scan()
+	print("[MANIFEST_LOADER] scanning rooms via geometry")
+	local entries = gather_rooms()
+	for i, entry in ipairs(entries) do
+		print(string.format("  [%02d] %s (%dx%d)", i, entry.id, entry.w, entry.h))
+	end
+	save_manifest(entries)
+end
+
+function init(self)
+	print("[MANIFEST_LOADER] init() self.url=", msg.url())
+	perform_scan()
+end
+
+function on_message(self, mid, m, sender)
+	if mid == hash("rescan") then
+		print("[MANIFEST_LOADER] rescan requested")
+		perform_scan()
+	end
+end

@@ -1,0 +1,165 @@
+-- Conveyor belt script
+-- Pushes entities in a direction while they overlap the trigger.
+-- Matches hazard_force.script pattern: use message.other_id directly with msg.post.
+
+local Util = require "mvtk.core.util"
+
+go.property("conveyor_id", "")
+go.property("direction", "right")
+go.property("speed", 150)
+go.property("width", 128)
+go.property("height", 128)
+go.property("affects_enemies", true)
+go.property("affects_items", false)
+go.property("enabled", true)
+go.property("animation_speed", 1.0)
+go.property("room_id", "")
+go.property("show_sprite", true) -- false when the Tiled layer owns the visible art
+
+local ToggleMessages = require "mvtk.prefabs.toggle_messages"
+
+-- Debug: set true to see trigger/force messages in console
+local DEBUG_CONVEYOR = false
+local MSG_SET_ENABLED = hash("set_enabled")
+
+local function compute_push(self)
+    local vx, vy = 0, 0
+    if self.direction == "left" then
+        vx = -self.speed
+    elseif self.direction == "right" then
+        vx = self.speed
+    elseif self.direction == "up" then
+        vy = self.speed
+    elseif self.direction == "down" then
+        vy = -self.speed
+    end
+    return vx, vy
+end
+
+function init(self)
+    -- Keyed by message.other_id (hash) -> true
+    self.touching = {}
+
+    -- If disabled at start, disable the sprite animation
+    if not self.enabled or not self.show_sprite then
+        Util.set_component_enabled("#sprite", false)
+    end
+
+    -- Store animation speed for potential use by sprite component
+    -- The sprite's flipbook animation can be controlled via play_flipbook options
+    self.current_anim_speed = self.animation_speed
+end
+
+function update(self, dt)
+    -- Skip processing if disabled
+    if not self.enabled then
+        return
+    end
+
+    local vx, vy = compute_push(self)
+    if vx == 0 and vy == 0 then
+        return
+    end
+
+    -- Post external_force to every entity currently touching the conveyor
+    if next(self.touching) then
+        for entity_id, _ in pairs(self.touching) do
+            local target_url = msg.url(nil, entity_id, nil)
+            if DEBUG_CONVEYOR then
+                print(string.format("[CONVEYOR] posting force vx=%d to %s", vx, tostring(target_url)))
+            end
+            pcall(msg.post, target_url, hash("external_force"), {
+                vx = vx,
+                vy = vy,
+                conveyor = true,
+                conveyor_id = self.conveyor_id,
+            })
+        end
+    end
+end
+
+local function apply_enabled(self, enabled, message_id)
+    if message_id == MSG_SET_ENABLED and enabled == self.enabled then
+        return
+    end
+
+    self.enabled = enabled
+    if self.enabled and self.show_sprite then
+        Util.set_component_enabled("#sprite", true)
+        if DEBUG_CONVEYOR then
+            print("[CONVEYOR] Enabled")
+        end
+    else
+        Util.set_component_enabled("#sprite", false)
+    end
+    if not self.enabled then
+        self.touching = {}
+        if DEBUG_CONVEYOR then
+            print("[CONVEYOR] Disabled")
+        end
+    end
+end
+
+function on_message(self, message_id, message, sender)
+    if message_id == hash("trigger_response") then
+        -- Ignore triggers if disabled
+        if not self.enabled then
+            return
+        end
+
+        local entity_id = message and message.other_id
+        if not entity_id then
+            return
+        end
+
+        local other_group = message.other_group or message.group
+        local is_player = other_group == hash("player")
+        local is_enemy = other_group == hash("enemy")
+        local is_item = other_group == hash("item") or other_group == hash("collectible")
+
+        -- Filter by entity type
+        local should_affect = false
+        if is_player then
+            should_affect = true
+        elseif is_enemy and self.affects_enemies then
+            should_affect = true
+        elseif is_item and self.affects_items then
+            should_affect = true
+        end
+
+        if not should_affect then
+            return
+        end
+
+        if message.enter then
+            if DEBUG_CONVEYOR then
+                print(string.format("[CONVEYOR] ENTER: entity=%s group=%s", tostring(entity_id), tostring(other_group)))
+            end
+            self.touching[entity_id] = true
+
+            -- Send initial force immediately on contact
+            local target_url = msg.url(nil, entity_id, nil)
+            local vx, vy = compute_push(self)
+            pcall(msg.post, target_url, hash("external_force"), {
+                vx = vx,
+                vy = vy,
+                conveyor = true,
+                conveyor_id = self.conveyor_id,
+            })
+            pcall(msg.post, target_url, hash("on_conveyor"), {
+                direction = self.direction,
+                speed = self.speed,
+            })
+        else
+            -- On trigger exit, remove from touching so we stop posting forces.
+            -- Don't send off_conveyor - let the player's staleness mechanism
+            -- handle cleanup. This prevents oscillation from trigger jitter.
+            if DEBUG_CONVEYOR then
+                print(string.format("[CONVEYOR] EXIT: entity=%s", tostring(entity_id)))
+            end
+            self.touching[entity_id] = nil
+        end
+
+    elseif ToggleMessages.handle(self, message_id, message, apply_enabled, { truthy = true }) then
+    end
+end

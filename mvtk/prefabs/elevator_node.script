@@ -1,0 +1,59 @@
+-- Streamed Tiled route marker. Landing markers are callable endpoints;
+-- pass_through markers only contribute ordered room/seam metadata.
+
+local ElevatorManager = require "mvtk.elevators.elevator_manager"
+local PU = require "mvtk.prefabs.prefab_utils"
+
+go.property("elevator_id", "")
+go.property("node_id", "")
+go.property("node_kind", "landing")
+go.property("stop", "")
+go.property("room_id", "")
+go.property("door_id", "")
+
+local function definition(self, overrides)
+    overrides = overrides or {}
+    local function value(name, fallback)
+        if overrides[name] ~= nil then return overrides[name] end
+        return fallback
+    end
+    return {
+        elevator_id = value("elevator_id", self.elevator_id_key),
+        node_id = value("node_id", self.node_id),
+        node_kind = value("node_kind", self.node_kind),
+        stop = value("stop", self.stop),
+        room_id = value("room_id", self.room_id),
+        door_id = value("door_id", self.door_id),
+        position = go.get_world_position(),
+        url = msg.url(),
+    }
+end
+
+local function register(self, overrides)
+    if not self.elevator_id_key then return end
+    local registration, err = ElevatorManager.register_node(definition(self, overrides))
+    if registration then
+        self.registration = registration
+    elseif err and err ~= "waiting_for_two_nodes" then
+        print(string.format("[ELEVATOR] node '%s' registration: %s",
+            tostring(PU.resolve_id(self.node_id) or go.get_id()), tostring(err)))
+    end
+end
+
+function init(self)
+    self.elevator_id_key = PU.resolve_id(self.elevator_id)
+    register(self)
+end
+
+function final(self)
+    if self.elevator_id_key and self.registration then
+        ElevatorManager.unregister_node(self.elevator_id_key, self.stop, msg.url(), self.registration)
+    end
+end
+
+function on_message(self, message_id, message)
+    if message_id == hash("apply_tiled_props") and message and message.properties then
+        register(self, message.properties)
+    end
+end
+

@@ -1,0 +1,31 @@
+-- mvtk/prefabs/breakable.script
+
+go.property("health", 1.0)
+
+local PU = require "mvtk.prefabs.prefab_utils"
+local C = require "mvtk.core.constants"
+local Pause = require "mvtk.core.pause"
+
+local DAMAGE_MSG = hash("mvtk_apply_damage")
+
+function init(self)
+  self.hp = self.health or 1
+end
+
+local function feel()
+  if C and C.URL and C.URL.CAMERA then pcall(msg.post, C.URL.CAMERA, hash("cam_shake"), { mag = 8, dur = 0.06 }) end
+  if Pause and Pause.hitstop then Pause.hitstop(0.02) end
+end
+
+function on_message(self, message_id, message, sender)
+  if message_id == DAMAGE_MSG then
+    local amt = (message and message.amount) or 1
+    self.hp = (self.hp or 1) - amt
+    feel()
+    if (self.hp or 0) <= 0 then
+      PU.play_sound("break")
+      go.delete(".")
+    end
+  end
+end
+

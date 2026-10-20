@@ -1,0 +1,82 @@
+local Viewport = require "mvtk.ui.viewport"
+local Debug = require('developer.config.debug_config')
+local TARGET = msg.url("main:/main_go#script")
+local function minimap_debug_log(...)
+    if Debug.global.enable or Debug.minimap.debug then
+        print(...)
+    end
+end
+
+local BUTTONS = {
+    { label = "Unload Minimap", message = hash("debug_minimap_unload") },
+    { label = "Load Minimap", message = hash("minimap_reload_requested") },
+}
+
+local PRIMARY_IDS = {
+    [hash("touch")] = true,
+    [hash("mouse_button_1")] = true,
+}
+
+local function create_button(self, cfg, index, screen_height)
+    local width, height = 240, 48
+    local margin = 20
+    local spacing = 12
+    local x = margin
+    local y = screen_height - margin - (index - 1) * (height + spacing)
+
+    local box = gui.new_box_node(vmath.vector3(x, y, 0), vmath.vector3(width, height, 0))
+    gui.set_pivot(box, gui.PIVOT_NW)
+    gui.set_color(box, vmath.vector4(0.1, 0.1, 0.1, 0.7))
+
+    local text = gui.new_text_node(vmath.vector3(0, 0, 0.01), cfg.label)
+    gui.set_parent(text, box, false)
+    gui.set_pivot(text, gui.PIVOT_CENTER)
+    gui.set_position(text, vmath.vector3(width * 0.5, -height * 0.5, 0.01))
+    gui.set_color(text, vmath.vector4(1, 1, 1, 1))
+
+    self.buttons[#self.buttons + 1] = {
+        node = box,
+        label = text,
+        message = cfg.message,
+        normal = vmath.vector4(0.1, 0.1, 0.1, 0.7),
+        active = vmath.vector4(0.2, 0.2, 0.2, 0.9),
+    }
+end
+
+function init(self)
+    msg.post(".", "acquire_input_focus")
+    self.buttons = {}
+    local _, sh = Viewport.design_size()
+    for i, cfg in ipairs(BUTTONS) do
+        create_button(self, cfg, i, sh)
+    end
+end
+
+local function handle_press(self, action_id, action)
+    if not action or not PRIMARY_IDS[action_id] then
+        return false
+    end
+    if action.pressed then
+        for _, btn in ipairs(self.buttons) do
+            if gui.pick_node(btn.node, action.x, action.y) then
+                gui.set_color(btn.node, btn.active)
+                self.active_button = btn
+                minimap_debug_log(string.format('[MINIMAP_DEBUG] %s pressed', gui.get_text(btn.label)))
+                msg.post(TARGET, btn.message, {})
+                return true
+            end
+        end
+    elseif action.released and self.active_button then
+        gui.set_color(self.active_button.node, self.active_button.normal)
+        self.active_button = nil
+    end
+    return false
+end
+
+function on_input(self, action_id, action)
+    handle_press(self, action_id, action)
+end
+
+function final(self)
+    msg.post(".", "release_input_focus")
+end

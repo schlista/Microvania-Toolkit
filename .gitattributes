@@ -1,0 +1,30 @@
+# Keep repository text files on LF across Windows, WSL, and macOS.
+* text=auto eol=lf
+
+# Common binary assets: never attempt line-ending normalization.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.bmp binary
+*.ico binary
+*.psd binary
+*.wav binary
+*.ogg binary
+*.mp3 binary
+*.ttf binary
+*.otf binary
+*.zip binary
+*.7z binary
+*.exe binary
+*.dll binary
+
+# Tiled export receipts and world manifests fingerprint exact saved bytes.
+# Preserve copied authoring files and hashed map outputs across checkouts.
+developer/assets/tiled/**/*.tmx -text whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol
+developer/assets/tiled/**/*.tsx -text whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol
+developer/assets/tilesheets/**/*.tsx -text whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol
+developer/assets/tiled/maps/*.lua -text whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol
+developer/assets/tiled/maps/*.tilemap -text whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol
+developer/assets/tiled/worlds/*.lua -text whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol

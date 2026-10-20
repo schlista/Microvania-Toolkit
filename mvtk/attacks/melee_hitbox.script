@@ -1,0 +1,186 @@
+-- mvtk/attacks/melee_hitbox.script
+local v3 = vmath.vector3
+local Pause = require "mvtk.core.pause"
+local C = require "mvtk.core.constants"
+local BoneCollision = require "mvtk.animation.bone_collision"
+local Util = require "mvtk.core.util"
+local DamagePayload = require "mvtk.combat.damage_payload"
+local CombatFeedback = require "mvtk.combat.combat_feedback"
+local Debug = require "developer.config.debug_config"
+local DebugDraw = require "mvtk.debug.debug_draw"
+local SwingRegistry = require "mvtk.combat.swing_registry"
+
+-- Tunables
+go.property("lifetime", 0.14)
+go.property("damage", 1.0)
+go.property("knockback", 80.0)
+go.property("dir", 1.0)           -- -1 left, +1 right
+go.property("on_hit_msg", "")     -- optional message to send to owner on first hit
+go.property("stun_t", 0.10)
+go.property("attack_type", "")    -- action tag for action barriers (e.g. "dash")
+go.property("hit_enemy", true)          -- whether this hitbox can damage enemy-group targets
+go.property("hit_breakable", true)      -- whether this hitbox can damage breakable-group targets
+go.property("source_attack", "")  -- standardized combat payload field
+go.property("source_actor", msg.url())  -- standardized combat payload field
+go.property("boss_id", "")       -- encounter feedback lookup; empty for non-boss attacks
+go.property("parryable", false)         -- whether this hit can be parried by the defender
+go.property("reaction_type", "")  -- light/medium/heavy/launch/stun
+go.property("kx", 0.0)                  -- explicit knockback x
+go.property("ky", 0.0)                  -- explicit knockback y
+-- Debug visualization fields (set by mvtk.combat.attack_executor when
+-- spawning a player hitbox; left at defaults for enemy/boss hitboxes).
+go.property("debug_w", 120.0)
+go.property("debug_h", 100.0)
+go.property("debug_shape", "box")
+go.property("debug_radius", 0.0)
+-- Swing-level dedup id. Set by mvtk.combat.attack_executor when a player
+-- swing spawns one or more hitboxes; left as empty text for enemy / boss
+-- hitboxes (which keep using per-instance _hit_targets only).
+go.property("swing_id", "")
+
+local function to_go_target(url_or_id)
+  local ok, u = pcall(msg.url, url_or_id)
+  if ok and u and u.path then
+    return msg.url(u.socket, u.path, nil)
+  end
+  return url_or_id
+end
+
+local ENEMY_GROUP = hash("enemy")
+local BREAKABLE_GROUP = hash("breakable")
+
+local hash_to_string = Util.hash_text
+
+function init(self)
+  self.t = self.lifetime or 0.14
+  self.follow_bone = nil
+  self.follow_spine_url = nil
+  self.follow_owner = false
+  self.follow_owner_url = nil
+  self.follow_offset = v3(0, 0, 0)
+  self.attack_type_id = (self.attack_type and self.attack_type ~= "") and self.attack_type or nil
+  self.source_attack_str = hash_to_string(self.source_attack)
+  self.reaction_type_str = hash_to_string(self.reaction_type)
+  -- Track which targets have already been hit this swing so each enemy
+  -- only takes damage once per attack.
+  self._hit_targets = {}
+  -- Stringified swing id used for the shared SwingRegistry lookup. Empty
+  -- string disables the registry path (enemy / boss hitboxes don't pass one).
+  self.swing_id_str = hash_to_string(self.swing_id) or ""
+end
+
+function update(self, dt)
+  if Pause and Pause.get and Pause.get() then return end
+  -- If configured to follow a spine bone, update position each frame
+  if self.follow_bone and self.follow_spine_url then
+    local pos = BoneCollision.get_bone_position(self.follow_spine_url, self.follow_bone)
+    if pos then
+      go.set_position(pos + (self.follow_offset or v3(0,0,0)))
+    end
+  elseif self.follow_owner and self.follow_owner_url then
+    local ok_pos, owner_pos = pcall(go.get_position, self.follow_owner_url)
+    if ok_pos and owner_pos then
+      go.set_position(owner_pos + (self.follow_offset or v3(0,0,0)))
+    end
+  end
+  -- Live hitbox visualization: F3 toggles DebugDraw.settings.draw_hitboxes
+  -- via mvtk/debug/debug_overlay.gui_script. Posting every frame is the
+  -- only way to keep the shape visible since the renderer drains the
+  -- engine debug-line buffer each frame.
+  if DebugDraw.settings.draw_hitboxes then
+    local pos = go.get_position()
+    if self.debug_shape == "circle" then
+      local radius = self.debug_radius
+      if radius <= 0 then radius = (self.debug_w or 0) * 0.5 end
+      DebugDraw.draw_circle(pos, radius)
+    else
+      DebugDraw.draw_attack_hitbox(pos, vmath.vector3(self.debug_w or 0, self.debug_h or 0, 0))
+    end
+  end
+  self.t = self.t - dt
+  if self.t <= 0 then go.delete(".") end
+end
+
+function on_message(self, message_id, message, sender)
+  if message_id == hash("set_owner") then
+    self.owner = message and message.owner or sender
+    if self.follow_owner and not self.follow_owner_url then
+      self.follow_owner_url = to_go_target(self.owner)
+    end
+    return
+  elseif message_id == hash("set_follow_bone") then
+    self.follow_bone = message and message.bone or self.follow_bone
+    self.follow_spine_url = message and message.spine_url or self.follow_spine_url
+    self.follow_offset = message and message.offset or self.follow_offset or v3(0,0,0)
+    self.follow_owner = false
+    self.follow_owner_url = nil
+    return
+  elseif message_id == hash("set_follow_owner") then
+    local should_follow = true
+    if message and message.active ~= nil then
+      should_follow = message.active and true or false
+    end
+    self.follow_owner = should_follow
+    self.follow_offset = message and message.offset or self.follow_offset or v3(0,0,0)
+    local follow_target = message and message.owner or self.owner or sender
+    self.follow_owner_url = should_follow and to_go_target(follow_target) or nil
+    if should_follow then
+      self.follow_bone = nil
+      self.follow_spine_url = nil
+    end
+    return
+  elseif message_id == hash("trigger_response") then
+    if message.enter and message.other_id then
+      local other_group = message.other_group or message.group
+      if other_group == ENEMY_GROUP and not self.hit_enemy then return end
+      if other_group == BREAKABLE_GROUP and not self.hit_breakable then return end
+      -- Prevent the same target from being hit twice by this swing
+      local target_key = tostring(message.other_id)
+      if self._hit_targets[target_key] then return end
+      -- Cross-hitbox dedup: if another hitbox in the same swing already hit
+      -- this target, swallow the hit. Skipped when swing_id_str is empty
+      -- (enemy / boss paths) â€” they keep current per-instance behavior.
+      if self.swing_id_str ~= "" and SwingRegistry.has_hit(self.swing_id_str, target_key) then
+        self._hit_targets[target_key] = true
+        return
+      end
+      self._hit_targets[target_key] = true
+      if self.swing_id_str ~= "" then
+        SwingRegistry.mark_hit(self.swing_id_str, target_key)
+      end
+      if Debug.global.enable or Debug.combat.melee then
+        print(string.format("[MELEE_HITBOX] hit -> %s group=%s other_group=%s", tostring(message.other_id), tostring(message.group), tostring(message.other_group)))
+      end
+      -- Send to the game object id directly. Some generated prefabs use
+      -- script ids like "#enemy" instead of "#script".
+      local target = to_go_target(message.other_id)
+      -- Send a damage message to the other GO
+      local dmg = self.damage or 1
+      local kb  = self.knockback or 0
+      local dir = (self.dir or 1)
+      local payload = DamagePayload.build({
+        amount = dmg,
+        damage_type = "slash",
+        kx = (self.kx ~= 0) and self.kx or (kb * dir),
+        ky = self.ky or 0,
+        stun_t = self.stun_t or 0.10,
+        parryable = self.parryable == true,
+        source_actor = self.source_actor or self.owner or msg.url(),
+        boss_id = self.boss_id,
+        source_attack = self.source_attack_str,
+        reaction_type = self.reaction_type_str,
+        attack_type = self.attack_type_id,
+      })
+      if self.attack_type_id then
+        payload.attack_type = self.attack_type_id
+      end
+      pcall(msg.post, target, hash("mvtk_apply_damage"), payload)
+      CombatFeedback.attack_impact("melee", dmg, self.boss_id, message.other_id, { sfx = "hit_melee" })
+      -- Notify owner if requested (for pogo/down-strike bounce etc.)
+      if self.on_hit_msg and self.on_hit_msg ~= "" then
+        local target = self.owner or sender
+        pcall(msg.post, target, self.on_hit_msg, { other = message.other_id })
+      end
+    end
+  end
+end

@@ -1,0 +1,104 @@
+/.editor_settings
+/.internal
+/.build
+/build
+/export
+/build_tmp*/
+/dist
+.DS_Store
+Thumbs.db
+
+# Debug files
+/*.txt
+!/START_HERE.txt
+luac.out
+debug_output.txt
+debug_output.txt.1
+perf_report.txt
+*.log
+logs/
+*.pdb
+*.ilk
+bob_*.txt
+build_*.txt
+full_build_log.txt
+
+# Backup files (editor and tool generated)
+*.backup
+
+# Cleanup backups (Delete My Rooms / Reset Project move removed files here)
+developer/.trash/
+developer/.wizard/
+/.wizard/
+
+# Local editor/runtime exports (do not sync)
+*.tiled-session
+developer/assets/minimap/updated_map.png
+developer/assets/minimap/updated_map.atlas
+developer/assets/minimap/updated_map.lua
+developer/runtime/layout/world_layout.local.lua
+developer/runtime/layout/manual_backup.lua
+
+# Editor temp files
+*.swp
+*.swo
+*~
+
+# Save files and runtime data (local only)
+mvtk_save_slot_*
+mvtk_bindings
+mvtk_bindings.bak
+mvtk_settings
+mvtk_settings.bak
+mvtk_last_slot
+mvtk_last_slot.bak
+mvtk_reset_pending
+temp.settings
+*.tmp
+tmp_*.html
+__pycache__/
+*.pyc
+
+# IDE settings
+.vscode/
+.idea/
+
+# Project > Game Settings... output belongs to each creator's game, not the toolkit.
+developer/MY_GAME_README.md
+
+# Invalid Windows-reserved filename that can be created from WSL by mistake.
+/NUL
+
+# Git hooks (included in repo)
+# .git-hooks/
+
+# Test bake-fixture outputs (runtime_behavior_tests writes through the real baker)
+developer/rooms/generated/runtime_pipeline_fixture_*
+
+# Generated Tiled batch-export evidence (not documentation)
+developer/tools/tiled/template_test_export_report.txt
+
+# Agent reference copies of dependency sources (defold-project-setup skill).
+# Large, re-downloadable, and never a build resource. Also excluded in
+# .defignore and tools/lib_sample_strip.ps1.
+.deps/
+
+# Disposable authoring relationship index and diagnostics.
+/developer/assets/tiled/content_index.json
+/developer/assets/tiled/relationship_diagnostics.txt
+/developer/assets/tiled/progression_diagnostics.txt
+/developer/assets/tiled/progression_analysis.json
+
+# Authoring preparation reports and draft revisions.
+/developer/assets/tiled/preparation*
+/developer/assets/tiled/build_revision.lua
+/developer/assets/tiled/build_pending.lua
+/developer/runtime/layout/draft_revision.lua
+# Disposable editor write bundles and performance helper files.
+/.mvtk_tmp/
+
+# Local Windows cache files under an unexpanded environment placeholder.
+/%SystemDrive%/
+
+# Local debugger helper added by an editor extension; not project content.
+/debugger/

@@ -1,0 +1,123 @@
+-- developer/ui/menus/death_menu.gui_script
+local Pause = require "mvtk.core.pause"
+local InputCtl = require "mvtk.rooms.input_controller"
+local Checkpoint = require "mvtk.core.checkpoint"
+
+function init(self)
+  print("[DEATH_GUI] Initializing death GUI")
+  msg.post(".", "acquire_input_focus")
+  self._enabled = false
+  self._visible = false
+  self._delay_timer = 0
+  msg.post(".", "disable")
+
+  -- Get references to GUI nodes (already disabled in GUI file)
+  self.overlay = gui.get_node("overlay")
+  self.title = gui.get_node("title")
+  self.hint = gui.get_node("hint")
+  self._default_hint = gui.get_text(self.hint)
+
+  print("[DEATH_GUI] Initialized - GUI ready (nodes start hidden)")
+end
+
+local function show_screen(self)
+  print("[DEATH_GUI] Showing death screen NOW")
+  self._visible = true
+  gui.set_enabled(self.overlay, true)
+  gui.set_enabled(self.title, true)
+  gui.set_enabled(self.hint, true)
+  print("[DEATH_GUI] Death screen visible - overlay, title, and hint enabled")
+end
+
+local function open(self)
+  print("[DEATH_GUI] Death screen opened - starting 2 second delay")
+  self._enabled = true
+  self._visible = false
+  self._delay_timer = 2.0  -- 2 second delay
+  gui.set_text(self.hint, self._default_hint)
+  msg.post(".", "enable")
+  if InputCtl and InputCtl.set_blocked then InputCtl.set_blocked(true) end
+  if Pause and Pause.set then Pause.set(true) end
+end
+
+local function close(self)
+  self._enabled = false
+  self._visible = false
+  self._delay_timer = 0
+  msg.post(".", "disable")
+  if InputCtl and InputCtl.set_blocked then InputCtl.set_blocked(false) end
+  if Pause and Pause.set then Pause.set(false) end
+  gui.set_enabled(self.overlay, false)
+  gui.set_enabled(self.title, false)
+  gui.set_enabled(self.hint, false)
+end
+
+local function respawn(self)
+  print("========================================")
+  print("[DEATH_GUI] 🔄 RESPAWN FUNCTION CALLED")
+  print("========================================")
+
+  -- Close the death menu first
+  print("[DEATH_GUI] Closing death menu...")
+  close(self)
+
+  -- Send message to main script to handle restart
+  -- (GUI scripts can't call go.* functions, so we delegate to main script)
+  print("[DEATH_GUI] Sending restart_game message to main script...")
+  msg.post("main:/main_go#script", hash("restart_game"), {})
+
+  print("[DEATH_GUI] ✅ Restart message sent!")
+  print("========================================")
+end
+
+function on_message(self, message_id, _message, _sender)
+  print("[DEATH_GUI] Received message:", message_id)
+  if message_id == hash("open_death") then
+    print("[DEATH_GUI] open_death message received!")
+    pcall(msg.post, msg.url("main:/cutscene_manager#cutscene"), hash("cs_death_start"), {})
+    open(self)
+  elseif message_id == hash("close_death") then
+    print("[DEATH_GUI] close_death message received")
+    close(self)
+  end
+end
+
+function on_input(self, action_id, action)
+  if not self._enabled or not self._visible or not action or not action.pressed then return end
+
+  print("[DEATH_GUI] 🎮 Input received:", action_id, "enabled:", self._enabled, "visible:", self._visible)
+
+  if action_id == hash("gamepad_rpad_down") or action_id == hash("key_enter") then
+    print("[DEATH_GUI] ✅ A BUTTON PRESSED - Calling respawn()")
+    respawn(self)
+  elseif action_id == hash("gamepad_rpad_right") or action_id == hash("gamepad_back")
+      or action_id == hash("key_escape") or action_id == hash("key_m") then
+    print("[DEATH_GUI] ✅ B BUTTON PRESSED - Quitting game")
+    -- Commit the restored-checkpoint fee before exit. A failed disk write
+    -- keeps this screen open so Quit/Restart can retry without losing the fee.
+    local saved, err = Checkpoint.flush_suspended_save()
+    if not saved then
+      print("[DEATH_GUI] Cannot save death recovery before exit: " .. tostring(err))
+      gui.set_text(self.hint, "Could not save. Press Restart or Quit to retry.")
+      return
+    end
+    close(self)
+    sys.exit(0)
+  else
+    print("[DEATH_GUI] ⚠️ Unknown button pressed:", action_id)
+  end
+end
+
+function update(self, dt)
+  -- Handle delay timer before showing death screen
+  if self._enabled and not self._visible and self._delay_timer > 0 then
+    self._delay_timer = self._delay_timer - dt
+    if self._delay_timer <= 0 then
+      show_screen(self)
+    end
+  end
+end
+
+function final(self)
+  print("[DEATH_GUI] Death GUI being destroyed")
+end

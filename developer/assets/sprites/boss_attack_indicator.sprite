@@ -1,0 +1,9 @@
+tile_set: "/developer/assets/atlas/gameplay_visuals.atlas"
+default_animation: "light_glow_soft"
+material: "/builtins/materials/sprite.material"
+blend_mode: BLEND_MODE_ALPHA
+size {
+  x: 64.0
+  y: 64.0
+}
+size_mode: SIZE_MODE_MANUAL

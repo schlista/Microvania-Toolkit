@@ -1,0 +1,1066 @@
+--- Boss Controller Script
+-- Main component script for boss game objects
+-- Integrates with BossManager, state machine, and phase controller
+--
+-- Properties:
+--   boss_type (text) - Optional preset id forwarded by Tiled/editor import
+--
+-- @script boss
+
+local BossManager = require "mvtk.bosses.boss_manager"
+local StateMachine = require "mvtk.bosses.boss_state_machine"
+local PhaseController = require "mvtk.bosses.phase_controller"
+local Detection = require "mvtk.enemies.detection"
+local BossAttacks = require "mvtk.bosses.boss_attacks"
+local BossTypes = require "developer.config.boss_types"
+local BossAnimations = require "mvtk.bosses.boss_animations"
+local Anim = require "mvtk.animation.api"
+local Util = require "mvtk.core.util"
+-- Boss arenas are a core boss dependency. Keep this require literal so
+-- Defold's dependency scanner bundles it for baked Tiled arena markers.
+local BossArena = require "mvtk.bosses.boss_arena"
+local Invulnerability = require "mvtk.combat.invulnerability"
+local DamagePayload = require "mvtk.combat.damage_payload"
+local CombatFeedback = require "mvtk.combat.combat_feedback"
+local SafeSound = require "mvtk.audio.safe_sound"
+local Debug = Util.require_config("developer.config.debug_config", {
+    bosses = { manager = false },
+    global = { enable = false },
+})
+local Defaults = Util.require_config("developer.config.boss_defaults", {
+    contact_damage       = 2,
+    contact_knockback_x  = 120,
+    contact_knockback_y  = 80,
+    default_sprite_size  = 64,
+    hurt_flash_color     = { 1.0, 0.5, 0.5, 1.0 },
+    hurt_flash_duration  = 0.1,
+    defeat_cleanup_delay = 2.0,
+})
+-- This is a runtime resource dependency, not an optional user module. Keep
+-- the require literal so Defold's dependency scanner includes the visual
+-- registry in release builds; otherwise custom boss sprites silently fall
+-- back to the shared boss atlas.
+local BossVisuals = require "developer.config.boss_visuals"
+
+local function debug_enabled()
+    return (Debug.bosses and Debug.bosses.manager) or (Debug.global and Debug.global.enable) or false
+end
+
+-- Debug-gate this script's chatter, matching boss_manager.lua. Console writes
+-- are synchronous, and the boss subsystem post-dates the sweep that gated the
+-- rest of the gameplay path, so `execute_attack` (every attack) and
+-- `apply_knockback` (every damaging hit) were writing to the console mid-fight.
+-- Use boss_notice for genuine configuration/spawn failures: those happen once
+-- and the creator needs to see them without turning on a debug flag.
+local _orig_print = print
+local boss_notice = _orig_print
+local function print(...)  -- luacheck: ignore 121
+    if debug_enabled() then
+        _orig_print(...)
+    end
+end
+
+-- pcall wrapper that surfaces failures when debug logging is enabled and
+-- forwards all return values on success (so callers can still capture msg.url
+-- results). Keeps init() resilient to missing optional components without
+-- silently swallowing real bugs during development.
+local _unpack = rawget(_G, "unpack") or (type(table) == "table" and rawget(table, "unpack"))
+local function try(fn, tag, ...)
+    local results = { pcall(fn, ...) }
+    local ok = results[1]
+    if not ok and debug_enabled() then
+        print(string.format("[BOSS] %s failed: %s", tostring(tag or "call"), tostring(results[2])))
+    end
+    return _unpack(results, 1, #results)
+end
+
+-- Reverse-lookup map from hash(boss_type_name) -> boss_type_name, built once.
+-- Replaces the O(N) linear scan previously done on every resolve_boss_type call.
+local BOSS_TYPE_BY_HASH = {}
+if type(BossTypes) == "table" then
+    for key, _ in pairs(BossTypes) do
+        if type(key) == "string" then
+            BOSS_TYPE_BY_HASH[hash(key)] = key
+        end
+    end
+end
+
+local function v4_from_rgba(rgba)
+    rgba = rgba or {}
+    return vmath.vector4(rgba[1] or 1, rgba[2] or 1, rgba[3] or 1, rgba[4] or 1)
+end
+
+go.property("boss_type", "")
+go.property("boss_id", "")
+go.property("boss_health", 0)
+go.property("boss_visual_type", "")
+go.property("visual_component", "")
+go.property("intro_animation", "")
+
+local normalize_hash_string = Util.normalize_hash_string
+
+local function resolve_boss_type(value)
+    local as_string = normalize_hash_string(value)
+    if as_string then return as_string end
+
+    if type(value) == "userdata" then
+        local cached = BOSS_TYPE_BY_HASH[value]
+        if cached then return cached end
+    end
+
+    return nil
+end
+
+-- Messages
+local MSG_DAMAGE = hash("damage")
+local MSG_APPLY_DAMAGE = hash("mvtk_apply_damage")
+local MSG_KILL = hash("kill")
+local MSG_CONTACT_POINT_RESPONSE = hash("contact_point_response")
+local MSG_ANIMATION_DONE = hash("anim.done")
+local MSG_ANIM_FLASH = hash("anim.flash")
+local MSG_ANIM_CONFIGURE = hash("anim.configure_visual")
+
+-- Visual components on boss_runtime.go to toggle at spawn time. Sourced from
+-- developer/config/boss_visuals.lua so users can register new per-boss
+-- sprite/spine components without touching this runtime script.
+local function get_visual_components()
+    local list = BossVisuals and BossVisuals.visual_components
+    if type(list) == "table" and #list > 0 then
+        return list
+    end
+    return { "sprite" }
+end
+
+local function normalize_visual_type(value)
+    local visual_type = normalize_hash_string(value)
+    if not visual_type or visual_type == "" then
+        return nil
+    end
+    visual_type = string.lower(visual_type)
+    if visual_type == "sprite" or visual_type == "spine" then
+        return visual_type
+    end
+    return nil
+end
+
+local function infer_visual_type_from_component(component_name)
+    if not component_name or component_name == "" then
+        return nil
+    end
+
+    local lower = string.lower(component_name)
+    if string.find(lower, "^spine") then
+        return "spine"
+    end
+    if string.find(lower, "^sprite") then
+        return "sprite"
+    end
+    return nil
+end
+
+local function get_visual_component_override(self)
+    local configured = self.config and self.config.visual_component or self.visual_component
+    return normalize_hash_string(configured)
+end
+
+local function get_visual_type(self)
+    local configured = self.config and self.config.boss_visual_type or self.boss_visual_type
+    local visual_type = normalize_visual_type(configured)
+    if visual_type then
+        return visual_type
+    end
+
+    local visual_component = get_visual_component_override(self)
+    if visual_component then
+        local inferred = infer_visual_type_from_component(visual_component)
+        if inferred then
+            return inferred
+        end
+    end
+
+    return "sprite"
+end
+
+local function get_sprite_component_name(self)
+    local visual_component = get_visual_component_override(self)
+    if get_visual_type(self) == "sprite" and visual_component then
+        return visual_component
+    end
+    return "sprite"
+end
+
+local function get_sprite_atlas(self)
+    local atlases = BossVisuals and BossVisuals.sprite_atlases
+    if type(atlases) ~= "table" then
+        return nil
+    end
+    return normalize_hash_string(atlases[get_sprite_component_name(self)])
+end
+
+local function get_spine_component_name(self)
+    local visual_component = get_visual_component_override(self)
+    if get_visual_type(self) == "spine" and visual_component then
+        return visual_component
+    end
+    if get_visual_type(self) == "spine" then
+        return "spine"
+    end
+    return nil
+end
+
+local function uses_spine_visual(self)
+    return get_visual_type(self) == "spine"
+end
+
+local function get_selected_visual_component_name(self)
+    return uses_spine_visual(self) and (get_spine_component_name(self) or "spine") or get_sprite_component_name(self)
+end
+
+local function visual_component_is_registered(component_name)
+    if not component_name or component_name == "" then
+        return false
+    end
+
+    for _, fragment in ipairs(get_visual_components()) do
+        if fragment == component_name then
+            return true
+        end
+    end
+    return false
+end
+
+local function validate_visual_configuration(self)
+    local explicit_type = normalize_visual_type(self.config and self.config.boss_visual_type or self.boss_visual_type)
+    local explicit_component = get_visual_component_override(self)
+    local selected_type = get_visual_type(self)
+    local selected_component = get_selected_visual_component_name(self)
+    local inferred_type = infer_visual_type_from_component(explicit_component)
+
+    if explicit_type and explicit_component and inferred_type and inferred_type ~= explicit_type then
+        boss_notice(string.format(
+            "[BOSS] WARNING: boss '%s' sets boss_visual_type='%s' but visual_component='%s' looks like '%s'; using the explicit type",
+            tostring(self.config.name or self.boss_id or self.boss_type),
+            tostring(explicit_type),
+            tostring(explicit_component),
+            tostring(inferred_type)))
+    elseif explicit_type and not explicit_component then
+        boss_notice(string.format(
+            "[BOSS] WARNING: boss '%s' sets boss_visual_type='%s' but no visual_component; falling back to '%s'",
+            tostring(self.config.name or self.boss_id or self.boss_type),
+            tostring(explicit_type),
+            tostring(selected_component)))
+    elseif explicit_component and not explicit_type and not inferred_type then
+        boss_notice(string.format(
+            "[BOSS] WARNING: boss '%s' uses visual_component='%s' without boss_visual_type; set boss_visual_type explicitly to 'sprite' or 'spine'",
+            tostring(self.config.name or self.boss_id or self.boss_type),
+            tostring(explicit_component)))
+    end
+
+    if selected_component and not visual_component_is_registered(selected_component) then
+        boss_notice(string.format(
+            "[BOSS] WARNING: visual_component '%s' is not registered in developer/config/boss_visuals.lua",
+            tostring(selected_component)))
+    end
+
+    self.config.boss_visual_type = selected_type
+    self.config.visual_component = selected_component
+end
+
+local function configure_visible_visual(self)
+    local selected = get_selected_visual_component_name(self)
+    self.sprite_url = nil
+
+    Util.set_component_enabled("#" .. selected, true)
+
+    local selected_matched = false
+    for _, fragment in ipairs(get_visual_components()) do
+        if fragment == selected then
+            selected_matched = true
+            Util.set_component_enabled("#" .. fragment, true)
+        else
+            Util.set_component_enabled("#" .. fragment, false)
+        end
+    end
+    if not selected_matched then
+        Util.set_component_enabled("#" .. selected, true)
+    end
+end
+
+local function configure_animation_controller(self)
+    -- Resolve the boss's "idle" through the shared boss animation contract so
+    -- the controller's auto-recovery after one-shots returns to the real idle
+    -- clip for this boss instead of the literal string "idle".
+    local idle_name = BossAnimations.resolve_or_key(self, "idle")
+    local message = {
+        use_spine = uses_spine_visual(self) and 1 or 0,
+        default_state = idle_name or "idle",
+        -- Bosses size themselves via go.set_scale() (see boss_types.size).
+        -- Force flip_by_scale off so horizontal flipping cannot clobber that
+        -- scale; boss sprites flip via sprite.set_hflip and spine flips via
+        -- rotation, neither of which touches go.get_scale.
+        flip_by_scale = 0,
+    }
+
+    local sprite_fragment = get_sprite_component_name(self)
+    local ok_sprite, sprite_url = try(msg.url, "configure_anim.sprite_url",
+        nil, go.get_id(), sprite_fragment)
+    if ok_sprite and sprite_url then
+        message.sprite_id = sprite_url
+    end
+
+    local sprite_atlas = get_sprite_atlas(self)
+    if sprite_atlas then
+        message.sprite_atlas = sprite_atlas
+    end
+
+    local spine_fragment = get_spine_component_name(self) or "spine"
+    local ok_spine, spine_url = try(msg.url, "configure_anim.spine_url",
+        nil, go.get_id(), spine_fragment)
+    if ok_spine and spine_url then
+        message.spine_id = spine_url
+    end
+
+    msg.post("#anim", MSG_ANIM_CONFIGURE, message)
+end
+
+local function resolve_sprite_target(self)
+    if self.sprite_url then
+        return self.sprite_url
+    end
+
+    local fragment = get_selected_visual_component_name(self)
+    local ok, url = try(msg.url, "resolve_sprite_target", nil, go.get_id(), fragment)
+    if ok and url then
+        self.sprite_url = url
+        if self.boss_data then
+            self.boss_data.sprite_url = url
+        end
+        return url
+    end
+
+    return "#" .. fragment
+end
+
+-- Helper methods are defined after the Defold lifecycle functions, but must
+-- remain script-local so other scripts cannot overwrite the boss bindings
+-- in the shared Lua state before a boss instance initializes.
+local get_position
+local get_current_phase
+local get_health_percent
+local select_attack
+local execute_attack
+local update_attack
+local is_attack_active
+local cancel_attack
+local get_attack_pattern
+local face_player
+local move_toward
+local get_arena_center
+local is_attack_ready
+local execute_melee_attack
+local execute_projectile_attack
+local execute_aoe_attack
+local execute_summon_attack
+local execute_beam_attack
+local execute_special_attack
+local play_animation
+local update_sprite_facing
+local flash_sprite
+local apply_knockback
+local on_defeat
+local on_phase_change
+
+function init(self)
+    -- Get boss type
+    local boss_type_str = resolve_boss_type(self.boss_type)
+    local boss_id_str = normalize_hash_string(self.boss_id)
+
+    -- Attach to existing boss data if spawned via manager (e.g., Tiled -> main.script)
+    if boss_id_str and BossManager.find_boss_id then
+        local existing = BossManager.find_boss_id({
+            id = boss_id_str,
+            boss_id = boss_id_str,
+            boss_tag = boss_id_str,
+            boss_type = boss_type_str,
+        })
+        if existing then
+            self.boss_id = existing
+        elseif BossManager.get_boss and BossManager.get_boss(boss_id_str) then
+            self.boss_id = boss_id_str
+        end
+    end
+
+    -- Spawn boss through manager if no existing entry
+    if not boss_id_str then
+        local pos = go.get_position()
+        local custom_config = nil
+        local boss_health_override = tonumber(self.boss_health) or 0
+        if boss_health_override > 0 then
+            custom_config = custom_config or {}
+            custom_config.max_health = boss_health_override
+        end
+        if boss_id_str then
+            custom_config = custom_config or {}
+            custom_config.boss_tag = boss_id_str
+            custom_config.boss_id = boss_id_str
+            custom_config.spawn_id = boss_id_str
+        end
+        self.boss_id = BossManager.spawn_boss(boss_type_str, pos, custom_config)
+    end
+
+    if not self.boss_id then
+        boss_notice("[BOSS] Failed to spawn boss type:", boss_type_str)
+        go.delete()
+        return
+    end
+
+    -- Get boss data from manager
+    self.boss_data = BossManager.get_boss(self.boss_id)
+    if not self.boss_data then
+        boss_notice(string.format("[BOSS] Failed to get boss data for %s (id=%s)",
+            tostring(boss_type_str), tostring(self.boss_id)))
+        go.delete()
+        return
+    end
+
+    if not self.boss_data.config then
+        boss_notice(string.format("[BOSS] Boss '%s' has no config entry in boss_types.lua",
+            tostring(boss_type_str)))
+        go.delete()
+        return
+    end
+
+    self.config = self.boss_data.config
+    -- State-machine diagnostics and extensions use `id`; the Defold property
+    -- is named `boss_id`, so expose the resolved manager id under both names.
+    self.id = self.boss_id
+    self.self_url = msg.url(nil, go.get_id(), nil)
+    -- Weak points with attach_to_boss follow this game object.
+    self.boss_data.go_url = self.self_url
+    self.boss_data.spawn_position = go.get_world_position()
+    self.boss_data.anim_url = msg.url(nil, go.get_id(), "anim")
+    CombatFeedback.set_target_owner(go.get_id(), true)
+
+    validate_visual_configuration(self)
+    configure_visible_visual(self)
+    configure_animation_controller(self)
+    resolve_sprite_target(self)
+
+    -- Create state machine
+    self.state_machine = StateMachine.create(self)
+
+    -- Create phase controller. When no phases are authored, synthesize a
+    -- single-phase fallback so the state machine still runs instead of the
+    -- boss standing inert — this keeps a minimally-configured boss playable.
+    local phases = self.config.phases
+    if not phases or #phases == 0 then
+        print(string.format(
+            "[BOSS] WARNING: No phases authored for '%s' — using single-phase fallback",
+            tostring(self.config.name or boss_type_str)))
+        phases = {{
+            health_range = { min = 0.0, max = 1.0 },
+            attacks = self.config.attacks or {},
+            behavior = "random",
+        }}
+    end
+    self.phase_controller = PhaseController.create(self, phases)
+    self.boss_data.phase_controller = self.phase_controller
+    print(string.format("[BOSS] Phase controller created with %d phases", #phases))
+
+    -- Boss state
+    self.facing = 1  -- 1 = right, -1 = left
+    self.current_animation = nil
+
+    -- Set size if configured. Source art is assumed to be default_sprite_size
+    -- pixels in the art pipeline; a boss authored at a different source size
+    -- should override default_sprite_size in boss_defaults.lua.
+    if self.config.size then
+        local source = tonumber(Defaults.default_sprite_size) or 64
+        local w = tonumber(self.config.size.width)  or source
+        local h = tonumber(self.config.size.height) or source
+        go.set_scale(vmath.vector3(w / source, h / source, 1))
+    end
+
+    -- Bind helper functions as methods
+    self.play_animation = play_animation
+    self.update_sprite_facing = update_sprite_facing
+    self.flash_sprite = flash_sprite
+    self.apply_knockback = apply_knockback
+    self.get_current_phase = get_current_phase
+    self.select_attack = select_attack
+    self.get_position = get_position
+    self.get_health_percent = get_health_percent
+    self.get_attack_pattern = get_attack_pattern
+    self.execute_attack = execute_attack
+    self.update_attack = update_attack
+    self.is_attack_active = is_attack_active
+    self.cancel_attack = cancel_attack
+    self.face_player = face_player
+    self.move_toward = move_toward
+    self.get_arena_center = get_arena_center
+    self.is_attack_ready = is_attack_ready
+    self.on_defeat = on_defeat
+    self.on_phase_change = on_phase_change
+    self.execute_melee_attack = execute_melee_attack
+    self.execute_projectile_attack = execute_projectile_attack
+    self.execute_aoe_attack = execute_aoe_attack
+    self.execute_summon_attack = execute_summon_attack
+    self.execute_beam_attack = execute_beam_attack
+    self.execute_special_attack = execute_special_attack
+
+    -- Phase transitions already apply their modifiers on completion; apply
+    -- phase one once as well so its absolute chase speed and attack pool are
+    -- active from the first combat frame.
+    self.phase_controller:apply_phase_modifiers(1)
+
+    -- Intro animation is opt-in. If intro_animation is not authored,
+    -- BossAnimations.resolve returns nil for "intro" and we fall straight
+    -- into idle instead of trying to play a literal "intro" clip.
+    local intro_override = normalize_hash_string(self.intro_animation)
+    local intro_anim = (intro_override and intro_override ~= "" and intro_override)
+        or BossAnimations.resolve(self, "intro")
+    if intro_anim and intro_anim ~= "" then
+        self:play_animation(intro_anim, false)
+    else
+        self:play_animation(BossAnimations.resolve_or_key(self, "idle"), true)
+    end
+
+    print(string.format("[BOSS] %s initialized", self.config.name))
+end
+
+function final(self)
+    require("mvtk.bosses.boss_motion").clear(go.get_id())
+    CombatFeedback.set_target_owner(go.get_id(), false)
+    if self._active_charge then
+        BossAttacks.cancel_pattern(self, self._active_charge.pattern or { type = "charge" })
+    end
+    -- Remove from manager
+    if self.boss_id then
+        BossManager.remove_boss(self.boss_id)
+    end
+end
+
+-- Captured at the end of the chunk before Defold clears lifecycle globals.
+local dispatch_message
+
+function update(self, dt)
+    -- Menu pause is a gameplay-script gate (menus share the game collection),
+    -- exactly like enemy.script: freeze the state machine, movement and new
+    -- attacks while paused.
+    if require("mvtk.core.pause").get() then
+        return
+    end
+    require("mvtk.bosses.boss_motion").update(go.get_id(), dt)
+    if self._paused_animation then
+        local event = self._paused_animation
+        self._paused_animation = nil
+        dispatch_message(self, event.id, event.message, event.sender)
+    end
+    if self.boss_data.defeated then
+        -- Ensure defeat flow runs even if boss was killed externally
+        if self.state_machine and not self.state_machine:is_state(StateMachine.STATES.DEFEATED) then
+            self.state_machine:change_state(StateMachine.STATES.DEFEATED)
+        end
+        return
+    end
+
+    -- Advance i-frame timer & drive hurt flash on the boss's sprite.
+    if self.boss_data then
+        resolve_sprite_target(self)
+        Invulnerability.update(self.boss_data, dt)
+    end
+
+    -- Keep script-local flag in sync with timer-driven state.
+    if self.boss_data and self.boss_data.invulnerable ~= self.invulnerable then
+        self.invulnerable = self.boss_data.invulnerable
+    end
+
+    -- Update state machine
+    if self.state_machine then
+        self.state_machine:update(dt)
+    end
+
+    -- Update phase controller
+    if self.phase_controller then
+        self.phase_controller:update(dt)
+    end
+
+    -- Keep the boss inside its arena (or its room when it has no arena) so it
+    -- cannot chase the player out of the fight area.
+    local Confinement = require("mvtk.bosses.boss_confinement")
+    if not self._confine_rect then
+        self._confine_rect = Confinement.resolve_rect(self.config)
+    end
+    if self._confine_rect then
+        local pos = go.get_position()
+        local size = self.config and self.config.size or {}
+        -- Keep charge_edge_padding clear of the edges as well as half the body.
+        local pad = math.max(0, tonumber(self.config and self.config.charge_edge_padding) or 0)
+        local x, y = Confinement.clamp(pos.x, pos.y, self._confine_rect,
+            (tonumber(size.width) or 0) * 0.5 + pad, (tonumber(size.height) or 0) * 0.5)
+        if x ~= pos.x or y ~= pos.y then
+            go.set_position(vmath.vector3(x, y, pos.z))
+        end
+    end
+
+    -- Update sprite facing
+    self:update_sprite_facing()
+end
+
+function on_message(self, message_id, message, sender)
+    if require("mvtk.core.pause").get() then
+        if message_id == MSG_ANIMATION_DONE then
+            self._paused_animation = { id = message_id, message = message, sender = sender }
+        end
+        return
+    end
+    if message_id == MSG_DAMAGE or message_id == MSG_APPLY_DAMAGE then
+        -- Take damage
+        local damage = message.damage or message.amount or 1
+        -- Manager owns accepted-hit feedback for both body and weak-point hits.
+        BossManager.damage_boss(self.boss_id, damage, DamagePayload.normalize(message, sender))
+        if self.boss_data.defeated then
+            self.state_machine:change_state(StateMachine.STATES.DEFEATED)
+        end
+
+    elseif message_id == MSG_KILL then
+        -- Force kill boss
+        BossManager.kill_boss(self.boss_id, message.source)
+        self.state_machine:change_state(StateMachine.STATES.DEFEATED)
+
+    elseif message_id == MSG_ANIMATION_DONE then
+        -- Animation finished
+        local state = normalize_hash_string(message and message.state)
+        local death_anim = BossAnimations.resolve_or_key(self, "death")
+        local intro_anim = BossAnimations.resolve(self, "intro")
+        local is_death = (state == death_anim) or state == "death" or state == "die"
+
+        if state and self.current_animation == state and not is_death then
+            self.current_animation = nil
+        end
+        if is_death then
+            -- Delete immediately after death animation
+            go.delete()
+            return
+        end
+        -- After the intro animation finishes, fall into the idle loop.
+        if state and intro_anim and state == intro_anim then
+            self:play_animation(BossAnimations.resolve_or_key(self, "idle"), true)
+        end
+
+    elseif message_id == MSG_CONTACT_POINT_RESPONSE then
+        -- Collision with player (contact damage)
+        if self.boss_data and self.boss_data.defeated then
+            return
+        end
+        if message.group == hash("player") and not self._active_charge then
+            local damage = self.config.contact_damage or Defaults.contact_damage or 2
+            local mult = (self.boss_data and self.boss_data.damage_multiplier) or 1.0
+            local amount = damage * mult
+            local dir = self.facing or 1
+            local player_pos = Detection.get_player_position()
+            if player_pos then dir = player_pos.x < go.get_position().x and -1 or 1 end
+            local kx_mag = self.config.contact_knockback_x or Defaults.contact_knockback_x or 120
+            local ky_mag = self.config.contact_knockback_y or Defaults.contact_knockback_y or 80
+            msg.post(message.other_id, MSG_APPLY_DAMAGE, {
+                amount = amount,
+                source = self.boss_id,
+                boss_id = self.boss_id,
+                dir = dir,
+                kx = kx_mag * dir,
+                ky = ky_mag,
+                stun_t = self.config.contact_stun_t or Defaults.default_hit_stun,
+            })
+        end
+    end
+end
+
+--[[============================================================================
+    BOSS METHODS (Called by state machine and phase controller)
+==============================================================================]]
+
+--- Get current position
+-- @return Position vector3
+get_position = function(self)
+    return go.get_position()
+end
+
+--- Get current phase from phase controller
+-- @return Phase table
+get_current_phase = function(self)
+    if not self.phase_controller then
+        return nil
+    end
+
+    return self.phase_controller:get_current_phase()
+end
+
+--- Get health percentage
+-- @return Health percent (0.0 to 1.0)
+get_health_percent = function(self)
+    return BossManager.get_boss_health_percent(self.boss_id)
+end
+
+local CANONICAL_ATTACK_TYPES = {
+    aoe = "aoe",
+    beam = "beam",
+    blade_storm = "aoe",
+    charge = "charge",
+    clone = "summon",
+    combo = "melee",
+    crystal_shard_enemy = "summon",
+    explosion = "aoe",
+    fire_wave = "beam",
+    hazard = "aoe",
+    melee = "melee",
+    poison_cloud = "aoe",
+    projectile = "projectile",
+    shadow_spawn = "summon",
+    slime = "summon",
+    special = "special",
+    spike_trap = "aoe",
+    summon = "summon",
+    teleport_attack = "charge",
+    thorn_minion = "summon",
+}
+
+local BEHAVIOR_PROFILES = {
+    aggressive = { order = { "charge", "melee", "aoe", "projectile", "beam", "special", "summon" }, allow_repeat = true },
+    berserk = { order = { "charge", "melee", "aoe", "special", "projectile", "beam", "summon" }, allow_repeat = true },
+    cautious = { order = { "projectile", "beam", "aoe", "summon", "charge", "melee", "special" }, allow_repeat = false },
+    defensive = { order = { "projectile", "beam", "summon", "aoe", "charge", "melee", "special" }, allow_repeat = false },
+    desperate = { order = { "special", "aoe", "charge", "beam", "projectile", "melee", "summon" }, allow_repeat = true },
+    erratic = { order = { "special", "summon", "aoe", "projectile", "charge", "melee", "beam" }, allow_repeat = true },
+    patrol = { order = { "projectile", "beam", "summon", "aoe", "charge", "melee", "special" }, allow_repeat = false },
+    random = { order = { "projectile", "beam", "summon", "aoe", "charge", "melee", "special" }, allow_repeat = true, randomize = true },
+    relentless = { order = { "charge", "melee", "projectile", "aoe", "beam", "special", "summon" }, allow_repeat = false },
+    skilled = { order = { "charge", "projectile", "beam", "melee", "aoe", "summon", "special" }, allow_repeat = false },
+    testing = { order = { "projectile", "beam", "summon", "aoe", "melee", "charge", "special" }, allow_repeat = false },
+}
+
+local function normalize_behavior_name(value)
+    local behavior = tostring(value or "random"):lower()
+    if BEHAVIOR_PROFILES[behavior] then
+        return behavior
+    end
+    return "random"
+end
+
+local function canonical_attack_type(pattern)
+    if type(pattern) ~= "table" then
+        return "special"
+    end
+    return CANONICAL_ATTACK_TYPES[pattern.type] or "special"
+end
+
+local function filter_repeated_attack(list, last_attack_name)
+    if not last_attack_name or #list <= 1 then
+        return list
+    end
+
+    local filtered = {}
+    for _, attack_name in ipairs(list) do
+        if attack_name ~= last_attack_name then
+            filtered[#filtered + 1] = attack_name
+        end
+    end
+
+    return (#filtered > 0) and filtered or list
+end
+
+local function pick_random_attack_name(list)
+    if not list or #list == 0 then
+        return nil
+    end
+    return list[math.random(#list)]
+end
+
+local function build_attack_groups(self, attack_names)
+    local groups = {}
+    for _, attack_name in ipairs(attack_names) do
+        local pattern = self:get_attack_pattern(attack_name)
+        local attack_type = canonical_attack_type(pattern)
+        groups[attack_type] = groups[attack_type] or {}
+        groups[attack_type][#groups[attack_type] + 1] = attack_name
+    end
+    return groups
+end
+
+local function select_attack_for_behavior(self, ready_attacks, behavior)
+    local profile = BEHAVIOR_PROFILES[normalize_behavior_name(behavior)] or BEHAVIOR_PROFILES.random
+    local groups = build_attack_groups(self, ready_attacks)
+    local last_attack_name = self.last_attack_name
+
+    if profile.randomize then
+        return pick_random_attack_name(filter_repeated_attack(ready_attacks, last_attack_name))
+    end
+
+    for _, attack_type in ipairs(profile.order or {}) do
+        local bucket = groups[attack_type]
+        if bucket and #bucket > 0 then
+            local choices = profile.allow_repeat and bucket or filter_repeated_attack(bucket, last_attack_name)
+            local selected = pick_random_attack_name(choices)
+            if selected then
+                return selected
+            end
+        end
+    end
+
+    return pick_random_attack_name(filter_repeated_attack(ready_attacks, last_attack_name))
+end
+
+--- Select an attack to perform
+-- @return Attack name or nil
+select_attack = function(self)
+    local current_phase = self:get_current_phase()
+    if not current_phase then
+        return nil
+    end
+
+    local available_attacks = current_phase.attacks or {}
+
+    -- Filter by cooldown
+    local ready_attacks = {}
+    for _, attack_name in ipairs(available_attacks) do
+        local pattern = self:get_attack_pattern(attack_name)
+        if pattern and BossManager.is_attack_ready(self.boss_id, attack_name, pattern) then
+            table.insert(ready_attacks, attack_name)
+        end
+    end
+
+    if #ready_attacks == 0 then
+        return nil  -- No attacks ready
+    end
+
+    -- Select based on the phase's authored behavior profile.
+    return select_attack_for_behavior(self, ready_attacks, current_phase.behavior)
+end
+
+--- Execute an attack
+-- @param attack_name Attack name
+-- @param pattern Attack pattern definition
+execute_attack = function(self, attack_name, pattern)
+    print(string.format("[BOSS] %s executing: %s", self.config.name, attack_name))
+    self.last_attack_name = attack_name
+
+    -- Mark attack as used (cooldown)
+    BossManager.use_attack(self.boss_id, attack_name)
+
+    BossAttacks.execute_pattern(self, pattern, { play_animation = true })
+
+    -- Play attack sound
+    if self.config.audio and self.config.audio.attack then
+        SafeSound.play(self.config.audio.attack)
+    end
+end
+
+--- Advance an attack with frame-driven runtime behavior (currently charge).
+update_attack = function(self, _attack_name, pattern, dt)
+    return BossAttacks.update_pattern(self, pattern, dt)
+end
+
+--- Whether a frame-driven attack still owns the ATTACKING state.
+is_attack_active = function(self, _attack_name, pattern)
+    return BossAttacks.is_pattern_active(self, pattern)
+end
+
+--- Stop any runtime behavior owned by the outgoing attack.
+cancel_attack = function(self, _attack_name, pattern)
+    BossAttacks.cancel_pattern(self, pattern)
+end
+
+--- Get attack pattern
+-- @param attack_name Attack name
+-- @return Pattern table or nil
+get_attack_pattern = function(self, attack_name)
+    -- boss_state_machine captures this resolved copy on ATTACKING entry and
+    -- reuses it for telegraph, execution, updates, and cancellation.
+    return BossManager.resolve_attack_pattern(
+        attack_name, self.boss_data, self:get_current_phase())
+end
+
+--- Face the player
+face_player = function(self)
+    local player_pos = Detection.get_player_position()
+    if not player_pos then
+        return
+    end
+
+    local pos = go.get_position()
+    self.facing = player_pos.x > pos.x and 1 or -1
+end
+
+--- Move toward a position
+-- @param target_pos Target position
+-- @param speed Movement speed (already includes any multipliers)
+-- @param dt Delta time
+move_toward = function(self, target_pos, speed, dt)
+    local pos = go.get_position()
+    local offset = vmath.vector3(target_pos.x - pos.x, target_pos.y - pos.y, 0)
+    if offset.x == 0 and offset.y == 0 then return end
+    local direction = vmath.normalize(offset)
+    local velocity = direction * speed
+
+    -- Apply movement using delta time
+    local new_pos = pos + velocity * dt
+    go.set_position(new_pos)
+
+    -- Update facing
+    if direction.x ~= 0 then
+        self.facing = direction.x > 0 and 1 or -1
+    end
+end
+
+--- Get arena center position
+-- @return Arena center vector3 or nil
+get_arena_center = function(self)
+    -- Centre of the confinement area (authored arena, else the room).
+    local Confinement = require("mvtk.bosses.boss_confinement")
+    local rect = self._confine_rect or Confinement.resolve_rect(self.config)
+    if rect then
+        return vmath.vector3((rect.min_x + rect.max_x) * 0.5, (rect.min_y + rect.max_y) * 0.5, go.get_position().z)
+    end
+    return go.get_position()
+end
+
+--- Check if attack is ready (off cooldown)
+-- @param attack_name Attack name
+-- @return true if ready
+is_attack_ready = function(self, attack_name)
+    local pattern = self:get_attack_pattern(attack_name)
+    return BossManager.is_attack_ready(self.boss_id, attack_name, pattern)
+end
+
+--[[============================================================================
+    ATTACK EXECUTION
+==============================================================================]]
+
+execute_melee_attack = function(self, pattern)
+    BossAttacks.execute_melee(self, pattern)
+end
+
+execute_projectile_attack = function(self, pattern)
+    BossAttacks.execute_projectile(self, pattern)
+end
+
+execute_aoe_attack = function(self, pattern)
+    BossAttacks.execute_aoe(self, pattern)
+end
+
+execute_summon_attack = function(self, pattern)
+    BossAttacks.execute_summon(self, pattern)
+end
+
+execute_beam_attack = function(self, pattern)
+    BossAttacks.execute_beam(self, pattern)
+end
+
+execute_special_attack = function(self, pattern)
+    BossAttacks.execute_special(self, pattern)
+end
+
+--[[============================================================================
+    VISUAL / ANIMATION
+==============================================================================]]
+
+--- Play animation
+-- @param animation_name Animation name
+-- @param loop Whether to loop
+-- @param force If true, re-triggers even when the same animation is already playing
+--              (e.g. chained attacks of the same name, repeat hurt reactions).
+play_animation = function(self, animation_name, loop, force)
+    if not animation_name or animation_name == "" then
+        return
+    end
+    -- Sprite bosses: only play clips the selected atlas has (aliases such as
+    -- move -> walk). Spine bosses are not filtered here.
+    if get_visual_type(self) == "sprite" then
+        animation_name = BossAnimations.present_in_atlas(get_sprite_atlas(self), animation_name)
+        if not animation_name then
+            return
+        end
+    end
+    if self.current_animation == animation_name and not force then
+        return
+    end
+
+    self.current_animation = animation_name
+    if loop == false then
+        Anim.play_once("#anim", animation_name)
+    else
+        Anim.set_state("#anim", animation_name, { force = true, loop = loop ~= false })
+    end
+end
+
+--- Update sprite facing
+update_sprite_facing = function(self)
+    Anim.set_facing("#anim", self.facing)
+end
+
+--- Flash sprite when damaged
+flash_sprite = function(self)
+    local flash = v4_from_rgba(Defaults.hurt_flash_color)
+    local duration = tonumber(Defaults.hurt_flash_duration) or 0.1
+    msg.post("#anim", MSG_ANIM_FLASH, {
+        color = flash,
+        duration = duration,
+    })
+end
+
+--- Apply knockback
+-- @param knockback Knockback vector
+apply_knockback = function(self, knockback)
+    -- Would apply physics impulse
+    -- For now, just visual effect
+    print(string.format("[BOSS] Knockback: (%.0f, %.0f)", knockback.x, knockback.y))
+end
+
+--- Called when boss is defeated
+on_defeat = function(self)
+    if self._defeat_started then
+        return
+    end
+    self._defeat_started = true
+
+    print(string.format("[BOSS] %s defeated!", self.config.name))
+
+    -- Play death animation through the shared boss animation contract.
+    self:play_animation(BossAnimations.resolve_or_key(self, "death"), false)
+
+    -- Disable collision so boss can't hurt player after defeat
+    Util.post_component_enabled("#collision", false)
+
+    -- Failsafe cleanup if animation_done never fires. Per-boss overrides on
+    -- self.config win; otherwise fall back to the global boss_defaults value.
+    local cleanup_delay = Defaults.defeat_cleanup_delay or 1.2
+    if self.config then
+        cleanup_delay = self.config.death_cleanup_delay
+            or self.config.death_cleanup_time
+            or self.config.death_duration
+            or cleanup_delay
+    end
+    require("mvtk.core.pause").delay(cleanup_delay, function()
+        go.delete()
+    end)
+
+    -- Handled by BossManager (rewards, unlocks, etc.)
+end
+
+--- Called when phase changes
+-- @param old_phase Old phase index
+-- @param new_phase New phase index
+on_phase_change = function(self, old_phase, new_phase)
+    print(string.format("[BOSS] Phase change: %d -> %d", old_phase, new_phase))
+
+    -- Sync arena mechanics with boss phase
+    if BossArena and BossArena.transition_to_phase then
+        local active = BossArena.get_active_arena and BossArena.get_active_arena() or nil
+        local arena_id = self.config and (self.config.arena_id or self.config.arena) or nil
+        if active and (not arena_id or active.id == arena_id) then
+            BossArena.transition_to_phase(new_phase)
+        end
+    end
+
+end
+
+dispatch_message = on_message

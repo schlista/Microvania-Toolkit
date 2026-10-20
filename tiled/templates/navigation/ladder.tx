@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<template>
+ <object name="Ladder" type="ladder" width="32" height="256">
+  <properties>
+   <property name="ladder_type" propertytype="ladder_types" value="ladder"/>
+   <property name="ladder_id" type="string" value=""/>
+   <property name="movement" type="class" propertytype="ladder_movement">
+    <properties>
+     <property name="climb_speed" type="int" value="80"/>
+     <property name="can_jump_off" type="bool" value="true"/>
+     <property name="snap_to_center" type="bool" value="true"/>
+     <property name="climb_offset_x" type="int" value="0"/>
+    </properties>
+   </property>
+   <property name="reach_and_collision" type="class" propertytype="ladder_reach_and_collision">
+    <properties>
+     <property name="pass_through_top" type="bool" value="true"/>
+     <property name="grab_extend_down" type="int" value="128"/>
+     <property name="grab_extend_up" type="int" value="128"/>
+    </properties>
+   </property>
+   <property name="mvtk_template_version" type="string" value="2.7.0"/>
+  </properties>
+ </object>
+</template>

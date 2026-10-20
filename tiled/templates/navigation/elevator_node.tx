@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<template>
+ <object name="Elevator Node" type="elevator_node">
+  <point/>
+  <properties>
+   <property name="elevator_id" type="string" value=""/>
+   <property name="node_id" type="string" value=""/>
+   <property name="node_kind" propertytype="elevator_node_kinds" value="landing"/>
+   <property name="stop" propertytype="elevator_stops" value="bottom"/>
+   <property name="mvtk_template_version" type="string" value="2.7.0"/>
+  </properties>
+ </object>
+</template>

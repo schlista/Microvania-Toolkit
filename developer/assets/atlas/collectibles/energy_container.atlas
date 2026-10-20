@@ -1,0 +1,6 @@
+animations { id: "idle" images { image: "/developer/assets/atlas/collectibles/energy_container.png" } playback: PLAYBACK_NONE fps: 1 }
+animations { id: "energy_small" images { image: "/developer/assets/atlas/collectibles/energy_small.png" } playback: PLAYBACK_NONE fps: 1 }
+animations { id: "energy_large" images { image: "/developer/assets/atlas/collectibles/energy_large.png" } playback: PLAYBACK_NONE fps: 1 }
+margin: 2
+extrude_borders: 0
+inner_padding: 0

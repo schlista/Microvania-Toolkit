@@ -1,0 +1,42 @@
+local Viewport = require "mvtk.ui.viewport"
+-- Included in main.collection only inside a disposable preview project.
+local Abilities=require "mvtk.abilities.ability_manager"
+local AbilityConfig=require "developer.config.abilities"
+local Game=require "mvtk.game.game_manager"
+local function redraw(self)
+    local name=self.abilities[self.selected]
+    local state=name and Abilities.get_ability_info(name)
+    gui.set_text(self.label,"DISPOSABLE PREVIEW   F5 / Back: restart   F6 / L-stick: next ability   F7 / R-stick: toggle\n"..
+        (name or "No abilities")..": "..(state and state.unlocked and state.enabled and "ON" or "OFF")..
+        "   Close this window to return to your wizard draft.")
+end
+function init(self)
+    self.abilities={}; self.selected=1
+    for name,cfg in pairs(AbilityConfig.abilities) do if cfg.category=="movement" then self.abilities[#self.abilities+1]=name end end
+    table.sort(self.abilities)
+    local w=Viewport.design_size()
+    self.label=gui.new_text_node(vmath.vector3(w/2,45,0),"")
+    gui.set_font(self.label,"main"); gui.set_scale(self.label,vmath.vector3(0.55,0.55,1))
+    gui.set_color(self.label,vmath.vector4(1,1,0.65,1))
+    msg.post(".","acquire_input_focus"); redraw(self)
+end
+function update(self,dt) redraw(self) end
+function on_input(self,id,action)
+    if not action.pressed then return end
+    if id==hash("preview_f5") or id==hash("gamepad_back") then Game.handle_restart(); return true end
+    if id==hash("preview_f6") or id==hash("gamepad_lstick_click") then
+        if #self.abilities>0 then self.selected=self.selected%#self.abilities+1 end
+        redraw(self); return true
+    end
+    if id==hash("preview_f7") or id==hash("gamepad_rstick_click") then
+        local name=self.abilities[self.selected]
+        if name then
+            local state=Abilities.get_ability_info(name)
+            local enabled=not (state and state.unlocked and state.enabled)
+            if enabled then Abilities.force_unlock_ability(name) end
+            Abilities.set_ability_enabled(name,enabled)
+        end
+        redraw(self); return true
+    end
+end
+function final(self) msg.post(".","release_input_focus") end

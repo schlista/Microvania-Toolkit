@@ -1,0 +1,514 @@
+local Viewport = require "mvtk.ui.viewport"
+-- developer/ui/shared/mode_hud.gui_script
+-- HUD with visual GUI nodes that developers can edit in the Defold IDE
+
+local Inv = require "mvtk.core.inventory"
+local FlagsOk, Flags = pcall(require, 'mvtk.core.flags')
+local MSG_MENU_SHOW = hash("menu_show")
+local MSG_MENU_BACK = hash("back_to_menu")
+
+local v3 = vmath.vector3
+
+-- Load UI configuration
+local ThemeOk, Theme = pcall(require, "developer.config.ui_theme")
+local LayoutOk, Layout = pcall(require, "developer.config.hud_layout")
+local RuntimeSettings=require "developer.config.runtime_settings"
+local HudLayout=require "mvtk.ui.hud_layout"
+local LayoutOverrides=(RuntimeSettings.load() or {}).hud_layout or {}
+if ThemeOk then Theme=RuntimeSettings.section("ui_theme",Theme) end
+if LayoutOk then Layout=RuntimeSettings.section("hud_layout",Layout) end
+if ThemeOk and LayoutOk then Theme=HudLayout.theme(Theme,Layout,(RuntimeSettings.load() or {}).ui_theme) end
+
+-- Fallback to defaults if configs not found
+if not ThemeOk or not Theme then
+  Theme = {
+    colors = {
+      health = {0.9, 0.1, 0.1, 0.95}, health_bg = {0, 0, 0, 0.6},
+      energy = {0.2, 0.5, 1.0, 0.95}, energy_bg = {0, 0, 0, 0.6},
+      stamina = {0.2, 0.9, 0.3, 0.95}, stamina_bg = {0, 0, 0, 0.6},
+      currency = {1, 1, 0.7, 1}, text_primary = {1, 1, 1, 1},
+      abilities = {0.8, 0.9, 1, 0.9},
+      interact_hint = {0.9, 0.9, 0.9, 0.9}
+    },
+    spacing = { margin_left = 8, margin_top = 8 },
+    sizes = { health_bar_width = 180, health_bar_height = 14,
+              energy_bar_width = 100, energy_bar_height = 10,
+              stamina_bar_width = 100, stamina_bar_height = 8, bar_border = 2 }
+  }
+end
+
+if not LayoutOk or not Layout then
+  Layout = {
+    mode_label = { offset = {x = 8, y = -26} },
+    health_bar = { offset = {x = 8, y = -48} },
+    energy_bar = { offset = {x = 8, y = -64} },
+    stamina_bar = { offset = {x = 8, y = -76} },
+    currency = { offset = {x = 8, y = -88} },
+    abilities = { offset = {x = 8, y = -106} },
+    interact_hint = { offset = {x = 8, y = -142} },
+    cooldown_flash = { offset = {x = 120, y = -48} }
+  }
+end
+
+-- Extract commonly used values
+local MARGIN_LEFT = Theme.spacing.margin_left or 8
+local MARGIN_TOP = Theme.spacing.margin_top or 8
+
+local layout_entries={}
+local function merged_layout_entry(name)
+    if not layout_entries[name] then layout_entries[name]=HudLayout.entry(Layout,name,LayoutOverrides) end
+    return layout_entries[name]
+end
+
+local function is_hud_visible(name, theme_key, default_visible)
+    local visible = default_visible ~= false
+    if Theme and Theme.visibility and Theme.visibility[theme_key] == false then
+        visible = false
+    end
+
+    local layout = merged_layout_entry(name)
+    if layout.enabled == false or layout.visible == false then
+        visible = false
+    end
+
+    return visible
+end
+
+local function n(id)
+    local ok, node = pcall(gui.get_node, id)
+    return ok and node or nil
+end
+
+local function place_top_left(node)
+    if not node then return end
+    local w, h = Viewport.design_size()
+    gui.set_pivot(node, gui.PIVOT_NW)
+    gui.set_position(node, vmath.vector3(MARGIN_LEFT, h - MARGIN_TOP, 0))
+end
+
+-- Tutorial popup nodes (created at runtime so GUI file stays unchanged)
+local function create_tutorial_nodes(self)
+    local w, h = Viewport.design_size()
+    self.tutorial_box = gui.new_box_node(vmath.vector3(w * 0.5, h - 140, 0), vmath.vector3(420, 110, 0))
+    gui.set_pivot(self.tutorial_box, gui.PIVOT_N)
+    gui.set_color(self.tutorial_box, vmath.vector4(0, 0, 0, 0.82))
+    self.tutorial_title = gui.new_text_node(gui.get_position(self.tutorial_box) + vmath.vector3(0, 26, 0), "")
+    gui.set_pivot(self.tutorial_title, gui.PIVOT_N)
+    gui.set_color(self.tutorial_title, vmath.vector4(1, 1, 1, 1))
+    self.tutorial_body = gui.new_text_node(gui.get_position(self.tutorial_box) + vmath.vector3(0, -6, 0), "")
+    gui.set_pivot(self.tutorial_body, gui.PIVOT_N)
+    gui.set_color(self.tutorial_body, vmath.vector4(0.9, 0.9, 0.9, 1))
+    gui.set_visible(self.tutorial_box, false)
+    gui.set_visible(self.tutorial_title, false)
+    gui.set_visible(self.tutorial_body, false)
+    self.tutorial_t = 0
+end
+
+local function position_tutorial(self, pos_hint)
+    if not self.tutorial_box then return end
+    local w, h = Viewport.design_size()
+    local y = h - 140
+    if pos_hint == "center" then y = h * 0.5 end
+    if pos_hint == "bottom" then y = 200 end
+    local base = vmath.vector3(w * 0.5, y, 0)
+    gui.set_position(self.tutorial_box, base)
+    if self.tutorial_title then gui.set_position(self.tutorial_title, base + vmath.vector3(0, 26, 0)) end
+    if self.tutorial_body then gui.set_position(self.tutorial_body, base + vmath.vector3(0, -6, 0)) end
+end
+
+local function show_tutorial(self, title, body, pos_hint, duration)
+    if not self.tutorial_box then create_tutorial_nodes(self) end
+    self._tutorial_pos = pos_hint or "top"
+    position_tutorial(self, self._tutorial_pos)
+    gui.set_text(self.tutorial_title, title or "Tutorial")
+    gui.set_text(self.tutorial_body, body or "")
+    gui.set_visible(self.tutorial_box, true)
+    gui.set_visible(self.tutorial_title, true)
+    gui.set_visible(self.tutorial_body, true)
+    self.tutorial_t = duration or 4.0
+end
+
+local function hide_tutorial(self)
+    if not self.tutorial_box then return end
+    gui.set_visible(self.tutorial_box, false)
+    gui.set_visible(self.tutorial_title, false)
+    gui.set_visible(self.tutorial_body, false)
+    self.tutorial_t = 0
+end
+
+local function align_menu_button(self)
+    if not (self.btn and self.btn_label) then return end
+    gui.set_pivot(self.btn, gui.PIVOT_NW)
+    local size = gui.get_size(self.btn)
+    -- Same placement path as the other HUD elements (hud_layout.lua
+    -- `menu_button`). Placing it relative to the root added the theme margins
+    -- a second time and pushed the button onto the mode label.
+    local entry = merged_layout_entry("menu_button")
+    local x, y = HudLayout.screen_top_left(entry, Viewport.rect(), size.x, size.y)
+    if x then
+        gui.set_screen_position(self.btn, v3(x, y, 0))
+    else
+        gui.set_position(self.btn, v3(8, -8, 0))
+    end
+    gui.set_enabled(self.btn, entry.enabled ~= false and entry.visible ~= false)
+    gui.set_pivot(self.btn_label, gui.PIVOT_CENTER)
+    gui.set_position(self.btn_label, v3(size.x * 0.5, -size.y * 0.5, 0))
+end
+
+local function layout_root(self)
+    local rect = Viewport.rect()
+    if not rect then return end
+    local w, h = rect.design_w, rect.design_h
+    self._w, self._h = rect.window_w, rect.window_h
+    if self.root then
+        gui.set_pivot(self.root, gui.PIVOT_NW)
+        gui.set_position(self.root, vmath.vector3(MARGIN_LEFT, h - MARGIN_TOP, 0))
+    end
+    position_tutorial(self, self._tutorial_pos or "top")
+    align_menu_button(self)
+    self._designer_scales=self._designer_scales or {}
+    for key,name in pairs({hp_bg="health_bar",energy_bg="energy_bar",stamina_bg="stamina_bar",
+        money="currency",abilities="abilities",interact_hint="interact_hint",mode="mode_label",flash="cooldown_flash"}) do
+        local node=self[key]
+        if node then
+            local entry=merged_layout_entry(name)
+            self._designer_scales[key]=self._designer_scales[key] or gui.get_scale(node)
+            local original=self._designer_scales[key]; local scale=(Layout.global or {}).scale or 1
+            gui.set_scale(node,v3(original.x*scale,original.y*scale,original.z))
+            local size=gui.get_size(node)
+            local x,y=HudLayout.screen_top_left(entry,rect,size.x*original.x*scale,size.y*original.y*scale)
+            -- Keep child fill bars in their authored NW coordinate system.
+            gui.set_pivot(node,gui.PIVOT_NW); gui.set_screen_position(node,v3(x,y,0))
+        end
+    end
+end
+
+function init(self)
+    msg.post(".", "acquire_input_focus")
+    -- Get all nodes from GUI file
+    self.root = n("root")
+    self.btn = n("btn_menu")
+    self.btn_label = n("btn_menu_label")
+    self.mode = n("mode_label")
+    self.hp_bg = n("health_bar_bg")
+    self.hp_fg = n("health_bar_fg")
+    self.energy_bg = n("energy_bar_bg")
+    self.energy_fg = n("energy_bar_fg")
+    self.stamina_bg = n("stamina_bar_bg")
+    self.stamina_fg = n("stamina_bar_fg")
+    self.money = n("currency_text")
+    self.abilities = n("abilities_text")
+    self.interact_hint = n("interact_hint_text")
+    self.flash = n("cooldown_flash_text")
+
+    -- Create FPS counter (top-right corner)
+    local w, h = Viewport.design_size()
+    self.fps_text = gui.new_text_node(vmath.vector3(w - 10, h - 10, 0), "FPS: 60")
+    gui.set_pivot(self.fps_text, gui.PIVOT_NE)
+    gui.set_color(self.fps_text, vmath.vector4(1, 1, 0, 1))  -- Yellow for visibility
+    gui.set_scale(self.fps_text, vmath.vector3(2, 2, 1))  -- Make it bigger for testing
+    gui.set_enabled(self.fps_text, false)  -- Hidden by default
+    print("[HUD] FPS text node created at GUI position:", w - 10, h - 10)
+
+    -- FPS tracking
+    self.fps_frames = 0
+    self.fps_time = 0
+    self.fps_current = 60
+    self.last_show_fps = false
+
+    layout_root(self)
+    msg.post(".", "acquire_input_focus")
+
+
+    -- Apply theme colors to all elements
+    if self.mode then
+        gui.set_color(self.mode, vmath.vector4(
+            Theme.colors.text_primary[1], Theme.colors.text_primary[2],
+            Theme.colors.text_primary[3], Theme.colors.text_primary[4]))
+    end
+
+    -- Health bar colors and sizes
+    if self.hp_bg then
+        gui.set_color(self.hp_bg, vmath.vector4(
+            Theme.colors.health_bg[1], Theme.colors.health_bg[2],
+            Theme.colors.health_bg[3], Theme.colors.health_bg[4]))
+        gui.set_size(self.hp_bg, vmath.vector3(Theme.sizes.health_bar_width, Theme.sizes.health_bar_height, 0))
+    end
+    if self.hp_fg then
+        gui.set_color(self.hp_fg, vmath.vector4(
+            Theme.colors.health[1], Theme.colors.health[2],
+            Theme.colors.health[3], Theme.colors.health[4]))
+        local max_w = Theme.sizes.health_bar_width - (Theme.sizes.bar_border * 2)
+        local max_h = Theme.sizes.health_bar_height - (Theme.sizes.bar_border * 2)
+        gui.set_size(self.hp_fg, vmath.vector3(max_w, max_h, 0))
+    end
+    self.hp, self.hp_max = 0, 1
+
+    -- Energy bar colors and sizes
+    if self.energy_bg then
+        gui.set_color(self.energy_bg, vmath.vector4(
+            Theme.colors.energy_bg[1], Theme.colors.energy_bg[2],
+            Theme.colors.energy_bg[3], Theme.colors.energy_bg[4]))
+        gui.set_size(self.energy_bg, vmath.vector3(Theme.sizes.energy_bar_width, Theme.sizes.energy_bar_height, 0))
+    end
+    if self.energy_fg then
+        gui.set_color(self.energy_fg, vmath.vector4(
+            Theme.colors.energy[1], Theme.colors.energy[2],
+            Theme.colors.energy[3], Theme.colors.energy[4]))
+        local max_w = Theme.sizes.energy_bar_width - (Theme.sizes.bar_border * 2)
+        local max_h = Theme.sizes.energy_bar_height - (Theme.sizes.bar_border * 2)
+        gui.set_size(self.energy_fg, vmath.vector3(max_w, max_h, 0))
+    end
+    self.energy, self.energy_max = 0, 0  -- Hidden by default
+
+    -- Stamina bar colors and sizes
+    if self.stamina_bg then
+        gui.set_color(self.stamina_bg, vmath.vector4(
+            Theme.colors.stamina_bg[1], Theme.colors.stamina_bg[2],
+            Theme.colors.stamina_bg[3], Theme.colors.stamina_bg[4]))
+        gui.set_size(self.stamina_bg, vmath.vector3(Theme.sizes.stamina_bar_width, Theme.sizes.stamina_bar_height, 0))
+    end
+    if self.stamina_fg then
+        gui.set_color(self.stamina_fg, vmath.vector4(
+            Theme.colors.stamina[1], Theme.colors.stamina[2],
+            Theme.colors.stamina[3], Theme.colors.stamina[4]))
+        local max_w = Theme.sizes.stamina_bar_width - (Theme.sizes.bar_border * 2)
+        local max_h = Theme.sizes.stamina_bar_height - (Theme.sizes.bar_border * 2)
+        gui.set_size(self.stamina_fg, vmath.vector3(max_w, max_h, 0))
+    end
+    self.stamina, self.stamina_max = 0, 0  -- Hidden by default
+
+    -- Currency text
+    self.show_currency = is_hud_visible("currency", "show_currency", true)
+    if self.money then
+        gui.set_color(self.money, vmath.vector4(
+            Theme.colors.currency[1], Theme.colors.currency[2],
+            Theme.colors.currency[3], Theme.colors.currency[4]))
+        if self.show_currency then
+            gui.set_text(self.money, string.format("$ %d", Inv.get_currency()))
+        else
+            gui.set_enabled(self.money, false)
+        end
+    end
+
+    -- Abilities text
+    if self.abilities then
+        gui.set_color(self.abilities, vmath.vector4(
+            Theme.colors.abilities[1], Theme.colors.abilities[2],
+            Theme.colors.abilities[3], Theme.colors.abilities[4]))
+        local function abbrev()
+            if not FlagsOk or not Flags then return "" end
+            local parts = {}
+            if Flags.has('double_jump') then parts[#parts+1] = 'DJ' end
+            if Flags.has('air_dash') then parts[#parts+1] = 'AD' end
+            if Flags.has('wall_climb') then parts[#parts+1] = 'WC' end
+            if Flags.has('extended_jump') then parts[#parts+1] = 'EJ' end
+            return (next(parts) and ("Abilities: " .. table.concat(parts, ' '))) or ''
+        end
+        gui.set_text(self.abilities, abbrev())
+    end
+
+    -- Interact hint text
+    if self.interact_hint then
+        gui.set_color(self.interact_hint, vmath.vector4(
+            Theme.colors.interact_hint[1], Theme.colors.interact_hint[2],
+            Theme.colors.interact_hint[3], 0))
+        self.interact_flash_t = 0
+    end
+
+    -- Cooldown flash text
+    if self.flash then
+        gui.set_color(self.flash, vmath.vector4(1, 1, 0, 0))
+    self.flash_t = 0
+    end
+
+    -- Set the Menu button label
+    if self.btn_label then
+        gui.set_text(self.btn_label, "Menu")
+    end
+    align_menu_button(self)
+
+    -- Tutorial popups
+    create_tutorial_nodes(self)
+end
+
+local SettingsOk, Settings = pcall(require, "mvtk.core.settings")
+local hud_elements={hp_bg="health_bar",hp_fg="health_bar",energy_bg="energy_bar",energy_fg="energy_bar",
+    stamina_bg="stamina_bar",stamina_fg="stamina_bar",money="currency",abilities="abilities",interact_hint="interact_hint"}
+local function update_bar(self, key, value, maximum, name)
+    local n=self[key]
+    if not n then return end
+    local fraction=math.max(0,math.min(1,(value or 0)/math.max(1,maximum or 1)))
+    self.bar_fractions=self.bar_fractions or {}
+    if self.bar_fractions[key]==fraction then return end
+    self.bar_fractions[key]=fraction
+    gui.set_size(n,vmath.vector3((Theme.sizes[name.."_bar_width"]-Theme.sizes.bar_border*2)*fraction,
+        Theme.sizes[name.."_bar_height"]-Theme.sizes.bar_border*2,0))
+end
+function update(self, dt)
+    -- Layout is immutable for this HUD instance. Cache visibility once and only
+    -- write enabled state when availability changes (for example energy unlock).
+    if not self.hud_visibility then
+        self.hud_visibility={}; self.hud_enabled={}
+        for key,name in pairs(hud_elements) do
+            self.hud_visibility[key]=is_hud_visible(name,"show_"..name:gsub("_bar$",""),true)
+        end
+    end
+    for key,name in pairs(hud_elements) do
+        local show=self.hud_visibility[key]
+        if name=="energy_bar" then show=show and (self.energy_max or 0)>0
+        elseif name=="stamina_bar" then show=show and (self.stamina_max or 0)>0 end
+        if self[key] and self.hud_enabled[key]~=show then
+            gui.set_enabled(self[key],show); self.hud_enabled[key]=show
+        end
+    end
+    local show_fps=SettingsOk and Settings.get_show_fps() or false
+    if self.last_show_fps~=show_fps then
+        self.last_show_fps=show_fps
+        if self.fps_text then gui.set_enabled(self.fps_text,show_fps) end
+    end
+    if self.fps_text and show_fps then
+        self.fps_frames=self.fps_frames+1; self.fps_time=self.fps_time+dt
+        if self.fps_time>=0.5 then
+            self.fps_current=math.floor(self.fps_frames/self.fps_time)
+            self.fps_frames=0; self.fps_time=0
+            gui.set_text(self.fps_text,string.format("FPS: %d",self.fps_current))
+        end
+        local w,h=Viewport.design_size()
+        if self.fps_w~=w or self.fps_h~=h then
+            gui.set_position(self.fps_text,vmath.vector3(w-10,h-10,0)); self.fps_w,self.fps_h=w,h
+        end
+    end
+    local rect=Viewport.rect()
+    if rect and (rect.window_w~=self._w or rect.window_h~=self._h) then layout_root(self) end
+    update_bar(self,"hp_fg",self.hp,self.hp_max,"health")
+    update_bar(self,"energy_fg",self.energy,self.energy_max,"energy")
+    update_bar(self,"stamina_fg",self.stamina,self.stamina_max,"stamina")
+
+    -- Flash cooldown text
+    if self.flash_t and self.flash_t > 0 then
+        self.flash_t = math.max(0, self.flash_t - dt)
+        local a = math.min(1, self.flash_t * 4)
+        local c = gui.get_color(self.flash)
+        c.w = a
+        gui.set_color(self.flash, c)
+    end
+
+    -- Flash interact hint
+    if self.interact_flash_t and self.interact_flash_t > 0 then
+        self.interact_flash_t = math.max(0, self.interact_flash_t - dt)
+        local alpha = math.min(1, self.interact_flash_t * 4)
+        local color = gui.get_color(self.interact_hint)
+        color.w = alpha
+        gui.set_color(self.interact_hint, color)
+        if self.interact_flash_t == 0 and self._interact_hint_hold then
+            gui.set_text(self.interact_hint, self._interact_hint_hold)
+            local c = gui.get_color(self.interact_hint)
+            c.w = (self._interact_hint_hold ~= "" and 0.6 or 0)
+            gui.set_color(self.interact_hint, c)
+            self._interact_hint_hold = nil
+        end
+    end
+
+    -- Tutorial popup lifetime
+    if self.tutorial_t and self.tutorial_t > 0 then
+        self.tutorial_t = math.max(0, self.tutorial_t - dt)
+        if self.tutorial_t == 0 then
+            hide_tutorial(self)
+        end
+    end
+
+end
+
+local function safe_post(target, msg_id, payload)
+    local ok_url, url = pcall(msg.url, target)
+    if not ok_url or not url then
+        return false
+    end
+    local ok_post = pcall(msg.post, url, msg_id, payload or {})
+    return ok_post and true or false
+end
+
+local function return_to_menu()
+    -- Boot collection socket is "boot", not "main"
+    -- Send back_to_menu which handles disable/unload internally
+    safe_post("boot:/host#script", MSG_MENU_BACK, {})
+end
+
+function on_input(self, action_id, action)
+    local is_click = action_id == hash("touch") or action_id == hash("mouse_button_1") or action_id == hash("click")
+    if is_click and action.pressed and self.btn and gui.is_enabled(self.btn)
+        and gui.pick_node(self.btn, action.x, action.y) then
+        msg.post(".", "release_input_focus")
+        return_to_menu()
+        return true
+    end
+end
+
+function on_message(self, message_id, message, sender)
+    if message_id == hash("hud_cooldown") and message and message.action then
+        if self.flash then
+            gui.set_text(self.flash, string.upper(tostring(message.action)))
+            self.flash_t = 0.35
+            local c = gui.get_color(self.flash)
+            c.w = 1
+            gui.set_color(self.flash, c)
+        end
+    elseif message_id == hash("hud_mode") and message and message.mode then
+        if self.mode then
+            gui.set_text(self.mode, tostring(message.mode))
+        end
+    elseif message_id == hash("hud_health") and message then
+        self.hp = tonumber(message.hp) or self.hp
+        self.hp_max = tonumber(message.hp_max) or self.hp_max
+    elseif message_id == hash("hud_energy") and message then
+        self.energy = tonumber(message.energy) or self.energy
+        self.energy_max = tonumber(message.energy_max) or self.energy_max
+    elseif message_id == hash("hud_stamina") and message then
+        self.stamina = tonumber(message.stamina) or self.stamina
+        self.stamina_max = tonumber(message.stamina_max) or self.stamina_max
+    elseif message_id == hash("hud_currency") and message then
+        if self.money then
+            gui.set_text(self.money, string.format("$ %d", tonumber(message.value) or Inv.get_currency()))
+        end
+    elseif message_id == hash('ability_unlocked') and message and message.ability and self.abilities then
+        local txt = gui.get_text(self.abilities) or ''
+        local map = { double_jump='DJ', air_dash='AD', wall_climb='WC', extended_jump='EJ' }
+        local a = tostring(message.ability)
+        local tag = map[a] or a
+        if txt == '' then
+            gui.set_text(self.abilities, 'Abilities: ' .. tag)
+        elseif not string.find(txt, tag, 1, true) then
+            gui.set_text(self.abilities, txt .. ' ' .. tag)
+        end
+    elseif message_id == hash("hud_interact_hint") and message and self.interact_hint then
+        local label = message.label or ""
+        if label ~= "" then
+            self._interact_hint_hold = "Interact: " .. label
+            gui.set_text(self.interact_hint, self._interact_hint_hold)
+            local c = gui.get_color(self.interact_hint)
+            c.w = 0.6
+            gui.set_color(self.interact_hint, c)
+        else
+            gui.set_text(self.interact_hint, "")
+            local c = gui.get_color(self.interact_hint)
+            c.w = 0
+            gui.set_color(self.interact_hint, c)
+            self._interact_hint_hold = nil
+        end
+	    elseif message_id == hash("hud_interact") and message and self.interact_hint then
+	        local label = message.label or ""
+	        if label ~= "" then
+	            gui.set_text(self.interact_hint, "Used: " .. label)
+	            self.interact_flash_t = 0.6
+            local c = gui.get_color(self.interact_hint)
+            c.w = 1.0
+            gui.set_color(self.interact_hint, c)
+            if not self._interact_hint_hold then
+                self._interact_hint_hold = "Interact: " .. label
+            end
+	        end
+	    elseif message_id == hash("show_tutorial") and message then
+	        show_tutorial(self, message.title, message.description, message.position, message.duration)
+	    end
+	end

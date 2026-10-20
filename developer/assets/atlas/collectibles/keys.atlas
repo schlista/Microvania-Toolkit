@@ -1,0 +1,8 @@
+animations { id: "basic" images { image: "/developer/assets/atlas/collectibles/key_basic.png" } playback: PLAYBACK_NONE fps: 1 }
+animations { id: "red" images { image: "/developer/assets/atlas/collectibles/key_red.png" } playback: PLAYBACK_NONE fps: 1 }
+animations { id: "blue" images { image: "/developer/assets/atlas/collectibles/key_blue.png" } playback: PLAYBACK_NONE fps: 1 }
+animations { id: "gold" images { image: "/developer/assets/atlas/collectibles/key_gold.png" } playback: PLAYBACK_NONE fps: 1 }
+animations { id: "boss" images { image: "/developer/assets/atlas/collectibles/key_boss.png" } playback: PLAYBACK_NONE fps: 1 }
+margin: 2
+extrude_borders: 0
+inner_padding: 0

@@ -1,0 +1,26 @@
+// Lua language server settings for the Defold editor's code linting (and any
+// other editor running lua-language-server, e.g. VS Code).
+//
+// The Defold editor supplies its own settings (Lua 5.1 runtime, Defold globals,
+// annotation library); this file only adds to them. Do not add
+// "diagnostics.globals" or "workspace.library" here: a key set in this file
+// replaces the editor's value instead of merging with it.
+{
+    "workspace": {
+        "ignoreDir": [
+            // lua-language-server's default; listing ignoreDir replaces it.
+            ".vscode",
+            // Headless test harnesses assign stub functions to Defold globals
+            // (e.g. `go.property = function() end`). The editor has no
+            // signatures for go/gui/msg/vmath/factory, so the linter adopts
+            // those stubs and reports real calls as "expects a maximum of 0
+            // argument(s)" across every game script.
+            "/test",
+            // Disposable copies of the above and other non-game sources; these
+            // mirror .defignore so they stay excluded even without .gitignore.
+            "/.build",
+            "/.deps",
+            "/developer/.trash"
+        ]
+    }
+}

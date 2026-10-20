@@ -1,0 +1,23 @@
+local visible = false
+
+function init(self)
+  msg.post(".", "acquire_input_focus")
+  gui.set_alpha(gui.get_node("overlay"), 0.0)
+  gui.set_alpha(gui.get_node("oxygen"), 0.0)
+end
+
+local function set_visible(v)
+  visible = v and true or false
+  local a = visible and 0.25 or 0.0
+  gui.animate(gui.get_node("overlay"), gui.PROP_COLOR, vmath.vector4(0.2,0.4,0.8,a), gui.EASING_OUTQUAD, 0.15)
+  gui.animate(gui.get_node("oxygen"), gui.PROP_COLOR, vmath.vector4(1,1,1, visible and 1 or 0), gui.EASING_OUTQUAD, 0.15)
+end
+
+function on_message(self, message_id, message, sender)
+  if message_id == hash("underwater_set") then
+    set_visible(message and message.enabled)
+  elseif message_id == hash("oxygen") then
+    local pct = math.max(0, math.min(100, tonumber(message and message.value) or 0))
+    gui.set_text(gui.get_node("oxygen"), string.format("Oxygen: %d%%", pct))
+  end
+end

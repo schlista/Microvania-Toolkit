@@ -1,0 +1,53 @@
+script: "/renderer/default.render_script"
+materials {
+  name: "tile"
+  material: "/builtins/materials/tile_map.material"
+}
+materials {
+  name: "sprite"
+  material: "/builtins/materials/sprite.material"
+}
+materials {
+  name: "glow"
+  material: "/developer/materials/glow_sprite.material"
+}
+materials {
+  name: "biome_grade_tilemap"
+  material: "/developer/materials/biome_grade_tilemap.material"
+}
+materials {
+  name: "distortion_zone"
+  material: "/developer/materials/distortion_zone.material"
+}
+materials {
+  name: "text"
+  material: "/builtins/fonts/font.material"
+}
+materials {
+  name: "particlefx"
+  material: "/builtins/materials/particlefx.material"
+}
+materials {
+  name: "label"
+  material: "/builtins/fonts/label.material"
+}
+materials {
+  name: "gui"
+  material: "/builtins/materials/gui.material"
+}
+materials {
+  name: "model"
+  material: "/builtins/materials/model.material"
+}
+materials {
+  name: "parallax_clip"
+  material: "/mvtk/tiled/materials/parallax_clip.material"
+}
+materials {
+  name: "parallax_clip_background"
+  material: "/mvtk/tiled/materials/parallax_clip_background.material"
+}
+materials {
+  name: "parallax_clip_foreground"
+  material: "/mvtk/tiled/materials/parallax_clip_foreground.material"
+}

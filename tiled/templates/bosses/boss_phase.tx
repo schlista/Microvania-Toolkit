@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<template>
+ <object name="Boss Phase" type="boss_phase">
+  <properties>
+   <property name="boss_ref" type="object" value="0"/>
+   <property name="arena_ref" type="object" value="0"/>
+   <property name="boss_type" propertytype="bosses" value="default_boss"/>
+   <property name="phase" type="int" value="1"/>
+   <property name="phase_id" type="string" value=""/>
+   <property name="links" type="class" propertytype="boss_phase_links">
+    <properties>
+     <property name="boss_id" type="string" value=""/>
+     <property name="arena_id" type="string" value=""/>
+    </properties>
+   </property>
+   <property name="health_thresholds" type="class" propertytype="boss_phase_health_thresholds">
+    <properties>
+     <property name="health_min" type="float" value="-1"/>
+     <property name="health_max" type="float" value="-1"/>
+    </properties>
+   </property>
+   <property name="attack_sequence" type="class" propertytype="boss_phase_attack_sequence">
+    <properties>
+     <property name="attacks" type="string" value=""/>
+     <property name="attack_interval_min" type="float" value="2"/>
+     <property name="attack_interval_max" type="float" value="4"/>
+     <property name="attack_range" type="float" value="0"/>
+     <property name="damage_multiplier" type="float" value="1"/>
+     <property name="charge_speed" type="float" value="-1"/>
+     <property name="charge_distance" type="float" value="-1"/>
+     <property name="charge_telegraph_time" type="float" value="-1"/>
+     <property name="charge_duration" type="float" value="-1"/>
+     <property name="charge_cooldown" type="float" value="-1"/>
+     <property name="charge_recovery" type="float" value="-1"/>
+    </properties>
+   </property>
+   <property name="movement" type="class" propertytype="boss_phase_movement">
+    <properties>
+     <property name="behavior" propertytype="boss_behaviors" value="aggressive"/>
+     <property name="speed_multiplier" type="float" value="1"/>
+     <property name="movement_profile" propertytype="movement_profiles" value="ground_chase"/>
+     <property name="facing_lock" type="bool" value="false"/>
+     <property name="hover_height" type="float" value="0"/>
+     <property name="jump_height" type="float" value="0"/>
+     <property name="jump_speed" type="float" value="0"/>
+     <property name="leash_radius" type="float" value="0"/>
+     <property name="chase_speed" type="float" value="-1"/>
+    </properties>
+   </property>
+   <property name="transition" type="class" propertytype="boss_phase_transition">
+    <properties>
+     <property name="transition_type" propertytype="boss_transition_types" value="rage"/>
+     <property name="transition_duration" type="float" value="0"/>
+     <property name="transition_iframes" type="float" value="0"/>
+     <property name="transition_animation" propertytype="boss_animation_keys" value="enrage"/>
+     <property name="transition_teleport_to" type="string" value=""/>
+    </properties>
+   </property>
+   <property name="transition_effects" type="class" propertytype="boss_phase_transition_effects">
+    <properties>
+     <property name="transition_camera_intensity" type="float" value="0"/>
+     <property name="transition_camera_duration" type="float" value="0"/>
+     <property name="transition_flash" type="bool" value="false"/>
+     <property name="transition_arena_darkness" type="bool" value="false"/>
+     <property name="transition_spawn_hazards" propertytype="hazards" value="spikes"/>
+     <property name="transition_new_music" propertytype="boss_music_tracks" value="none"/>
+    </properties>
+   </property>
+   <property name="mvtk_template_version" type="string" value="2.7.0"/>
+  </properties>
+  <point/>
+ </object>
+</template>

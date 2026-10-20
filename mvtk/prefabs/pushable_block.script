@@ -1,0 +1,939 @@
+-- mvtk/prefabs/pushable_block.script
+-- Pushable physics block with optional "captured tile chunk" movement.
+--
+-- Tile chunk behavior:
+-- 1) Capture the tiles inside the authored rectangle once (on init).
+-- 2) Move only that captured chunk with the block.
+-- 3) Restore tiles that were under the chunk, so the block does not absorb
+--    new tiles that it overlaps later.
+
+go.property("block_id", "")
+go.property("room_id", "")
+
+go.property("reset_on_room_load", false)
+go.property("push_force", 2200)
+go.property("min_force_scale", 0.35)
+go.property("max_force_scale", 1.5)
+go.property("push_accel", 18)
+go.property("push_drag", 14)
+go.property("push_max_speed", 700)
+go.property("push_drive_scale", 0.72)
+go.property("gravity_scale", 1.0)
+-- The authored Tiled `mass`. The block's collision object is kinematic, and
+-- Defold refuses to create a kinematic body with a positive mass (the whole
+-- room collection then fails to spawn), so the value lives here instead.
+go.property("mass", 1.0)
+
+go.property("move_embedded_tiles", true)
+go.property("capture_width", 128)
+go.property("capture_height", 128)
+go.property("debug_tile_chunk", false)
+go.property("chunk_baked", false)
+
+local RESET_BLOCK_MSG = hash("reset_block")
+local RESET_MSG = hash("reset")
+local ROOM_LOAD_MSG = hash("mvtk_room_did_load")
+local PUSH_CONTACT_MSG = hash("mvtk_push_contact")
+local BLOCK_PULL_MSG = hash("mvtk_block_pull")
+local CONTACT_POINT_RESPONSE_MSG = hash("contact_point_response")
+local SET_LINEAR_VELOCITY_MSG = hash("set_linear_velocity")
+local PLAYER_GROUP = hash("player")
+local SurfaceClassifier = require "mvtk.core.surface_classifier"
+local PU = require "mvtk.prefabs.prefab_utils"
+local RuntimeSettings = require "developer.config.runtime_settings"
+local Debug = require "developer.config.debug_config"
+local FrameClock = require "mvtk.core.frame_clock"
+local raw_print = print
+local PUSHABLE_LOG_ENABLED = (Debug.global and Debug.global.enable) or
+    (Debug.rooms and Debug.rooms.loading) or
+    (Debug.physics and Debug.physics.collision)
+local function print(...)
+    if PUSHABLE_LOG_ENABLED then
+        raw_print(...)
+    end
+end
+
+local RoomManager = nil
+local TileFrame = nil
+local GROUND_NORMAL_Y = 0.55
+local GROUND_STICK_TIME = 0.12
+local HORIZONTAL_SWEEP_SKIN = 0.1
+-- Raycast groups claim collision-group slots (see surface_classifier.lua), so
+-- list only groups some collider uses; "bounds" is a Tiled layer name only.
+local BLOCK_SWEEP_GROUPS = {
+    SurfaceClassifier.GROUPS.SOLID,
+}
+
+local function chunk_component_url()
+    return msg.url(nil, go.get_id(), hash("chunk"))
+end
+
+local function clamp(value, min_v, max_v)
+    if value < min_v then return min_v end
+    if value > max_v then return max_v end
+    return value
+end
+
+local function message_hits_group(message, group_id)
+    if not message or not group_id then
+        return false
+    end
+    return message.group == group_id
+        or message.other_group == group_id
+        or message.own_group == group_id
+end
+
+local function apply_push(self, dir_x, amount)
+    local dir = tonumber(dir_x) or 0
+    if math.abs(dir) < 0.01 then
+        return
+    end
+    local applied = tonumber(amount) or 0
+    if applied <= 0 then
+        return
+    end
+    local dir_sign = (dir > 0) and 1 or -1
+    local force_scale = clamp(applied / 140, self.min_force_scale, self.max_force_scale)
+    self.push_active = true
+    self.push_vel_x = dir_sign * self.push_force * force_scale
+end
+
+local function apply_pull(self, dir_x, speed, max_speed)
+    local dir = tonumber(dir_x) or 0
+    local requested_speed = math.abs(tonumber(speed) or 0)
+    local command_cap = math.abs(tonumber(max_speed) or requested_speed)
+    if math.abs(dir) < 0.01
+        or requested_speed <= 0
+        or command_cap <= 0
+        or requested_speed ~= requested_speed
+        or command_cap ~= command_cap
+        or requested_speed == math.huge
+        or command_cap == math.huge then
+        return
+    end
+
+    requested_speed = math.min(requested_speed, command_cap)
+    self.pull_active = true
+    self.pull_vel_x = ((dir > 0) and 1 or -1) * requested_speed
+    self.pull_max_speed = command_cap
+end
+
+local function sweep_horizontal(self, world_pos, delta_x)
+    local distance = math.abs(tonumber(delta_x) or 0)
+    if distance <= 0.0001 then
+        return delta_x, false
+    end
+    if not (physics and physics.raycast) then
+        return 0, true
+    end
+
+    local dir = delta_x > 0 and 1 or -1
+    local half_w = math.max(0.5, (tonumber(self.capture_width) or 128) * 0.5)
+    local half_h = math.max(0.5, (tonumber(self.capture_height) or 128) * 0.5)
+    local leading_x = (world_pos.x or 0) + dir * half_w
+    local target_x = leading_x + delta_x
+    local y_inset = math.max(0, half_h - 0.5)
+    local sample_offsets = { -y_inset, 0, y_inset }
+    local nearest = distance
+    local blocked = false
+    local successful_cast = false
+    local failed_cast = false
+
+    -- Cast the leading face at both corners and the centre. The generated
+    -- block collider uses capture_width/capture_height as its full extents,
+    -- so clamping the centre by the nearest leading-face hit is a swept-box
+    -- guard for the axis-aligned horizontal movement used by push and pull.
+    for _, offset_y in ipairs(sample_offsets) do
+        local from = vmath.vector3(leading_x, (world_pos.y or 0) + offset_y, world_pos.z or 0)
+        local to = vmath.vector3(target_x, from.y, from.z)
+        local ok, hit = pcall(physics.raycast, from, to, BLOCK_SWEEP_GROUPS)
+        if ok then
+            successful_cast = true
+            if hit then
+                local normal_x = tonumber(hit.normal and hit.normal.x) or 0
+                local hit_distance = nil
+                if hit.position and hit.position.x then
+                    hit_distance = ((hit.position.x or leading_x) - leading_x) * dir
+                elseif tonumber(hit.fraction) then
+                    hit_distance = distance * clamp(tonumber(hit.fraction), 0, 1)
+                end
+                if hit_distance and hit_distance >= -HORIZONTAL_SWEEP_SKIN
+                    and math.abs(normal_x) > 0.25 then
+                    nearest = math.min(nearest, math.max(0, hit_distance))
+                    blocked = true
+                end
+            end
+        else
+            failed_cast = true
+        end
+    end
+
+    -- A transient raycast API failure must fail closed. Moving the full step
+    -- here would reintroduce the exact dt-spike tunnelling this sweep prevents.
+    if failed_cast or not successful_cast then
+        return 0, true
+    end
+    if blocked then
+        return dir * math.max(0, nearest - HORIZONTAL_SWEEP_SKIN), true
+    end
+    return delta_x, false
+end
+
+
+local function dbg(self, msg)
+    if self.debug_tile_chunk then
+        print(string.format("[PUSHABLE_BLOCK] %s", tostring(msg)))
+    end
+end
+
+local function get_room_manager()
+    if RoomManager == nil then
+        local ok, mod = pcall(require, "mvtk.map.streaming.room_manager")
+        RoomManager = ok and mod or false
+    end
+    return RoomManager or nil
+end
+
+local function get_tile_frame()
+    if TileFrame == nil then
+        local ok, mod = pcall(require, "mvtk.rooms.tile_frame")
+        TileFrame = ok and mod or false
+    end
+    return TileFrame or nil
+end
+
+local function discover_tilemap_url(self)
+    local go_names   = { "level", "tilemap", "tm", "map" }
+    local room_id = self and self.room_id_str or nil
+    if room_id and room_id ~= "" then
+        go_names[#go_names + 1] = room_id .. "_level"
+        go_names[#go_names + 1] = "/" .. room_id .. "_level"
+    end
+    local comp_names = { "tilemap", "tm", "map", "level" }
+    for _, go_name in ipairs(go_names) do
+        local ok_id, go_id = pcall(go.get_id, go_name)
+        if not ok_id then
+            ok_id, go_id = pcall(go.get_id, "/" .. go_name)
+        end
+        if ok_id and go_id then
+            for _, comp in ipairs(comp_names) do
+                local url = msg.url(nil, go_id, hash(comp))
+                local ok_bounds = pcall(tilemap.get_bounds, url)
+                if ok_bounds then
+                    local pos = vmath.vector3(0, 0, 0)
+                    local ok_pos, wp = pcall(go.get_world_position, go_id)
+                    if ok_pos and wp then pos = wp end
+                    return url, pos
+                end
+            end
+        end
+    end
+    return nil, nil
+end
+
+local function resolve_tile_bounds(frame, pos, width, height)
+    if not (frame and pos and width and height) then
+        return nil
+    end
+
+    local half_w = math.max(width * 0.5, 0.5)
+    local half_h = math.max(height * 0.5, 0.5)
+    local eps_x = math.min(0.1, half_w * 0.5)
+    local eps_y = math.min(0.1, half_h * 0.5)
+
+    -- Compute tile indices directly without an out-of-bounds rejection so the
+    -- full rectangle is captured even when its edges extend below/above the
+    -- *used* tilemap area reported by tilemap.get_bounds().  Clamping to the
+    -- real tilemap extent happens afterward.
+    local function to_tx(wx)
+        return frame.min_tx + math.floor((wx - frame.origin_x) / frame.tile_w)
+    end
+    local function to_ty(wy)
+        return frame.min_ty + math.floor((wy - frame.origin_y) / frame.tile_h)
+    end
+
+    local min_tx = to_tx(pos.x - half_w + eps_x)
+    local max_tx = to_tx(pos.x + half_w - eps_x)
+    local min_ty = to_ty(pos.y - half_h + eps_y)
+    local max_ty = to_ty(pos.y + half_h - eps_y)
+
+    -- Clamp to the actual tilemap extent.
+    min_tx = math.max(frame.min_tx, min_tx)
+    max_tx = math.min(frame.max_tx, max_tx)
+    min_ty = math.max(frame.min_ty, min_ty)
+    max_ty = math.min(frame.max_ty, max_ty)
+    if min_tx > max_tx or min_ty > max_ty then
+        return nil
+    end
+
+    return min_tx, max_tx, min_ty, max_ty
+end
+
+local function make_zero_buffer(width, height)
+    local out = {}
+    local count = math.max(0, (tonumber(width) or 0) * (tonumber(height) or 0))
+    for i = 1, count do
+        out[i] = 0
+    end
+    return out
+end
+
+local function capture_area_buffer(tilemap_url, layer, min_tx, min_ty, width, height)
+    local layer_id = layer
+    if type(layer) == "string" then
+        local ok_hash, layer_hash = pcall(hash, layer)
+        if ok_hash then
+            layer_id = layer_hash
+        end
+    end
+
+    local out = {}
+    local has_nonzero = false
+    local i = 1
+    for oy = 0, height - 1 do
+        for ox = 0, width - 1 do
+            local tx = min_tx + ox
+            local ty = min_ty + oy
+            local tid = 0
+            local ok_get, got = pcall(tilemap.get_tile, tilemap_url, layer_id, tx, ty)
+            if ok_get and type(got) == "number" then
+                tid = got
+            end
+            if tid ~= 0 then
+                has_nonzero = true
+            end
+            out[i] = tid
+            i = i + 1
+        end
+    end
+    return out, has_nonzero
+end
+
+local function write_area_buffer(tilemap_url, layer, min_tx, min_ty, width, height, buffer)
+    local layer_id = layer
+    if type(layer) == "string" then
+        local ok_hash, layer_hash = pcall(hash, layer)
+        if ok_hash then
+            layer_id = layer_hash
+        end
+    end
+
+    local i = 1
+    for oy = 0, height - 1 do
+        for ox = 0, width - 1 do
+            local tx = min_tx + ox
+            local ty = min_ty + oy
+            local tid = (buffer and buffer[i]) or 0
+            pcall(tilemap.set_tile, tilemap_url, layer_id, tx, ty, tid)
+            i = i + 1
+        end
+    end
+end
+
+local function write_chunk_buffer(chunk_url, layer, cx_start, cy_start, width, height, buffer)
+    local layer_id = layer
+    if type(layer) == "string" then
+        local ok_hash, layer_hash = pcall(hash, layer)
+        if ok_hash then
+            layer_id = layer_hash
+        end
+    end
+
+    local i = 1
+    for oy = 0, height - 1 do
+        for ox = 0, width - 1 do
+            local tid = (buffer and buffer[i]) or 0
+            pcall(tilemap.set_tile, chunk_url, layer_id, cx_start + ox, cy_start + oy, tid)
+            i = i + 1
+        end
+    end
+end
+
+local function setup_chunk_visual(self, chunk_layers, chunk_tiles_by_layer, chunk_w, chunk_h, zero_buffer, cx_start, cy_start)
+    local chunk_url = chunk_component_url()
+
+    -- The chunk tilemap ships with 4 corner reservation cells at (−8,−8),
+    -- (8,−8), (−8,8), (8,8) solely to force Defold to allocate a 17×17
+    -- grid centred on the origin so that cx_start/cy_start values near 0
+    -- (the typical range when the block is positioned over its tile area)
+    -- are always within bounds.  Clear them before writing captured tiles
+    -- so they never appear on screen.
+    local GRID_CORNERS = { {-8, -8}, {8, -8}, {-8, 8}, {8, 8} }
+    -- Defold cannot list tilemap layers (no tilemap.get_layers); the chunk
+    -- layers are the ones this block writes, so clear the corners on those.
+    for _, corner in ipairs(GRID_CORNERS) do
+        for _, layer_id in ipairs(chunk_layers or {}) do
+            pcall(tilemap.set_tile, chunk_url, layer_id, corner[1], corner[2], 0)
+        end
+    end
+
+    -- Quick write-read sanity check to make sure the grid is usable.
+    local test_layer = chunk_layers[1]
+    local ok_set = pcall(tilemap.set_tile, chunk_url, test_layer, 1, 1, 1)
+    if not ok_set then
+        print(string.format("[PUSHABLE_BLOCK] '%s' chunk set_tile failed – component not ready", self.block_id_str))
+        return false
+    end
+    local ok_get, test_val = pcall(tilemap.get_tile, chunk_url, test_layer, 1, 1)
+    pcall(tilemap.set_tile, chunk_url, test_layer, 1, 1, 0) -- clean up
+    if not ok_get or test_val ~= 1 then
+        print(string.format("[PUSHABLE_BLOCK] '%s' chunk read-back failed (got %s) – visual disabled", self.block_id_str, tostring(test_val)))
+        return false
+    end
+
+    -- Write tiles at the computed chunk coordinates so the visual aligns with
+    -- the block's physics position.  The chunk tilemap component rides the
+    -- block GO and moves smoothly with physics; only the initial tile
+    -- coordinates need to be correct (they stay fixed in chunk-local space
+    -- from here on).
+
+    for _, layer in ipairs(chunk_layers) do
+        write_chunk_buffer(chunk_url, layer, cx_start, cy_start, chunk_w, chunk_h, zero_buffer)
+    end
+    for _, layer in ipairs(chunk_layers) do
+        write_chunk_buffer(chunk_url, layer, cx_start, cy_start, chunk_w, chunk_h, chunk_tiles_by_layer[layer])
+    end
+
+    -- Verify at least one tile was correctly stored in the chunk tilemap.
+    local verified = false
+    local verify_buf = chunk_tiles_by_layer[test_layer]
+    if verify_buf then
+        for i, tid in ipairs(verify_buf) do
+            if tid ~= 0 then
+                local oy = math.floor((i - 1) / chunk_w)
+                local ox = (i - 1) % chunk_w
+                local ok_v, v = pcall(tilemap.get_tile, chunk_url, test_layer, cx_start + ox, cy_start + oy)
+                if ok_v and v == tid then
+                    verified = true
+                end
+                break
+            end
+        end
+    end
+    if not verified then
+        print(string.format("[PUSHABLE_BLOCK] '%s' chunk tile verification failed – visual disabled", self.block_id_str))
+        return false
+    end
+
+    -- The chunk tilemap now provides the visual; hide generic fallback sprite if present.
+    local ok, _ = pcall(go.get, "#sprite", "size")
+    if ok then require("mvtk.core.util").post_component_enabled("#sprite", false) end
+    return true
+end
+
+local function get_block_world_position()
+    local ok, wp = pcall(go.get_world_position)
+    if ok and wp then
+        return wp
+    end
+    return go.get_position()
+end
+
+local function move_chunk_to_tile_origin(self, dest_min_tx, dest_min_ty)
+    if not self.tile_ready then
+        return
+    end
+    if dest_min_tx == self.chunk_min_tx and dest_min_ty == self.chunk_min_ty then
+        return
+    end
+
+    local width = self.chunk_w
+    local height = self.chunk_h
+    if width <= 0 or height <= 0 then
+        return
+    end
+
+    for _, layer in ipairs(self.chunk_layers) do
+        write_area_buffer(
+            self.tilemap_url,
+            layer,
+            self.chunk_min_tx,
+            self.chunk_min_ty,
+            width,
+            height,
+            self.underlay_by_layer[layer] or self.zero_buffer
+        )
+    end
+
+    local next_underlay = {}
+    for _, layer in ipairs(self.chunk_layers) do
+        local captured = capture_area_buffer(
+            self.tilemap_url,
+            layer,
+            dest_min_tx,
+            dest_min_ty,
+            width,
+            height
+        )
+        next_underlay[layer] = captured
+    end
+
+    if self.chunk_visual_enabled then
+        for _, layer in ipairs(self.chunk_layers) do
+            write_area_buffer(
+                self.tilemap_url,
+                layer,
+                dest_min_tx,
+                dest_min_ty,
+                width,
+                height,
+                self.zero_buffer
+            )
+        end
+    else
+        for _, layer in ipairs(self.chunk_layers) do
+            write_area_buffer(
+                self.tilemap_url,
+                layer,
+                dest_min_tx,
+                dest_min_ty,
+                width,
+                height,
+                self.chunk_tiles_by_layer[layer]
+            )
+        end
+    end
+
+    self.underlay_by_layer = next_underlay
+    self.chunk_min_tx = dest_min_tx
+    self.chunk_min_ty = dest_min_ty
+
+    dbg(self, string.format("Moved chunk '%s' to tiles min=(%d,%d)", self.block_id_str, dest_min_tx, dest_min_ty))
+end
+
+local function sync_chunk_to_world_position(self)
+    if not self.tile_ready then
+        return
+    end
+    local tile_frame = get_tile_frame()
+    if not tile_frame then
+        return
+    end
+    local width_px = tonumber(self.capture_width) or 128
+    local height_px = tonumber(self.capture_height) or width_px
+    if width_px <= 0 then width_px = 128 end
+    if height_px <= 0 then height_px = width_px end
+
+    local pos = get_block_world_position()
+    local min_tx, max_tx, min_ty, max_ty = resolve_tile_bounds(
+        self.frame,
+        pos,
+        width_px,
+        height_px
+    )
+    if not min_tx then
+        return
+    end
+
+    local width = max_tx - min_tx + 1
+    local height = max_ty - min_ty + 1
+    if width ~= self.chunk_w or height ~= self.chunk_h then
+        return
+    end
+
+    move_chunk_to_tile_origin(self, min_tx, min_ty)
+end
+
+local function setup_tile_chunk(self)
+    if not self.move_embedded_tiles or self.tile_ready then
+        return self.tile_ready
+    end
+
+    local tile_frame = get_tile_frame()
+    if not tile_frame then
+        return false
+    end
+
+    local tilemap_url, tilemap_pos = nil, nil
+    local room_manager = get_room_manager()
+    if room_manager and room_manager.get_tilemap_url then
+        local room_id = self.room_id_str
+        if (not room_id or room_id == "") and room_manager.get_current_room then
+            room_id = room_manager.get_current_room()
+        end
+        if room_id and room_id ~= "" then
+            tilemap_url, tilemap_pos = room_manager.get_tilemap_url(room_id)
+        end
+    end
+    if not tilemap_url then
+        tilemap_url, tilemap_pos = discover_tilemap_url(self)
+    end
+    if not tilemap_url then
+        return false
+    end
+    tilemap_pos = tilemap_pos or vmath.vector3(0, 0, 0)
+
+    local frame = tile_frame.build(tilemap_url, tilemap_pos)
+    if not frame then
+        return false
+    end
+
+    local width_px = tonumber(self.capture_width) or 128
+    local height_px = tonumber(self.capture_height) or width_px
+    if width_px <= 0 then width_px = 128 end
+    if height_px <= 0 then height_px = width_px end
+
+    local pos = get_block_world_position()
+    local min_tx, max_tx, min_ty, max_ty = resolve_tile_bounds(frame, pos, width_px, height_px)
+    if not min_tx then
+        return false
+    end
+
+    local chunk_w = max_tx - min_tx + 1
+    local chunk_h = max_ty - min_ty + 1
+    if chunk_w <= 0 or chunk_h <= 0 then
+        return false
+    end
+
+    local layers = SurfaceClassifier.resolve_existing_layers(tilemap_url, {
+        hash("bounds"),
+        SurfaceClassifier.GROUPS.SOLID,
+        hash("destructible"),
+        hash("scenery"),
+    })
+    if #layers == 0 then
+        layers = {
+            hash("bounds"),
+            SurfaceClassifier.GROUPS.SOLID,
+            hash("destructible"),
+            hash("scenery"),
+        }
+    end
+
+    local chunk_layers = {}
+    local chunk_tiles_by_layer = {}
+    local underlay_by_layer = {}
+    local zero_buffer = make_zero_buffer(chunk_w, chunk_h)
+
+    for _, layer in ipairs(layers) do
+        local layer_buffer, has_nonzero = capture_area_buffer(tilemap_url, layer, min_tx, min_ty, chunk_w, chunk_h)
+        if has_nonzero then
+            chunk_layers[#chunk_layers + 1] = layer
+            chunk_tiles_by_layer[layer] = layer_buffer
+            underlay_by_layer[layer] = zero_buffer
+        end
+    end
+
+    if #chunk_layers == 0 then
+        print(string.format("[PUSHABLE_BLOCK] '%s': no non-empty tiles in capture area (pos=%.1f,%.1f size=%.0fx%.0f min_tx=%s)", self.block_id_str, pos.x, pos.y, width_px, height_px, tostring(min_tx)))
+        return false
+    end
+
+    -- Place chunk tiles centred on the GO so the chunk visual and collision
+    -- object share the same world centre.
+    -- Keep integer tile coordinates for both odd and even chunk sizes:
+    -- odd (3) -> -1,0,1 ; even (4) -> -1,0,1,2.
+    local cx_start
+    if chunk_w % 2 == 0 then
+        cx_start = 1 - (chunk_w / 2)
+    else
+        cx_start = -math.floor(chunk_w / 2)
+    end
+    local cy_start
+    if chunk_h % 2 == 0 then
+        cy_start = 1 - (chunk_h / 2)
+    else
+        cy_start = -math.floor(chunk_h / 2)
+    end
+
+    local chunk_visual_enabled = setup_chunk_visual(
+        self,
+        chunk_layers,
+        chunk_tiles_by_layer,
+        chunk_w,
+        chunk_h,
+        zero_buffer,
+        cx_start,
+        cy_start
+    )
+    for _, layer in ipairs(chunk_layers) do
+        write_area_buffer(tilemap_url, layer, min_tx, min_ty, chunk_w, chunk_h, zero_buffer)
+    end
+    if not chunk_visual_enabled then
+        for _, layer in ipairs(chunk_layers) do
+            write_area_buffer(tilemap_url, layer, min_tx, min_ty, chunk_w, chunk_h, chunk_tiles_by_layer[layer])
+        end
+    end
+
+    self.tilemap_url = tilemap_url
+    self.frame = frame
+    self.chunk_layers = chunk_layers
+    self.chunk_tiles_by_layer = chunk_tiles_by_layer
+    self.underlay_by_layer = underlay_by_layer
+    self.zero_buffer = zero_buffer
+    self.chunk_w = chunk_w
+    self.chunk_h = chunk_h
+    self.chunk_min_tx = min_tx
+    self.chunk_min_ty = min_ty
+    self.init_min_tx = min_tx      -- remember the initial tile origin for reset
+    self.init_min_ty = min_ty
+    self.chunk_cx_start = cx_start
+    self.chunk_cy_start = cy_start
+    self.chunk_visual_enabled = chunk_visual_enabled
+    self.tile_ready = true
+
+    print(string.format(
+        "[PUSHABLE_BLOCK] '%s': %d layer(s) size=%dx%d min=(%d,%d) cx_start=(%d,%d) visual=%s",
+        self.block_id_str, #chunk_layers, chunk_w, chunk_h, min_tx, min_ty, cx_start, cy_start,
+        tostring(chunk_visual_enabled)
+    ))
+
+    return true
+end
+
+local function reset_block(self)
+    go.set_position(self.spawn_pos)
+    self.vel_x = 0
+    self.vel_y = 0
+    self.push_active = false
+    self.pull_active = false
+    self.pull_vel_x = 0
+    self.pull_max_speed = 0
+    msg.post("#co", SET_LINEAR_VELOCITY_MSG, { linear_velocity = vmath.vector3(0, 0, 0) })
+    self.prev_world_pos = go.get_world_position()
+    self.estimated_vel = vmath.vector3(0, 0, 0)
+    if self.chunk_visual_enabled and self.tile_ready then
+        -- Re-clear room tilemap at spawn position in case tiles were restored
+        -- (e.g. after a room reload). The chunk tilemap on the GO already
+        -- provides the visual, so we only need the room hole.
+        for _, layer in ipairs(self.chunk_layers) do
+            write_area_buffer(
+                self.tilemap_url,
+                layer,
+                self.init_min_tx,
+                self.init_min_ty,
+                self.chunk_w,
+                self.chunk_h,
+                self.zero_buffer
+            )
+        end
+    else
+        sync_chunk_to_world_position(self)
+    end
+end
+
+
+function init(self)
+    self.block_id_str = PU.normalize_hash_string(self.block_id) or tostring(go.get_id())
+    self.room_id_str = PU.normalize_hash_string(self.room_id)
+    self.spawn_pos = go.get_position()
+    self.push_force = tonumber(self.push_force) or 2200
+    self.min_force_scale = tonumber(self.min_force_scale) or 0.35
+    self.max_force_scale = tonumber(self.max_force_scale) or 1.5
+    self.push_accel = tonumber(self.push_accel) or 18
+    self.push_drag = tonumber(self.push_drag) or 14
+    self.push_max_speed = tonumber(self.push_max_speed) or 700
+    self.push_drive_scale = tonumber(self.push_drive_scale) or 0.72
+    if self.push_accel < 0 then self.push_accel = 0 end
+    if self.push_drag < 0 then self.push_drag = 0 end
+    if self.push_max_speed < 0 then self.push_max_speed = 0 end
+    if self.push_drive_scale < 0 then self.push_drive_scale = 0 end
+    if self.push_drive_scale > 1 then self.push_drive_scale = 1 end
+    self.gravity_scale = tonumber(self.gravity_scale) or 1.0
+    if self.gravity_scale < 0 then
+        self.gravity_scale = 0
+    end
+    local ok_ps, player_cfg = pcall(RuntimeSettings.get_player_settings)
+    local player_gravity = ok_ps and player_cfg and tonumber(player_cfg.gravity) or nil
+    local player_fall_mult = ok_ps and player_cfg and tonumber(player_cfg.fall_gravity_mult) or nil
+
+    local config_gravity = -1600
+    if sys and sys.get_config_number then
+        config_gravity = sys.get_config_number("physics.gravity_y", config_gravity)
+    end
+    self.base_gravity_y = player_gravity or config_gravity
+    self.fall_gravity_mult = player_fall_mult or 1.0
+
+    local max_fall_speed = nil
+    local ok_cfg, config = pcall(require, "developer.config.resolved_config")
+    if ok_cfg and config and config.physics then
+        max_fall_speed = tonumber(config.physics.max_fall_speed)
+    end
+    if not max_fall_speed then
+        local fall_g = self.base_gravity_y * math.max(self.fall_gravity_mult, 1.0)
+        max_fall_speed = fall_g * 4
+    end
+    if max_fall_speed > 0 then
+        max_fall_speed = -max_fall_speed
+    end
+    self.max_fall_speed = max_fall_speed
+
+    local bm = tonumber(self.mass)
+    self.body_mass = (bm and bm > 0) and bm or 1.0
+    print(string.format(
+        "[PUSHABLE] id=%s gravity_scale=%.2f body_mass=%.4f base_gravity_y=%.1f fall_mult=%.2f max_fall=%.1f",
+        tostring(self.block_id_str),
+        self.gravity_scale,
+        self.body_mass,
+        self.base_gravity_y,
+        self.fall_gravity_mult,
+        self.max_fall_speed or 0
+    ))
+    self.capture_width = tonumber(self.capture_width) or 128
+    self.capture_height = tonumber(self.capture_height) or 128
+    self.debug_tile_chunk = (self.debug_tile_chunk == true)
+    self.move_embedded_tiles = (self.move_embedded_tiles ~= false)
+    self.chunk_baked = (self.chunk_baked == true)
+    self.ground_contact_t = 0
+    self.is_grounded = false
+    self.vel_x = 0
+    self.vel_y = 0
+    self.push_active = false
+    self.push_vel_x = 0
+    self.pull_active = false
+    self.pull_vel_x = 0
+    self.pull_max_speed = 0
+    self.prev_world_pos = go.get_world_position()
+    self.estimated_vel = vmath.vector3(0, 0, 0)
+    self.tile_ready = false
+    self.tile_init_retry_t = 0
+
+    if self.chunk_baked then
+        -- Import-time baked chunk visuals are authored directly into #chunk.
+        -- Runtime capture/mutation is skipped to keep IDE and runtime identical.
+        self.move_embedded_tiles = false
+        local ok, _ = pcall(go.get, "#sprite", "size")
+        if ok then require("mvtk.core.util").post_component_enabled("#sprite", false) end
+        return
+    end
+
+    setup_tile_chunk(self)
+end
+
+function update(self, dt)
+    local dt_num = FrameClock.snap(tonumber(dt) or 0)
+    local pos = go.get_world_position()
+    if dt_num > 0 and self.prev_world_pos then
+        self.estimated_vel = vmath.vector3(
+            (pos.x - self.prev_world_pos.x) / dt_num,
+            (pos.y - self.prev_world_pos.y) / dt_num,
+            0
+        )
+    end
+    self.prev_world_pos = pos
+
+    local t = (tonumber(self.ground_contact_t) or 0) - (tonumber(dt) or 0)
+    if t < 0 then t = 0 end
+    self.ground_contact_t = t
+    self.is_grounded = (t > 0)
+
+    -- Kinematic gravity: accumulate vel_y when airborne, zero when grounded.
+    if self.is_grounded then
+        self.vel_y = 0
+    else
+        local gravity_y = self.base_gravity_y
+        if self.vel_y < 0 then
+            gravity_y = gravity_y * self.fall_gravity_mult
+        end
+        self.vel_y = self.vel_y + gravity_y * self.gravity_scale * dt_num
+        local max_fall = (self.max_fall_speed or (gravity_y * 4)) * self.gravity_scale
+        if self.vel_y < max_fall then self.vel_y = max_fall end
+    end
+
+    -- Pull commands are authoritative target speeds so the block stays beside
+    -- the player. Their explicit pull-only cap is already player-scale aware;
+    -- push keeps its existing fixed force/acceleration/max-speed response.
+    if self.pull_active then
+        self.vel_x = self.pull_vel_x
+        if self.pull_max_speed > 0 then
+            self.vel_x = clamp(self.vel_x, -self.pull_max_speed, self.pull_max_speed)
+        end
+    else
+        local target_vx = (self.push_active and self.push_vel_x or 0) * self.push_drive_scale
+        local follow_rate = self.push_active and self.push_accel or self.push_drag
+        local blend = math.min(1, follow_rate * dt_num)
+        self.vel_x = self.vel_x + (target_vx - self.vel_x) * blend
+        if self.push_max_speed > 0 then
+            self.vel_x = clamp(self.vel_x, -self.push_max_speed, self.push_max_speed)
+        end
+    end
+    if math.abs(self.vel_x) < 1 then
+        self.vel_x = 0
+    end
+    self.push_active = false
+    self.pull_active = false
+
+    if dt_num > 0 then
+        local next_pos = go.get_position()
+        local desired_dx = self.vel_x * dt_num
+        local allowed_dx, hit_wall = sweep_horizontal(self, pos, desired_dx)
+        next_pos.x = next_pos.x + allowed_dx
+        next_pos.y = next_pos.y + self.vel_y * dt_num
+        go.set_position(next_pos)
+        if hit_wall then
+            self.vel_x = 0
+        end
+    end
+
+    if not self.move_embedded_tiles then
+        return
+    end
+
+    if not self.tile_ready then
+        self.tile_init_retry_t = self.tile_init_retry_t - (dt or 0)
+        if self.tile_init_retry_t <= 0 then
+            setup_tile_chunk(self)
+            self.tile_init_retry_t = 0.25
+        end
+        return
+    end
+
+    -- When the chunk visual is active the tilemap component attached to this
+    -- GO already rides along smoothly with physics.  Updating the room tilemap
+    -- every frame would only produce quantised / jerky tile movement, so we
+    -- skip it entirely.  The room tiles at the original capture position stay
+    -- cleared; the chunk provides the visual.
+    if not self.chunk_visual_enabled then
+        sync_chunk_to_world_position(self)
+    end
+end
+
+function on_message(self, message_id, message, sender)
+    if message_id == RESET_BLOCK_MSG or message_id == RESET_MSG then
+        reset_block(self)
+    elseif message_id == ROOM_LOAD_MSG and self.reset_on_room_load then
+        reset_block(self)
+    elseif message_id == CONTACT_POINT_RESPONSE_MSG then
+        local player_contact = message_hits_group(message, PLAYER_GROUP)
+        local dist = tonumber(message and message.distance) or 0
+        if dist > 0 and not player_contact then
+            go.set_position(go.get_position() + message.normal * dist)
+        end
+        local nx = tonumber(message and message.normal and message.normal.x) or 0
+        local ny = tonumber(message and message.normal and message.normal.y) or 0
+        if player_contact and math.abs(nx) > 0.45 then
+            local applied_impulse = tonumber(message and message.applied_impulse) or 0
+            if applied_impulse > 0 or dist > 0.25 then
+                -- Contact normals on the block point away from the player, which is
+                -- also the direction the block should move when pushed.
+                apply_push(self, nx, math.max(applied_impulse, dist * 140))
+            end
+        elseif not player_contact and ny > GROUND_NORMAL_Y then
+            self.ground_contact_t = GROUND_STICK_TIME
+            self.is_grounded = true
+            if self.vel_y < 0 then self.vel_y = 0 end
+        elseif not player_contact and ny < -GROUND_NORMAL_Y then
+            if self.vel_y > 0 then self.vel_y = 0 end
+        end
+        if not player_contact then
+            local dot = self.vel_x * nx + self.vel_y * ny
+            if dot < 0 then
+                self.vel_x = self.vel_x - dot * nx
+                self.vel_y = self.vel_y - dot * ny
+            end
+        end
+    elseif message_id == PUSH_CONTACT_MSG then
+        apply_push(
+            self,
+            message and message.direction_x,
+            message and message.amount
+        )
+    elseif message_id == BLOCK_PULL_MSG then
+        apply_pull(
+            self,
+            message and message.dir,
+            message and message.speed,
+            message and message.max_speed
+        )
+    end
+end

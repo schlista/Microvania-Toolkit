@@ -1,0 +1,31 @@
+-- These properties are baked from Tiled. The game object and its visual stay
+-- editable in the room collection; camera motion never affects a physics body.
+local Motion = require "mvtk.tiled.parallax_motion"
+
+go.property("factor_x", 1)
+go.property("factor_y", 1)
+go.property("anchor_offset", vmath.vector3())
+go.property("clip_offset", vmath.vector4())
+go.property("clip_sprite", false)
+go.property("opacity", 1)
+
+function init(self)
+    -- Preserve the collection socket when the callback runs in camera context.
+    local id = msg.url(nil, go.get_id(), nil)
+    local base = go.get_position()
+    go.update_world_transform(id)
+    local world = go.get_world_position(id)
+    if self.clip_sprite then
+        go.set("#sprite", "clip_rect", vmath.vector4(
+            world.x + self.clip_offset.x, world.y + self.clip_offset.y,
+            world.x + self.clip_offset.z, world.y + self.clip_offset.w))
+        go.set("#sprite", "tint", vmath.vector4(1, 1, 1, self.opacity))
+    end
+    if self.factor_x ~= 1 or self.factor_y ~= 1 then
+        self.motion = Motion.register(id, base, world + self.anchor_offset, self.factor_x, self.factor_y)
+    end
+end
+
+function final(self)
+    Motion.unregister(self.motion)
+end

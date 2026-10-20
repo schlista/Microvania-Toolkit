@@ -1,0 +1,123 @@
+-- Boss Weak Point
+-- Intercepts damage messages aimed at the weak point and forwards an
+-- amplified payload to the boss. Optionally hides/exposes itself based on
+-- the boss's current phase and can trigger stagger / phase skips on threshold.
+--
+-- Properties mirror tiled/templates/enemies/boss_weak_point.tx:
+--   boss_id               — string id of the owning boss
+--   damage_mult           — multiplier applied to incoming damage (default 2x)
+--   active_phases         — comma-separated phase numbers where this WP is live
+--                           ("" means always-active)
+--   exposed_in_phase      — convenience single-phase override (ignored if
+--                           active_phases set)
+--   stagger_threshold     — hits-before-stagger (0 to disable)
+--   phase_skip_on_destroy — if true and `health > 0`, destroying this WP
+--                           advances the boss to the next phase
+
+go.property("boss_id", "")
+go.property("damage_mult", 2.0)
+go.property("active_phases", "")
+go.property("exposed_in_phase", 1)
+go.property("health", 0)
+go.property("stagger_threshold", 0)
+go.property("phase_skip_on_destroy", false)
+go.property("show_sprite", true)
+
+local BossManager = require "mvtk.bosses.boss_manager"
+local Util = require "mvtk.core.util"
+local CombatFeedback = require "mvtk.combat.combat_feedback"
+local DAMAGE_MSG = hash("mvtk_apply_damage")
+local HIT_MSG = hash("damage")
+
+local function hash_to_string(value)
+    return Util.hash_text(value, "")
+end
+
+local function parse_phase_list(str)
+    local out = {}
+    if type(str) ~= "string" or str == "" then return out end
+    for n in str:gmatch("[^,%s]+") do
+        local num = tonumber(n)
+        if num then out[num] = true end
+    end
+    return out
+end
+
+function init(self)
+    CombatFeedback.set_target_owner(go.get_id(), true)
+    self._boss_id_str = hash_to_string(self.boss_id)
+    self._active_phases = parse_phase_list(hash_to_string(self.active_phases))
+    if not next(self._active_phases) and self.exposed_in_phase and self.exposed_in_phase > 0 then
+        self._active_phases[self.exposed_in_phase] = true
+        self._always_active = false
+    else
+        self._always_active = not next(self._active_phases)
+    end
+    self._hits_taken = 0
+    self._current_health = self.health
+    self._visible = true
+end
+
+local function is_active_for_phase(self)
+    if self._always_active then return true end
+    local boss = BossManager.get_boss and BossManager.get_boss(self._boss_id_str)
+    if not boss then return true end
+    local phase = boss.phase_controller
+        and boss.phase_controller.get_current_phase_index
+        and boss.phase_controller:get_current_phase_index() or 1
+    return self._active_phases[phase] == true
+end
+
+function update(self, dt)
+    if not self.show_sprite then return end
+    local should_show = is_active_for_phase(self)
+    if should_show ~= self._visible then
+        self._visible = should_show
+        Util.set_component_enabled("#sprite", should_show)
+        Util.set_component_enabled("#collisionobject", should_show, "mass")
+    end
+end
+
+function on_message(self, message_id, message, sender)
+    if message_id ~= DAMAGE_MSG and message_id ~= HIT_MSG then return end
+    if not is_active_for_phase(self) then return end
+
+    local raw = message.amount or message.damage or 1
+    local amplified = raw * (self.damage_mult or 1.0)
+    self._hits_taken = self._hits_taken + 1
+
+    -- Forward amplified damage to the boss itself.
+    if self._boss_id_str and self._boss_id_str ~= "" and BossManager.damage_boss then
+        BossManager.damage_boss(self._boss_id_str, amplified, {
+            source = "weak_point",
+            weak_point = true,
+        })
+    end
+
+    -- Stagger?
+    if self.stagger_threshold and self.stagger_threshold > 0
+       and self._hits_taken % self.stagger_threshold == 0 then
+        local boss = BossManager.get_boss and BossManager.get_boss(self._boss_id_str)
+        if boss and boss.state_machine and boss.state_machine.change_state then
+            pcall(function() boss.state_machine:change_state("stunned") end)
+        end
+    end
+
+    -- Weak point has its own HP pool?
+    if self._current_health > 0 then
+        self._current_health = self._current_health - raw
+        if self._current_health <= 0 then
+            if self.phase_skip_on_destroy then
+                local boss = BossManager.get_boss and BossManager.get_boss(self._boss_id_str)
+                if boss and boss.phase_controller and boss.phase_controller.advance_phase then
+                    pcall(function() boss.phase_controller:advance_phase() end)
+                end
+            end
+            go.delete()
+        end
+    end
+end
+
+function final(self)
+    CombatFeedback.set_target_owner(go.get_id(), false)
+end

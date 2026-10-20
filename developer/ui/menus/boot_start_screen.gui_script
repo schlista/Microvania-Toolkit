@@ -1,0 +1,224 @@
+-- Title screen: Play Game opens save slots; Layout Editor opens room layout.
+-- Settings are available in-game via the pause menu.
+
+local Settings = require("mvtk.core.settings")
+local RuntimeSettings = require("developer.config.runtime_settings")
+local WizardController = require("mvtk.editor.wizard_controller")
+
+-- Game Settings saves this file; the game only bundles it at Build.
+local CREATOR_SETTINGS_PATH = "developer/config/creator_settings.lua"
+local BUILD_REQUIRED_HINT = "Project settings saved: stop the game and Build to apply them."
+
+-- True while saved Game Settings values are not in this build yet. Debug
+-- builds only: an exported game has no project folder to compare against.
+local function build_required()
+    local info = sys.get_engine_info()
+    if not (info and info.is_debug) then return false end
+    local text
+    local f = io.open(CREATOR_SETTINGS_PATH, "rb")
+    if f then
+        text = f:read("*a")
+        f:close()
+    end
+    local ok, required = pcall(WizardController.build_required,
+        RuntimeSettings.compiled_document(), RuntimeSettings.project_document(), text)
+    return ok and required == true
+end
+
+local function n(id)
+    local ok, node = pcall(gui.get_node, id)
+    return ok and node or nil
+end
+
+local function arm_input(self)
+    self.input_armed = false
+    if self.input_arm_timer then
+        timer.cancel(self.input_arm_timer)
+        self.input_arm_timer = nil
+    end
+    self.input_arm_timer = timer.delay(0.2, false, function()
+        self.input_armed = true
+        self.input_arm_timer = nil
+    end)
+end
+
+local function set_enabled(self, enabled)
+    local root = n("root")
+    if root then
+        gui.set_enabled(root, enabled)
+        if enabled then
+            gui.animate(root, gui.PROP_COLOR, vmath.vector4(1, 1, 1, 1), gui.EASING_LINEAR, 0.3)
+        else
+            gui.set_color(root, vmath.vector4(1, 1, 1, 0))
+        end
+    end
+end
+
+local function update_selection(self)
+    -- Update button colors based on selection (matching ui_theme menu palette)
+    if self.btn_play then
+        if self.selected == 1 then
+            gui.set_color(self.btn_play, vmath.vector4(0.12, 0.25, 0.50, 1))  -- Selected blue
+            gui.set_scale(self.btn_play, vmath.vector3(1.05, 1.05, 1))
+            if self.btn_play_label then gui.set_color(self.btn_play_label, vmath.vector4(1, 1, 1, 1)) end
+        else
+            gui.set_color(self.btn_play, vmath.vector4(0.22, 0.22, 0.28, 1))  -- Normal slate
+            gui.set_scale(self.btn_play, vmath.vector3(1, 1, 1))
+            if self.btn_play_label then gui.set_color(self.btn_play_label, vmath.vector4(0.88, 0.88, 0.90, 1)) end
+        end
+    end
+
+    if self.btn_editor then
+        if self.selected == 2 then
+            gui.set_color(self.btn_editor, vmath.vector4(0.12, 0.25, 0.50, 1))
+            gui.set_scale(self.btn_editor, vmath.vector3(1.05, 1.05, 1))
+            if self.btn_editor_label then gui.set_color(self.btn_editor_label, vmath.vector4(1, 1, 1, 1)) end
+        else
+            gui.set_color(self.btn_editor, vmath.vector4(0.22, 0.22, 0.28, 1))
+            gui.set_scale(self.btn_editor, vmath.vector3(1, 1, 1))
+            if self.btn_editor_label then gui.set_color(self.btn_editor_label, vmath.vector4(0.88, 0.88, 0.90, 1)) end
+        end
+    end
+end
+
+local function hide_screen(self)
+    if not self.visible then return end
+    self.visible = false
+
+    set_enabled(self, false)
+    msg.post(".", "release_input_focus")
+end
+
+local function show_screen(self)
+    if self.visible then return end
+    self.visible = true
+
+    set_enabled(self, true)
+    msg.post(".", "acquire_input_focus")
+    arm_input(self)
+
+    -- Reset controller selection
+    self.selected = 1
+    update_selection(self)
+
+    -- Persistent reminder until the next Build picks up saved settings.
+    if self.hint then
+        local required = build_required()
+        gui.set_text(self.hint, required and BUILD_REQUIRED_HINT or self.default_hint)
+        gui.set_color(self.hint, required and vmath.vector4(1.0, 0.82, 0.35, 1) or self.default_hint_color)
+    end
+end
+
+local function execute_selection(self)
+    if self.selected == 1 then
+        -- Play Game
+        hide_screen(self)
+        msg.post("/host#script", hash("start_game"), {})
+    elseif self.selected == 2 then
+        -- Open Layout Editor
+        hide_screen(self)
+        msg.post("/host#script", hash("start_editor"), {})
+    end
+end
+
+function init(self)
+    -- Get all nodes
+    self.root = n("root")
+    self.btn_play = n("btn_play")
+    self.btn_play_label = n("btn_play_label")
+    self.btn_editor = n("btn_editor")
+    self.btn_editor_label = n("btn_editor_label")
+    self.hint = n("hint")
+    if self.hint then
+        self.default_hint = gui.get_text(self.hint)
+        self.default_hint_color = gui.get_color(self.hint)
+    end
+
+    -- Controller navigation
+    self.selected = 1  -- 1 = Play Game, 2 = Layout Editor
+
+    -- Initially hidden
+    self.visible = false
+    self.input_armed = false
+    self.input_arm_timer = nil
+    set_enabled(self, false)
+
+    -- Load settings
+    Settings.load()
+    Settings.apply_all()
+end
+
+function on_input(self, action_id, action)
+    if not self.visible then return false end
+    if not self.input_armed then
+        if action and (action.pressed or action.released) then
+            return true
+        end
+        return false
+    end
+
+    if action and action.pressed then
+        -- Controller navigation: Up/Down
+        if action_id == hash("key_up") or action_id == hash("key_w")
+            or action_id == hash("gamepad_lpad_up")
+            or action_id == hash("gamepad_lstick_up") then
+            self.selected = self.selected > 1 and self.selected - 1 or 2
+            update_selection(self)
+            return true
+        elseif action_id == hash("key_down") or action_id == hash("key_s")
+            or action_id == hash("gamepad_lpad_down")
+            or action_id == hash("gamepad_lstick_down") then
+            self.selected = self.selected < 2 and self.selected + 1 or 1
+            update_selection(self)
+            return true
+        end
+
+        -- Controller/Keyboard select: A button or Enter
+        if action_id == hash("gamepad_rpad_down") or action_id == hash("key_enter") then
+            execute_selection(self)
+            return true
+        end
+
+        -- Home screen has no parent menu; consume Back/B without navigating.
+        if action_id == hash("gamepad_rpad_right") or action_id == hash("gamepad_back")
+            or action_id == hash("key_escape") or action_id == hash("key_m") then
+            return true
+        end
+    end
+
+    -- Handle mouse/touch input
+    if (action_id == hash("touch") or action_id == hash("click")) and action.pressed then
+        local x, y = action.x, action.y
+
+        -- Play Game button
+        if self.btn_play and gui.pick_node(self.btn_play, x, y) then
+            -- Start the actual game
+            hide_screen(self)
+            msg.post("/host#script", hash("start_game"), {})
+            return true
+
+        -- Layout editor button
+        elseif self.btn_editor and gui.pick_node(self.btn_editor, x, y) then
+            hide_screen(self)
+            msg.post("/host#script", hash("start_editor"), {})
+            return true
+        end
+    end
+
+    return false
+end
+
+function on_message(self, message_id, message, sender)
+    if message_id == hash("show_start_screen") then
+        show_screen(self)
+    elseif message_id == hash("hide_start_screen") then
+        hide_screen(self)
+    end
+end
+
+function final(self)
+    if self.input_arm_timer then
+        timer.cancel(self.input_arm_timer)
+        self.input_arm_timer = nil
+    end
+end

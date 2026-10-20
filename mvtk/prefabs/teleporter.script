@@ -1,0 +1,632 @@
+-- mvtk/prefabs/teleporter.script
+-- Paired teleporter endpoint with optional interaction.
+
+local C = require "mvtk.core.constants"
+local Teleporters = require "mvtk.world.teleporter_manager"
+local Flags = require "mvtk.core.flags"
+local PU = require "mvtk.prefabs.prefab_utils"
+local Util = require "mvtk.core.util"
+local Debug = Util.require_config("developer.config.debug_config", { global = {}, gameplay = {} })
+
+local RoomManager = nil
+
+local function get_room_manager()
+    if RoomManager ~= nil then return RoomManager end
+    local ok, mgr = pcall(require, "mvtk.map.streaming.room_manager")
+    RoomManager = ok and mgr or false
+    return RoomManager
+end
+
+go.property("teleporter_id", "")
+go.property("pair_id", "")
+go.property("target_id", "")
+go.property("room_id", "")
+go.property("requires_flag", "")
+go.property("hide_when_locked", false)
+go.property("active_effect_id", "collectible_sparkle")
+go.property("unlock_effect_id", "")
+go.property("require_interact", false)
+go.property("cooldown", 0.5)
+go.property("transition_time", 0.0)
+go.property("preserve_velocity", false)
+go.property("facing", 0)
+go.property("label", "")
+go.property("fade_out", 0.5)
+go.property("fade_in", 0.5)
+go.property("one_way", false)
+go.property("interact_range", 256.0)
+
+local DEFAULT_LABEL = "Teleport"
+local DEFAULT_ACTIVE_EFFECT_LOOP_INTERVAL = 0.5
+local DEFAULT_ONE_SHOT_EFFECT_DURATION = 1.5
+
+local function get_player_url()
+    return C.URL.PLAYER
+end
+
+local function get_camera_url()
+    return (C.URL and C.URL.CAMERA) or msg.url("main:/camera#script")
+end
+
+-- Extract GO URL from component URL for go.exists() calls
+local function get_camera_go()
+    local cam_url = get_camera_url()
+    if not cam_url then return nil end
+    return msg.url(cam_url.socket, cam_url.path, nil)
+end
+
+local teleporter_log = Util.make_debug_log("[TELEPORT]", function()
+    return (Debug.global and Debug.global.enable) or (Debug.gameplay and Debug.gameplay.teleporters)
+end)
+
+local function fmt_pos(pos)
+    if not pos then
+        return "nil"
+    end
+    return string.format("(%.1f, %.1f, %.1f)", tonumber(pos.x) or 0, tonumber(pos.y) or 0, tonumber(pos.z) or 0)
+end
+
+local function object_url(component_url)
+    if not component_url then
+        return nil
+    end
+    local ok, u = pcall(msg.url, component_url)
+    if not ok or not u then
+        return nil
+    end
+    return msg.url(u.socket, u.path, nil)
+end
+
+local function go_exists_safe(url)
+    if not url then
+        return false
+    end
+    local ok, exists = pcall(go.exists, url)
+    return ok and exists == true
+end
+
+local function get_particle_emitter_factory_url()
+    return msg.url("main:/room_manager#particle_emitter_factory")
+end
+
+local function get_effect_spawn_position()
+    local pos = go.get_world_position()
+    return vmath.vector3(pos.x, pos.y, (pos.z or 0) + 0.25)
+end
+
+local function delete_fx_instance(url)
+    if not url then
+        return
+    end
+    pcall(go.delete, url)
+end
+
+local function remove_transient_fx(self, url)
+    if not self._transient_fx or not url then
+        return
+    end
+    for i = #self._transient_fx, 1, -1 do
+        if self._transient_fx[i] == url then
+            table.remove(self._transient_fx, i)
+            break
+        end
+    end
+end
+
+local function spawn_fx_emitter(self, effect_id, opts)
+    local effect_id_str = PU.normalize_hash_string(effect_id)
+    if not effect_id_str or effect_id_str == "" then
+        return nil
+    end
+
+    opts = opts or {}
+    local emitter_suffix = tostring(opts.emitter_suffix or "effect")
+    local emitter_id = string.format("%s_%s", tostring(self.teleporter_id_key or go.get_id()), emitter_suffix)
+    local properties = {
+        emitter_id = emitter_id,
+        effect_id = effect_id_str,
+        auto_play = opts.auto_play ~= false,
+        loop = opts.loop == true,
+        loop_interval = tonumber(opts.loop_interval) or DEFAULT_ACTIVE_EFFECT_LOOP_INTERVAL,
+        start_delay = tonumber(opts.start_delay) or 0,
+        run_duration = tonumber(opts.run_duration) or 0,
+    }
+
+    local ok, instance = pcall(factory.create, get_particle_emitter_factory_url(), get_effect_spawn_position(), nil, properties, 1)
+    if not ok then
+        teleporter_log("Failed to create teleporter effect", tostring(effect_id_str), tostring(instance))
+        return nil
+    end
+    return instance
+end
+
+local function clear_active_effect(self)
+    if not self._active_fx_url then
+        return
+    end
+    delete_fx_instance(self._active_fx_url)
+    self._active_fx_url = nil
+end
+
+local function ensure_active_effect(self)
+    if self._active_fx_url or not self.active_effect_id_str or self.active_effect_id_str == "" then
+        return
+    end
+    self._active_fx_url = spawn_fx_emitter(self, self.active_effect_id_str, {
+        emitter_suffix = "active",
+        loop = true,
+        loop_interval = DEFAULT_ACTIVE_EFFECT_LOOP_INTERVAL,
+    })
+end
+
+local function play_unlock_effect(self)
+    if not self.unlock_effect_id_str or self.unlock_effect_id_str == "" then
+        return
+    end
+
+    self._unlock_fx_seq = (self._unlock_fx_seq or 0) + 1
+    local fx_url = spawn_fx_emitter(self, self.unlock_effect_id_str, {
+        emitter_suffix = "unlock_" .. tostring(self._unlock_fx_seq),
+        loop = false,
+        run_duration = DEFAULT_ONE_SHOT_EFFECT_DURATION,
+    })
+    if not fx_url then
+        return
+    end
+
+    self._transient_fx = self._transient_fx or {}
+    self._transient_fx[#self._transient_fx + 1] = fx_url
+
+    timer.delay(DEFAULT_ONE_SHOT_EFFECT_DURATION + 0.5, false, function()
+        delete_fx_instance(fx_url)
+        remove_transient_fx(self, fx_url)
+    end)
+end
+
+local function clear_transient_fx(self)
+    if not self._transient_fx then
+        return
+    end
+    for i = 1, #self._transient_fx do
+        delete_fx_instance(self._transient_fx[i])
+    end
+    self._transient_fx = {}
+end
+
+local function flag_is_unlocked(flag_name)
+    if not flag_name or flag_name == "" then
+        return true
+    end
+    return Flags.has(flag_name)
+end
+
+local function set_component_enabled(component_id, enabled)
+    local probe = component_id == "co" and "mass" or "tint"
+    Util.set_component_enabled("#" .. component_id, enabled, probe)
+end
+
+local function register_interaction(self, reason)
+    if not self.require_interact then
+        return
+    end
+    if self._interaction_registered then
+        teleporter_log("interaction already registered", tostring(self.teleporter_id_key),
+            "reason=", tostring(reason or ""))
+        return
+    end
+
+    local mgr = PU.get_interaction()
+    if not (mgr and mgr.register) then
+        teleporter_log("interaction registration failed: manager unavailable",
+            tostring(self.teleporter_id_key), "reason=", tostring(reason or ""))
+        return
+    end
+
+    local label = PU.normalize_hash_string(self.label) or DEFAULT_LABEL
+    local owner_url = msg.url()
+    local owner_go_url = object_url(owner_url)
+    local range = tonumber(self.interact_range) or 256
+    local ok, err = pcall(mgr.register, owner_url, {
+        label = label,
+        range = range,
+        priority = 6,
+        position_fn = function()
+            if owner_go_url and go_exists_safe(owner_go_url) then
+                return go.get_world_position(owner_go_url)
+            end
+            return nil
+        end,
+        tags = {
+            teleporter_id = self.teleporter_id_key,
+            room_id = self.room_id_key,
+        },
+    })
+
+    if ok then
+        self._interaction_registered = true
+        teleporter_log("interaction registered", tostring(self.teleporter_id_key),
+            "label=", tostring(label), "range=", tostring(range),
+            "reason=", tostring(reason or ""), "url=", tostring(owner_url),
+            "go=", tostring(owner_go_url))
+    else
+        teleporter_log("interaction registration failed", tostring(self.teleporter_id_key),
+            tostring(err))
+    end
+end
+
+local function unregister_interaction(self, reason)
+    if not self._interaction_registered then
+        return
+    end
+    local mgr = PU.get_interaction()
+    if mgr and mgr.unregister then
+        local ok, err = pcall(mgr.unregister, msg.url())
+        if not ok then
+            teleporter_log("interaction unregister failed", tostring(self.teleporter_id_key), tostring(err))
+        end
+    end
+    self._interaction_registered = false
+    teleporter_log("interaction unregistered", tostring(self.teleporter_id_key),
+        "reason=", tostring(reason or ""))
+end
+
+local function register_endpoint(self)
+    if self._registered then
+        return
+    end
+    Teleporters.register({
+        id = self.teleporter_id_key,
+        pair_id = self.pair_id_key,
+        target_id = self.target_id_key,
+        position = go.get_world_position(),
+        room_id = self.room_id_key,
+        url = msg.url(),
+        enabled = true,
+    })
+    self._registered = true
+    teleporter_log("endpoint registered", tostring(self.teleporter_id_key),
+        "target=", tostring(self.target_id_key), "pair=", tostring(self.pair_id_key),
+        "room=", tostring(self.room_id_key), "pos=", fmt_pos(go.get_world_position()),
+        "url=", tostring(msg.url()))
+end
+
+local function unregister_endpoint(self)
+    if not self._registered then
+        return
+    end
+    Teleporters.unregister(self.teleporter_id_key, msg.url())
+    self._registered = false
+    teleporter_log("endpoint unregistered", tostring(self.teleporter_id_key))
+end
+
+local function refresh_availability(self, force)
+    local unlocked = flag_is_unlocked(self.requires_flag_str)
+    local was_available = self._is_available
+    if not force and was_available == unlocked then
+        return
+    end
+
+    self._is_available = unlocked
+    teleporter_log("availability", tostring(self.teleporter_id_key),
+        "unlocked=", tostring(unlocked), "force=", tostring(force),
+        "requires_flag=", tostring(self.requires_flag_str),
+        "hide_when_locked=", tostring(self.hide_when_locked))
+
+    if unlocked then
+        set_component_enabled("sprite", true)
+        set_component_enabled("co", true)
+        register_endpoint(self)
+        register_interaction(self, force and "availability_init" or "availability_refresh")
+        ensure_active_effect(self)
+        if was_available == false then
+            play_unlock_effect(self)
+        end
+    else
+        set_component_enabled("co", false)
+        if self.hide_when_locked then
+            set_component_enabled("sprite", false)
+        else
+            set_component_enabled("sprite", true)
+        end
+        clear_active_effect(self)
+        unregister_endpoint(self)
+        unregister_interaction(self, "locked")
+    end
+end
+
+local function get_entry_position(entry)
+    return Teleporters.get_position(entry)
+end
+
+local function request_room_load(room_id)
+    local target = PU.normalize_hash_string(room_id) or tostring(room_id or "")
+    if target == "" then
+        teleporter_log("request_room_load skipped: empty room_id", tostring(room_id))
+        return false
+    end
+
+    local rm = get_room_manager()
+    if rm and rm.handle_room_load_message then
+        local ok, result = pcall(rm.handle_room_load_message, target)
+        teleporter_log("request_room_load via room_manager", tostring(target),
+            "ok=", tostring(ok), "result=", tostring(result))
+        return ok and result ~= false
+    end
+
+    if C.URL and C.URL.ROOM_MANAGER and C.MSG and C.MSG.ROOM_LOAD then
+        local ok, err = pcall(msg.post, C.URL.ROOM_MANAGER, C.MSG.ROOM_LOAD, { room = target })
+        teleporter_log("request_room_load via msg.post", tostring(target),
+            "ok=", tostring(ok), "err=", tostring(err))
+        return ok
+    end
+
+    teleporter_log("request_room_load failed: no room manager route", tostring(target))
+    return false
+end
+
+-- Perform the actual move: load room, reposition player, snap camera.
+-- Called directly (no fade) or after fade-to-black completes.
+local function execute_teleport(self, teleport_data)
+    local resolved_actor_url = teleport_data.actor_url
+    local dest = teleport_data.dest
+    local source_room_id = teleport_data.source_room_id
+    local dest_room_id = teleport_data.dest_room_id
+    teleporter_log("execute begin", tostring(self.teleporter_id_key),
+        "dest=", tostring(dest and dest.id), "source_room=", tostring(source_room_id),
+        "dest_room=", tostring(dest_room_id), "actor=", tostring(resolved_actor_url),
+        "faded=", tostring(teleport_data.faded))
+
+    -- Load destination room if cross-room
+    if dest_room_id ~= "" and dest_room_id ~= source_room_id then
+        local load_ok = request_room_load(dest_room_id)
+        if not load_ok then
+            teleporter_log("FAIL: Failed to load destination room", tostring(dest_room_id))
+            -- Fade back in even on failure so the screen doesn't stay black
+            if teleport_data.faded and C.URL and C.URL.FADE_GUI then
+                pcall(msg.post, C.URL.FADE_GUI, C.MSG.FADE_FROM_BLACK, { duration = 0.3 })
+            end
+            return
+        end
+        dest = Teleporters.get_by_id(dest.id) or dest
+        teleporter_log("destination after room load", tostring(dest and dest.id),
+            "room=", tostring(dest and dest.room_id), "url=", tostring(dest and dest.url),
+            "loaded_live=", tostring(dest and dest.url ~= nil))
+    end
+
+    local pos = get_entry_position(dest)
+    if not pos then
+        teleporter_log("FAIL: Missing destination position for", tostring(dest and dest.id))
+        if teleport_data.faded and C.URL and C.URL.FADE_GUI then
+            pcall(msg.post, C.URL.FADE_GUI, C.MSG.FADE_FROM_BLACK, { duration = 0.3 })
+        end
+        return
+    end
+
+    teleporter_log("Teleporting", tostring(self.teleporter_id_key), "->", tostring(dest.id),
+        "pos=", tostring(pos))
+
+    Teleporters.mark_teleport(resolved_actor_url)
+
+    local payload = {
+        pos = pos,
+        position = pos,
+        preserve_velocity = self.preserve_velocity,
+    }
+    if self.facing and self.facing ~= 0 then
+        payload.facing = self.facing
+    end
+    local post_ok, post_err = pcall(msg.post, resolved_actor_url, hash("mvtk_set_position"), payload)
+    if post_ok then require("mvtk.tiled.object_presentation").emit("interacted") end
+    teleporter_log("posted player position", tostring(resolved_actor_url),
+        "ok=", tostring(post_ok), "err=", tostring(post_err),
+        "payload_pos=", fmt_pos(pos), "preserve_velocity=", tostring(self.preserve_velocity))
+
+    -- Snap camera to destination
+    local cam_url = get_camera_url()
+    local cam_go = get_camera_go()
+    if cam_url and cam_go and go.exists(cam_go) then
+        pcall(msg.post, cam_url, hash("snap_to"), { position = pos })
+    end
+
+    -- Fade back in after teleport completes, with a short delay so the room
+    -- and player position have time to settle before revealing
+    if teleport_data.faded and C.URL and C.URL.FADE_GUI then
+        pcall(msg.post, C.URL.FADE_GUI, C.MSG.FADE_FROM_BLACK, {
+            duration = teleport_data.fade_in,
+            delay = 0.15,
+        })
+    end
+end
+
+local function attempt_teleport(self, actor_url)
+    teleporter_log("attempt", tostring(self.teleporter_id_key),
+        "actor_arg=", tostring(actor_url), "available=", tostring(self._is_available),
+        "registered=", tostring(self._registered), "one_way=", tostring(self.one_way),
+        "require_interact=", tostring(self.require_interact),
+        "player_in_zone=", tostring(self._player_in_zone))
+    local resolved_actor_url = get_player_url()
+    local player_exists = resolved_actor_url and pcall(go.exists, resolved_actor_url) and go.exists(resolved_actor_url)
+    if (not resolved_actor_url or not player_exists) and actor_url then
+        resolved_actor_url = actor_url
+    end
+    if not resolved_actor_url then
+        teleporter_log("attempt blocked: no actor url", tostring(self.teleporter_id_key))
+        return
+    end
+    local exists_ok, exists_val = pcall(go.exists, resolved_actor_url)
+    if not exists_ok or not exists_val then
+        teleporter_log("attempt blocked: actor missing", tostring(self.teleporter_id_key),
+            "actor=", tostring(resolved_actor_url), "exists_ok=", tostring(exists_ok),
+            "exists=", tostring(exists_val))
+        return
+    end
+
+    if not self._is_available then
+        teleporter_log("attempt blocked: unavailable", tostring(self.teleporter_id_key),
+            "requires_flag=", tostring(self.requires_flag_str))
+        return
+    end
+
+    -- One-way teleporters are receive-only, they don't send
+    if self.one_way then
+        teleporter_log("attempt blocked: one_way receive-only", tostring(self.teleporter_id_key))
+        return
+    end
+
+    local can_ok, can_tp = pcall(Teleporters.can_teleport, resolved_actor_url, self.cooldown)
+    if not can_ok then
+        teleporter_log("attempt blocked: cooldown check failed", tostring(self.teleporter_id_key),
+            tostring(can_tp))
+        return
+    end
+    if not can_tp then
+        teleporter_log("attempt blocked: cooldown active", tostring(self.teleporter_id_key),
+            "cooldown=", tostring(self.cooldown), "actor=", tostring(resolved_actor_url))
+        return
+    end
+
+    local entry_ok, entry = pcall(Teleporters.get_by_id, self.teleporter_id_key)
+    if not entry_ok or not entry then
+        teleporter_log("attempt blocked: source entry missing", tostring(self.teleporter_id_key),
+            "entry_ok=", tostring(entry_ok), "entry=", tostring(entry))
+        return
+    end
+
+    local dest_ok, dest = pcall(Teleporters.find_destination, entry)
+    if not dest_ok or not dest then
+        teleporter_log("attempt blocked: destination missing", tostring(self.teleporter_id_key),
+            "dest_ok=", tostring(dest_ok), "dest=", tostring(dest))
+        return
+    end
+
+    local source_room_id = PU.normalize_hash_string(self.room_id_key) or tostring(self.room_id_key or "")
+    local dest_room_id = PU.normalize_hash_string(dest.room_id) or tostring(dest.room_id or "")
+    local is_cross_room = dest_room_id ~= "" and dest_room_id ~= source_room_id
+    teleporter_log("destination resolved", tostring(self.teleporter_id_key),
+        "dest=", tostring(dest.id), "source_room=", tostring(source_room_id),
+        "dest_room=", tostring(dest_room_id), "is_cross_room=", tostring(is_cross_room),
+        "dest_url=", tostring(dest.url), "dest_pos=", fmt_pos(Teleporters.get_position(dest)))
+
+    local fade_out = tonumber(self.fade_out) or 0.5
+    local fade_in = tonumber(self.fade_in) or 0.5
+
+    local teleport_data = {
+        actor_url = resolved_actor_url,
+        dest = dest,
+        source_room_id = source_room_id,
+        dest_room_id = dest_room_id,
+        fade_in = fade_in,
+        faded = false,
+    }
+
+    -- Use fade transition for cross-room teleports
+    if is_cross_room and C.URL and C.URL.FADE_GUI then
+        teleport_data.faded = true
+        self._pending_teleport = teleport_data
+        local ok, err = pcall(msg.post, C.URL.FADE_GUI, C.MSG.FADE_TO_BLACK, {
+            duration = fade_out,
+            done = msg.url(),
+        })
+        teleporter_log("fade_to_black posted", tostring(self.teleporter_id_key),
+            "ok=", tostring(ok), "err=", tostring(err), "duration=", tostring(fade_out))
+    else
+        -- Same-room teleport: execute immediately, no fade
+        execute_teleport(self, teleport_data)
+    end
+end
+
+function init(self)
+    self.teleporter_id_key = PU.resolve_id(self.teleporter_id) or tostring(go.get_id())
+    self.pair_id_key = PU.resolve_id(self.pair_id)
+    self.target_id_key = PU.resolve_id(self.target_id)
+    self.room_id_key = PU.resolve_id(self.room_id)
+    self.requires_flag_str = PU.normalize_hash_string(self.requires_flag) or ""
+    self.active_effect_id_str = PU.normalize_hash_string(self.active_effect_id) or ""
+    self.unlock_effect_id_str = PU.normalize_hash_string(self.unlock_effect_id) or ""
+    self.cooldown = tonumber(self.cooldown) or 0.5
+    self.hide_when_locked = self.hide_when_locked == true
+    self._registered = false
+    self._interaction_registered = false
+    self._is_available = nil
+    self._active_fx_url = nil
+    self._transient_fx = {}
+    self._unlock_fx_seq = 0
+    self._flag_poll_t = 0
+    self._pending_teleport = nil
+    self.interact_range = tonumber(self.interact_range) or 256
+
+    teleporter_log("init", tostring(self.teleporter_id_key),
+        "raw_id=", tostring(self.teleporter_id), "target=", tostring(self.target_id_key),
+        "raw_target=", tostring(self.target_id), "pair=", tostring(self.pair_id_key),
+        "room=", tostring(self.room_id_key), "raw_room=", tostring(self.room_id),
+        "require_interact=", tostring(self.require_interact),
+        "interact_range=", tostring(self.interact_range),
+        "cooldown=", tostring(self.cooldown), "one_way=", tostring(self.one_way),
+        "pos=", fmt_pos(go.get_world_position()), "url=", tostring(msg.url()))
+
+    refresh_availability(self, true)
+end
+
+function final(self)
+    teleporter_log("final", tostring(self.teleporter_id_key))
+    clear_active_effect(self)
+    clear_transient_fx(self)
+    unregister_endpoint(self)
+    unregister_interaction(self, "final")
+end
+
+function update(self, dt)
+    if not self.requires_flag_str or self.requires_flag_str == "" then
+        return
+    end
+    self._flag_poll_t = (self._flag_poll_t or 0) - (dt or 0)
+    if self._flag_poll_t > 0 then
+        return
+    end
+    self._flag_poll_t = 0.25
+    refresh_availability(self, false)
+end
+
+function on_message(self, message_id, message, sender)
+    if message_id == hash("trigger_response") then
+        local other_group = message.other_group or message.group
+        teleporter_log("trigger_response", tostring(self.teleporter_id_key),
+            "enter=", tostring(message.enter), "group=", tostring(other_group),
+            "sender=", tostring(sender), "available=", tostring(self._is_available))
+        if other_group == hash("player") then
+            if message.enter then
+                self._player_in_zone = true
+                teleporter_log("Trigger entered for", tostring(self.teleporter_id_key),
+                    "require_interact=", tostring(self.require_interact),
+                    "available=", tostring(self._is_available))
+                if not self.require_interact then
+                    attempt_teleport(self, get_player_url())
+                elseif self._is_available then
+                    register_interaction(self, "trigger_enter")
+                end
+            else
+                self._player_in_zone = false
+                teleporter_log("Trigger exited for", tostring(self.teleporter_id_key),
+                    "require_interact=", tostring(self.require_interact),
+                    "interaction_registered=", tostring(self._interaction_registered))
+            end
+        end
+    elseif message_id == hash("fade_done") then
+        -- Fade-to-black completed, now execute the pending teleport
+        teleporter_log("fade_done", tostring(self.teleporter_id_key),
+            "has_pending=", tostring(self._pending_teleport ~= nil), "sender=", tostring(sender))
+        if self._pending_teleport then
+            local data = self._pending_teleport
+            self._pending_teleport = nil
+            execute_teleport(self, data)
+        end
+    elseif message_id == hash("mvtk_interact") then
+        teleporter_log("mvtk_interact", tostring(self.teleporter_id_key),
+            "actor=", tostring(message and message.actor), "sender=", tostring(sender))
+        attempt_teleport(self, message and message.actor or get_player_url())
+    elseif message_id == hash("refresh_lock_state") then
+        teleporter_log("refresh_lock_state", tostring(self.teleporter_id_key),
+            "sender=", tostring(sender))
+        refresh_availability(self, true)
+    end
+end

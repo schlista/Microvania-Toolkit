@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<template>
+ <object name="Dialogue Trigger" type="dialogue_trigger" width="128" height="128">
+  <properties>
+   <property name="dialogue_id" type="string" value=""/>
+   <property name="trigger_id" type="string" value=""/>
+   <property name="npc_id" type="string" value=""/>
+   <property name="playback" type="class" propertytype="dialogue_trigger_playback">
+    <properties>
+     <property name="auto_play" type="bool" value="true"/>
+     <property name="delay" type="float" value="0"/>
+    </properties>
+   </property>
+   <property name="lifecycle" type="class" propertytype="dialogue_trigger_lifecycle">
+    <properties>
+     <property name="trigger_once" type="bool" value="true"/>
+     <property name="persist_once" type="bool" value="true"/>
+     <property name="once_flag" type="string" value=""/>
+     <property name="consume_on_fire" type="bool" value="true"/>
+    </properties>
+   </property>
+   <property name="conditions_and_outcomes" type="class" propertytype="dialogue_trigger_conditions_and_outcomes">
+    <properties>
+     <property name="requires_flag" type="string" value=""/>
+     <property name="skip_if_flag" type="string" value=""/>
+     <property name="set_flag" type="string" value=""/>
+    </properties>
+   </property>
+   <property name="mvtk_template_version" type="string" value="2.7.0"/>
+  </properties>
+ </object>
+</template>

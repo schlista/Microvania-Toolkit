@@ -1,0 +1,6340 @@
+[
+    {
+        "id": 53,
+        "name": "reveal_areas",
+        "storageType": "string",
+        "type": "enum",
+        "values": [
+            "current",
+            "default",
+            "desert",
+            "factory",
+            "forest",
+            "graveyard",
+            "catacombs",
+            "ruins",
+            "foundry",
+            "sanctum"
+        ],
+        "valuesAsFlags": false
+    },
+    {
+        "id": 54,
+        "name": "enemy_movement",
+        "storageType": "string",
+        "type": "enum",
+        "values": [
+            "type_default",
+            "stationary",
+            "ground_patrol",
+            "ground_patrol_chase",
+            "ground_chase",
+            "flying_chase",
+            "vertical_patrol",
+            "hover",
+            "flee",
+            "zigzag",
+            "ghost_float",
+            "none",
+            "patrol",
+            "patrol_vertical",
+            "chase"
+        ],
+        "valuesAsFlags": false
+    },
+    {
+        "id": 55,
+        "name": "enemy_attack_patterns",
+        "storageType": "string",
+        "type": "enum",
+        "values": [
+            "type_default",
+            "disabled",
+            "shoot_straight",
+            "shoot_spread",
+            "shoot_burst",
+            "shoot_circle",
+            "shoot_random",
+            "spiral_shot",
+            "homing_shot",
+            "dash_attack",
+            "swoop_attack",
+            "melee_swipe",
+            "jump_attack",
+            "charge_shoot",
+            "teleport_attack",
+            "rain_attack",
+            "summon_minion",
+            "shield",
+            "none"
+        ],
+        "valuesAsFlags": false
+    },
+    {
+        "id": 56,
+        "name": "enemy_animations",
+        "storageType": "string",
+        "type": "enum",
+        "values": [
+            "none",
+            "idle",
+            "walk",
+            "run",
+            "jump",
+            "fall",
+            "land",
+            "fly",
+            "fly_idle",
+            "hover",
+            "dive",
+            "patrol",
+            "alert",
+            "chase",
+            "search",
+            "return",
+            "attack",
+            "attack_alt",
+            "ranged_attack",
+            "charge",
+            "charge_windup",
+            "slam",
+            "block",
+            "spawn",
+            "hurt",
+            "stun",
+            "die",
+            "death"
+        ],
+        "valuesAsFlags": false
+    },
+    {
+        "id": 57,
+        "name": "enemy_skins",
+        "storageType": "string",
+        "type": "enum",
+        "values": [
+            "none",
+            "default"
+        ],
+        "valuesAsFlags": false
+    },
+    {
+        "id": 51,
+        "name": "sound_effects",
+        "storageType": "string",
+        "type": "enum",
+        "values": [
+            "none",
+            "attack_light",
+            "attack_heavy",
+            "attack_down",
+            "attack_counter",
+            "charge_loop",
+            "projectile_fire",
+            "projectile_charged",
+            "projectile_hit",
+            "hit_melee",
+            "hit_projectile",
+            "parry_success",
+            "parry_miss",
+            "player_hurt",
+            "player_death",
+            "jump",
+            "double_jump",
+            "land",
+            "land_heavy",
+            "slide",
+            "air_dash",
+            "wall_slide",
+            "wall_jump",
+            "footstep",
+            "collect_gem",
+            "collect_gem_large",
+            "collect_health",
+            "collect_energy",
+            "collect_key",
+            "collect_ability",
+            "collect_map",
+            "ui_click",
+            "ui_confirm",
+            "ui_back",
+            "ui_move",
+            "gate_locked",
+            "gate_unlock",
+            "gate_unlock_energy",
+            "gate_open",
+            "door_open",
+            "door_close",
+            "lever_on",
+            "lever_off",
+            "chest_open",
+            "chest_locked",
+            "hazard_hit",
+            "spike_hit",
+            "burn_sizzle",
+            "cough",
+            "acid_burn",
+            "electric_shock",
+            "fall_scream",
+            "crusher_warn",
+            "crusher_impact",
+            "boss_phase",
+            "death_explosion",
+            "lava_loop",
+            "acid_loop",
+            "electric_hum",
+            "water_flow",
+            "wind_howl",
+            "water_splash",
+            "water_swim",
+            "wall_crack",
+            "wall_break",
+            "secret_reveal",
+            "menu_move",
+            "menu_select",
+            "menu_back",
+            "pause",
+            "save_point",
+            "fast_travel",
+            "ignite",
+            "freeze",
+            "poison_apply",
+            "shock",
+            "enemy_alert",
+            "enemy_hurt",
+            "enemy_death",
+            "boss_intro",
+            "boss_death",
+            "npc_talk"
+        ],
+        "valuesAsFlags": false
+    },
+    {
+        "id": 52,
+        "name": "difficulty",
+        "storageType": "string",
+        "type": "enum",
+        "values": [
+            "none",
+            "easy",
+            "normal",
+            "hard",
+            "nightmare"
+        ],
+        "valuesAsFlags": false
+    },
+    {
+        "id": 40,
+        "name": "optional_abilities",
+        "storageType": "string",
+        "type": "enum",
+        "values": [
+            "none",
+            "double_jump",
+            "air_dash",
+            "wall_climb",
+            "slide",
+            "extended_jump",
+            "grapple",
+            "dash",
+            "glide",
+            "swim",
+            "wall_jump",
+            "charge_attack",
+            "down_strike",
+            "ranged_attack",
+            "ground_pound",
+            "slide_iframes",
+            "air_dash_iframes"
+        ],
+        "valuesAsFlags": false
+    },
+    {
+        "id": 16,
+        "name": "actions",
+        "storageType": "string",
+        "type": "enum",
+        "values": [
+            "none",
+            "dash",
+            "slide",
+            "ground_pound",
+            "wall_climb",
+            "grapple",
+            "light_attack",
+            "heavy_attack",
+            "backdash"
+        ],
+        "valuesAsFlags": false
+    },
+    {
+        "id": 36,
+        "name": "ambient_sounds",
+        "storageType": "string",
+        "type": "enum",
+        "values": [
+            "none",
+            "cave",
+            "electricity",
+            "fire",
+            "forest",
+            "lava",
+            "machine",
+            "rain",
+            "water_drip",
+            "waterfall",
+            "wind"
+        ],
+        "valuesAsFlags": false
+    },
+    {
+        "id": 2,
+        "name": "biomes",
+        "storageType": "string",
+        "type": "enum",
+        "values": [
+            "inherit",
+            "default",
+            "desert",
+            "factory",
+            "forest",
+            "graveyard",
+            "catacombs",
+            "ruins",
+            "foundry",
+            "sanctum"
+        ],
+        "valuesAsFlags": false
+    },
+    {
+        "id": 41,
+        "name": "room_zones",
+        "storageType": "string",
+        "type": "enum",
+        "values": [
+            "exploration",
+            "platforming",
+            "tight_corridor",
+            "boss_arena",
+            "cutscene"
+        ],
+        "valuesAsFlags": false
+    },
+    {
+        "id": 8,
+        "name": "bosses",
+        "storageType": "string",
+        "type": "enum",
+        "values": [
+            "default_boss",
+            "graveyard_boss",
+            "desert_boss",
+            "foundry_boss",
+            "forest_boss",
+            "catacombs_boss",
+            "sanctum_boss",
+            "factory_boss",
+            "ruins_boss"
+        ],
+        "valuesAsFlags": false
+    },
+    {
+        "id": 21,
+        "name": "camera_modes",
+        "storageType": "string",
+        "type": "enum",
+        "values": [
+            "follow",
+            "lock",
+            "focus"
+        ],
+        "valuesAsFlags": false
+    },
+    {
+        "id": 4,
+        "name": "chest_types",
+        "storageType": "string",
+        "type": "enum",
+        "values": [
+            "wooden",
+            "silver",
+            "gold",
+            "locked"
+        ],
+        "valuesAsFlags": false
+    },
+    {
+        "id": 3,
+        "name": "collectibles",
+        "storageType": "string",
+        "type": "enum",
+        "values": [
+            "none",
+            "health_small",
+            "health_medium",
+            "health_large",
+            "energy_small",
+            "energy_large",
+            "currency",
+            "currency_large",
+            "gem_small",
+            "gem_medium",
+            "gem_large",
+            "gem_red",
+            "gem_green",
+            "gem_blue",
+            "key",
+            "key_red",
+            "key_blue",
+            "key_boss",
+            "health_container",
+            "energy_container",
+            "stamina_vessel",
+            "health_upgrade",
+            "charm_slot",
+            "upgrade_material",
+            "map_piece_forest",
+            "map_piece_caves",
+            "map_piece_castle",
+            "map_fragment",
+            "lore_item",
+            "lore_tablet_origins",
+            "relic",
+            "relic_ancient_sword",
+            "relic_crystal_shard",
+            "relic_golden_chalice",
+            "relic_hermit",
+            "relic_coyote",
+            "ability_double_jump",
+            "ability_air_dash",
+            "ability_wall_climb",
+            "ability_slide",
+            "ability_extended_jump",
+            "ability_grapple",
+            "ability_charge_attack",
+            "ability_down_strike",
+            "ability_ranged_attack",
+            "ability_dash",
+            "ability_glide",
+            "ability_ground_pound",
+            "ability_swim",
+            "ability_wall_jump",
+            "ability_slide_iframes",
+            "ability_air_dash_iframes"
+        ],
+        "valuesAsFlags": false
+    },
+    {
+        "id": 19,
+        "name": "directions",
+        "storageType": "string",
+        "type": "enum",
+        "values": [
+            "left",
+            "right",
+            "up",
+            "down"
+        ],
+        "valuesAsFlags": false
+    },
+    {
+        "id": 58,
+        "name": "one_way_directions",
+        "storageType": "string",
+        "type": "enum",
+        "values": [
+            "down",
+            "up"
+        ],
+        "valuesAsFlags": false
+    },
+    {
+        "id": 23,
+        "name": "display_modes",
+        "storageType": "string",
+        "type": "enum",
+        "values": [
+            "toast",
+            "dialogue",
+            "tutorial"
+        ],
+        "valuesAsFlags": false
+    },
+    {
+        "id": 223,
+        "name": "elevator_activation_modes",
+        "storageType": "string",
+        "type": "enum",
+        "values": [
+            "on_board",
+            "automatic",
+            "trigger_only"
+        ],
+        "valuesAsFlags": false
+    },
+    {
+        "id": 224,
+        "name": "elevator_node_kinds",
+        "storageType": "string",
+        "type": "enum",
+        "values": [
+            "landing",
+            "pass_through"
+        ],
+        "valuesAsFlags": false
+    },
+    {
+        "id": 225,
+        "name": "elevator_stops",
+        "storageType": "string",
+        "type": "enum",
+        "values": [
+            "none",
+            "bottom",
+            "top"
+        ],
+        "valuesAsFlags": false
+    },
+    {
+        "id": 6,
+        "name": "enemies",
+        "storageType": "string",
+        "type": "enum",
+        "values": [
+            "default"
+        ],
+        "valuesAsFlags": false
+    },
+    {
+        "id": 15,
+        "name": "gates",
+        "storageType": "string",
+        "type": "enum",
+        "values": [
+            "ability_requirement",
+            "item_requirement",
+            "key_gate",
+            "action_barrier",
+            "dash_barrier",
+            "double_jump_ledge",
+            "wall_climb_wall",
+            "grapple_point",
+            "grapple_surface",
+            "breakable_wall",
+            "breakable_floor",
+            "key_door_red",
+            "key_door_blue",
+            "key_door_gold",
+            "boss_key_door",
+            "energy_gate",
+            "toll_gate",
+            "lava_floor",
+            "acid_pool",
+            "cold_zone",
+            "timed_gate_60s",
+            "timed_gate_30s",
+            "one_way_gate",
+            "sequence_gate_3step",
+            "sequence_gate_5step"
+        ],
+        "valuesAsFlags": false
+    },
+    {
+        "id": 9,
+        "name": "hazards",
+        "storageType": "string",
+        "type": "enum",
+        "values": [
+            "spikes",
+            "lava",
+            "acid",
+            "cold",
+            "electricity",
+            "void",
+            "crusher",
+            "saw_blade",
+            "flame_jet",
+            "poison_gas",
+            "deep_water"
+        ],
+        "valuesAsFlags": false
+    },
+    {
+        "id": 34,
+        "name": "hint_positions",
+        "storageType": "string",
+        "type": "enum",
+        "values": [
+            "top",
+            "bottom",
+            "left",
+            "right"
+        ],
+        "valuesAsFlags": false
+    },
+    {
+        "id": 5,
+        "name": "keys",
+        "storageType": "string",
+        "type": "enum",
+        "values": [
+            "none",
+            "normal",
+            "boss",
+            "red",
+            "blue",
+            "gold"
+        ],
+        "valuesAsFlags": false
+    },
+    {
+        "id": 27,
+        "name": "ladder_types",
+        "storageType": "string",
+        "type": "enum",
+        "values": [
+            "ladder",
+            "vine",
+            "rope",
+            "chain"
+        ],
+        "valuesAsFlags": false
+    },
+    {
+        "id": 18,
+        "name": "loop_modes",
+        "storageType": "string",
+        "type": "enum",
+        "values": [
+            "pingpong",
+            "loop",
+            "once"
+        ],
+        "valuesAsFlags": false
+    },
+    {
+        "id": 33,
+        "name": "lore_categories",
+        "storageType": "string",
+        "type": "enum",
+        "values": [
+            "notes",
+            "journals",
+            "lore"
+        ],
+        "valuesAsFlags": false
+    },
+    {
+        "id": 29,
+        "name": "marker_types",
+        "storageType": "string",
+        "type": "enum",
+        "values": [
+            "poi",
+            "save",
+            "fast_travel",
+            "boss",
+            "secret"
+        ],
+        "valuesAsFlags": false
+    },
+    {
+        "id": 37,
+        "name": "music_tracks",
+        "storageType": "string",
+        "type": "enum",
+        "values": [
+            "none",
+            "inherit"
+        ],
+        "valuesAsFlags": false
+    },
+    {
+        "id": 42,
+        "name": "boss_music_tracks",
+        "storageType": "string",
+        "type": "enum",
+        "values": [
+            "none"
+        ],
+        "valuesAsFlags": false
+    },
+    {
+        "id": 43,
+        "name": "boss_visual_types",
+        "storageType": "string",
+        "type": "enum",
+        "values": [
+            "sprite",
+            "spine"
+        ],
+        "valuesAsFlags": false
+    },
+    {
+        "id": 50,
+        "name": "boss_health_bar_positions",
+        "storageType": "string",
+        "type": "enum",
+        "values": [
+            "top",
+            "bottom"
+        ],
+        "valuesAsFlags": false
+    },
+    {
+        "id": 44,
+        "name": "boss_behaviors",
+        "storageType": "string",
+        "type": "enum",
+        "values": [
+            "random",
+            "aggressive",
+            "defensive",
+            "cautious",
+            "berserk",
+            "desperate",
+            "skilled",
+            "relentless",
+            "patrol",
+            "erratic",
+            "testing"
+        ],
+        "valuesAsFlags": false
+    },
+    {
+        "id": 45,
+        "name": "boss_transition_types",
+        "storageType": "string",
+        "type": "enum",
+        "values": [
+            "cutscene",
+            "teleport",
+            "transform",
+            "rage",
+            "shield",
+            "desperation",
+            "power_up",
+            "malfunction",
+            "final_form"
+        ],
+        "valuesAsFlags": false
+    },
+    {
+        "id": 46,
+        "name": "movement_profiles",
+        "storageType": "string",
+        "type": "enum",
+        "values": [
+            "ground_chase",
+            "hover",
+            "jump_attack",
+            "teleport",
+            "stationary",
+            "wall_crawl",
+            "burrow",
+            "flying_patrol"
+        ],
+        "valuesAsFlags": false
+    },
+    {
+        "id": 47,
+        "name": "attack_pattern_types",
+        "storageType": "string",
+        "type": "enum",
+        "values": [
+            "melee",
+            "projectile",
+            "aoe",
+            "beam",
+            "charge",
+            "summon",
+            "hazard",
+            "combo",
+            "grab",
+            "heal",
+            "buff",
+            "shield",
+            "parry_window",
+            "environmental",
+            "mine",
+            "wave",
+            "special"
+        ],
+        "valuesAsFlags": false
+    },
+    {
+        "id": 48,
+        "name": "telegraph_styles",
+        "storageType": "string",
+        "type": "enum",
+        "values": [
+            "none",
+            "circle",
+            "line",
+            "cone",
+            "ring",
+            "cross",
+            "x",
+            "arena_wide"
+        ],
+        "valuesAsFlags": false
+    },
+    {
+        "id": 49,
+        "name": "boss_animation_keys",
+        "storageType": "string",
+        "type": "enum",
+        "values": [
+            "idle",
+            "idle_alt",
+            "walk",
+            "run",
+            "jump_start",
+            "jump_air",
+            "land",
+            "hover_idle",
+            "hover_move",
+            "fly_takeoff",
+            "fly_land",
+            "crawl_idle",
+            "crawl_move",
+            "wall_crawl_up",
+            "wall_crawl_down",
+            "burrow_out",
+            "burrow_in",
+            "burrow_idle",
+            "dash_wind",
+            "dash",
+            "dash_end",
+            "charge_loop",
+            "flinch",
+            "hurt",
+            "stagger",
+            "stunned",
+            "recover",
+            "death",
+            "block",
+            "block_impact",
+            "shield_up",
+            "shield_down",
+            "parry",
+            "counter",
+            "windup_light",
+            "windup_heavy",
+            "aim",
+            "shoot",
+            "swing",
+            "beam_start",
+            "beam_loop",
+            "beam_end",
+            "grab_start",
+            "grab_hold",
+            "grab_throw",
+            "cast_start",
+            "cast_loop",
+            "cast_end",
+            "heal",
+            "summon",
+            "spawn_minion",
+            "portal_open",
+            "portal_close",
+            "roar",
+            "taunt",
+            "enrage",
+            "victory",
+            "intro",
+            "phase_transition",
+            "teleport_out",
+            "teleport_in"
+        ],
+        "valuesAsFlags": false
+    },
+    {
+        "id": 14,
+        "name": "npcs",
+        "storageType": "string",
+        "type": "enum",
+        "values": [
+            "guide",
+            "lore_keeper",
+            "save_point_keeper",
+            "fast_travel_operator",
+            "desert_hermit",
+            "desert_coyote",
+            "villager_male",
+            "villager_female"
+        ],
+        "valuesAsFlags": false
+    },
+    {
+        "id": 17,
+        "name": "platform_types",
+        "storageType": "string",
+        "type": "enum",
+        "values": [
+            "horizontal",
+            "vertical",
+            "path",
+            "circular"
+        ],
+        "valuesAsFlags": false
+    },
+    {
+        "id": 38,
+        "name": "particle_effects",
+        "storageType": "string",
+        "type": "enum",
+        "values": [
+            "none",
+            "ambient_sparkle",
+            "boss_phase_transition",
+            "collectible_sparkle",
+            "crit_hit",
+            "dash_puff",
+            "dash_trail",
+            "death_explosion",
+            "hit_impact",
+            "jump_dust",
+            "land_puff",
+            "rock_crumble",
+            "land",
+            "dash",
+            "unlock",
+            "marker_placed",
+            "wall_break",
+            "secret_reveal",
+            "burn",
+            "blood_splat",
+            "acid_splash",
+            "ice_crystals",
+            "lightning_flash",
+            "sparks",
+            "ground_pound"
+        ],
+        "valuesAsFlags": false
+    },
+    {
+        "id": 35,
+        "name": "resources",
+        "storageType": "string",
+        "type": "enum",
+        "values": [
+            "health",
+            "energy",
+            "stamina"
+        ],
+        "valuesAsFlags": false
+    },
+    {
+        "id": 13,
+        "name": "reveal_triggers",
+        "storageType": "string",
+        "type": "enum",
+        "values": [
+            "touch",
+            "attack",
+            "ability",
+            "interact"
+        ],
+        "valuesAsFlags": false
+    },
+    {
+        "id": 22,
+        "name": "screen_effects",
+        "storageType": "string",
+        "type": "enum",
+        "values": [
+            "tint",
+            "darkness",
+            "underwater",
+            "shake"
+        ],
+        "valuesAsFlags": false
+    },
+    {
+        "id": 12,
+        "name": "secret_types",
+        "storageType": "string",
+        "type": "enum",
+        "values": [
+            "illusory_wall",
+            "hidden_platform",
+            "cracked_wall",
+            "bomb_wall",
+            "charge_wall",
+            "secret_door",
+            "one_way_secret",
+            "buried_treasure",
+            "secret_area_trigger"
+        ],
+        "valuesAsFlags": false
+    },
+    {
+        "id": 28,
+        "name": "surface_types",
+        "storageType": "string",
+        "type": "enum",
+        "values": [
+            "stone",
+            "ice",
+            "wood",
+            "metal"
+        ],
+        "valuesAsFlags": false
+    },
+    {
+        "id": 25,
+        "name": "wall_types",
+        "storageType": "string",
+        "type": "enum",
+        "values": [
+            "cracked",
+            "bomb_only",
+            "subtle",
+            "invisible"
+        ],
+        "valuesAsFlags": false
+    },
+    {
+        "id": 20,
+        "name": "water_directions",
+        "storageType": "string",
+        "type": "enum",
+        "values": [
+            "none",
+            "left",
+            "right",
+            "up",
+            "down"
+        ],
+        "valuesAsFlags": false
+    },
+    {
+        "id": 26,
+        "name": "water_types",
+        "storageType": "string",
+        "type": "enum",
+        "values": [
+            "water",
+            "acid",
+            "lava",
+            "poison"
+        ],
+        "valuesAsFlags": false
+    },
+    {
+        "id": 60,
+        "name": "hazard_patterns",
+        "storageType": "string",
+        "type": "enum",
+        "values": [
+            "none",
+            "static",
+            "wave",
+            "random"
+        ],
+        "valuesAsFlags": false
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 230,
+        "members": [
+            {
+                "name": "consume_effect",
+                "propertyType": "particle_effects",
+                "type": "string",
+                "value": "none"
+            },
+            {
+                "name": "interact_effect",
+                "propertyType": "particle_effects",
+                "type": "string",
+                "value": "none"
+            },
+            {
+                "name": "effect_offset_x",
+                "type": "float",
+                "value": 0
+            },
+            {
+                "name": "effect_offset_y",
+                "type": "float",
+                "value": 0
+            },
+            {
+                "name": "effect_scale",
+                "type": "float",
+                "value": 1
+            },
+            {
+                "name": "effect_cooldown",
+                "type": "float",
+                "value": 0
+            }
+        ],
+        "name": "ability_pickup_art_feedback",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 65,
+        "members": [
+            {
+                "name": "popup_description",
+                "type": "string",
+                "value": ""
+            },
+            {
+                "name": "popup_title",
+                "type": "string",
+                "value": ""
+            },
+            {
+                "name": "show_popup",
+                "type": "bool",
+                "value": true
+            }
+        ],
+        "name": "ability_pickup_popup",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 67,
+        "members": [
+            {
+                "name": "stop_on_exit",
+                "type": "bool",
+                "value": true
+            },
+            {
+                "name": "trigger_once",
+                "type": "bool",
+                "value": false
+            }
+        ],
+        "name": "ambience_zone_activation",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 68,
+        "members": [
+            {
+                "name": "gain",
+                "type": "float",
+                "value": 1
+            },
+            {
+                "name": "music_volume_percent",
+                "type": "float",
+                "value": 100
+            }
+        ],
+        "name": "ambience_zone_mixing",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 69,
+        "members": [
+            {
+                "name": "arena_lock",
+                "type": "bool",
+                "value": true
+            },
+            {
+                "name": "show_health_bar",
+                "type": "bool",
+                "value": true
+            },
+            {
+                "name": "health_bar_position",
+                "propertyType": "boss_health_bar_positions",
+                "type": "string",
+                "value": "top"
+            }
+        ],
+        "name": "boss_arena_and_ui",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 70,
+        "members": [
+            {
+                "name": "camera_lock",
+                "type": "bool",
+                "value": false
+            },
+            {
+                "name": "camera_priority",
+                "type": "int",
+                "value": 10
+            }
+        ],
+        "name": "boss_arena_camera",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 71,
+        "members": [
+            {
+                "name": "phases",
+                "type": "int",
+                "value": 1
+            },
+            {
+                "name": "lock_on_enter",
+                "type": "bool",
+                "value": true
+            },
+            {
+                "name": "unlock_on_clear",
+                "type": "bool",
+                "value": true
+            },
+            {
+                "name": "charge_edge_padding",
+                "type": "float",
+                "value": -1
+            }
+        ],
+        "name": "boss_arena_encounter",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 72,
+        "members": [
+            {
+                "name": "battle_music",
+                "propertyType": "boss_music_tracks",
+                "type": "string",
+                "value": "none"
+            },
+            {
+                "name": "victory_music",
+                "propertyType": "boss_music_tracks",
+                "type": "string",
+                "value": "none"
+            }
+        ],
+        "name": "boss_arena_music",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 226,
+        "members": [
+            {
+                "name": "chase_speed",
+                "type": "float",
+                "value": -1
+            },
+            {
+                "name": "charge_speed",
+                "type": "float",
+                "value": -1
+            },
+            {
+                "name": "charge_distance",
+                "type": "float",
+                "value": -1
+            },
+            {
+                "name": "charge_telegraph_time",
+                "type": "float",
+                "value": -1
+            },
+            {
+                "name": "charge_duration",
+                "type": "float",
+                "value": -1
+            },
+            {
+                "name": "charge_cooldown",
+                "type": "float",
+                "value": -1
+            },
+            {
+                "name": "charge_recovery",
+                "type": "float",
+                "value": -1
+            }
+        ],
+        "name": "boss_attack_tuning",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 73,
+        "members": [
+            {
+                "name": "max_health",
+                "type": "float",
+                "value": 0
+            },
+            {
+                "name": "defense",
+                "type": "float",
+                "value": 0
+            },
+            {
+                "name": "damage_resistance",
+                "type": "float",
+                "value": 0
+            },
+            {
+                "name": "attack_pattern_ids",
+                "type": "string",
+                "value": ""
+            },
+            {
+                "name": "contact_damage",
+                "type": "float",
+                "value": 0
+            },
+            {
+                "name": "contact_knockback_x",
+                "type": "float",
+                "value": -1
+            },
+            {
+                "name": "contact_knockback_y",
+                "type": "float",
+                "value": -1
+            },
+            {
+                "name": "contact_stun_t",
+                "type": "float",
+                "value": -1
+            }
+        ],
+        "name": "boss_combat",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 228,
+        "members": [
+            {
+                "name": "override_boss_feedback",
+                "type": "bool",
+                "value": false
+            },
+            {
+                "name": "boss_hurt_sfx",
+                "propertyType": "sound_effects",
+                "type": "string",
+                "value": "enemy_hurt"
+            },
+            {
+                "name": "boss_hitstop",
+                "type": "float",
+                "value": 0.05
+            },
+            {
+                "name": "boss_flash_color",
+                "type": "color",
+                "value": "#ffff4040"
+            },
+            {
+                "name": "boss_flash_duration",
+                "type": "float",
+                "value": 0.2
+            },
+            {
+                "name": "boss_shake",
+                "type": "float",
+                "value": 6
+            },
+            {
+                "name": "boss_rumble",
+                "type": "float",
+                "value": 0.2
+            }
+        ],
+        "name": "boss_hit_feedback",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 213,
+        "members": [
+            {
+                "name": "attacks",
+                "type": "string",
+                "value": ""
+            },
+            {
+                "name": "attack_interval_min",
+                "type": "float",
+                "value": 2
+            },
+            {
+                "name": "attack_interval_max",
+                "type": "float",
+                "value": 4
+            },
+            {
+                "name": "attack_range",
+                "type": "float",
+                "value": 0
+            },
+            {
+                "name": "damage_multiplier",
+                "type": "float",
+                "value": 1
+            },
+            {
+                "name": "charge_speed",
+                "type": "float",
+                "value": -1
+            },
+            {
+                "name": "charge_distance",
+                "type": "float",
+                "value": -1
+            },
+            {
+                "name": "charge_telegraph_time",
+                "type": "float",
+                "value": -1
+            },
+            {
+                "name": "charge_duration",
+                "type": "float",
+                "value": -1
+            },
+            {
+                "name": "charge_cooldown",
+                "type": "float",
+                "value": -1
+            },
+            {
+                "name": "charge_recovery",
+                "type": "float",
+                "value": -1
+            }
+        ],
+        "name": "boss_phase_attack_sequence",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 76,
+        "members": [
+            {
+                "name": "health_min",
+                "type": "float",
+                "value": -1
+            },
+            {
+                "name": "health_max",
+                "type": "float",
+                "value": -1
+            }
+        ],
+        "name": "boss_phase_health_thresholds",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 77,
+        "members": [
+            {
+                "name": "boss_id",
+                "type": "string",
+                "value": ""
+            },
+            {
+                "name": "arena_id",
+                "type": "string",
+                "value": ""
+            }
+        ],
+        "name": "boss_phase_links",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 78,
+        "members": [
+            {
+                "name": "behavior",
+                "propertyType": "boss_behaviors",
+                "type": "string",
+                "value": "aggressive"
+            },
+            {
+                "name": "speed_multiplier",
+                "type": "float",
+                "value": 1
+            },
+            {
+                "name": "movement_profile",
+                "propertyType": "movement_profiles",
+                "type": "string",
+                "value": "ground_chase"
+            },
+            {
+                "name": "facing_lock",
+                "type": "bool",
+                "value": false
+            },
+            {
+                "name": "hover_height",
+                "type": "float",
+                "value": 0
+            },
+            {
+                "name": "jump_height",
+                "type": "float",
+                "value": 0
+            },
+            {
+                "name": "jump_speed",
+                "type": "float",
+                "value": 0
+            },
+            {
+                "name": "leash_radius",
+                "type": "float",
+                "value": 0
+            },
+            {
+                "name": "chase_speed",
+                "type": "float",
+                "value": -1
+            }
+        ],
+        "name": "boss_phase_movement",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 79,
+        "members": [
+            {
+                "name": "transition_type",
+                "propertyType": "boss_transition_types",
+                "type": "string",
+                "value": "rage"
+            },
+            {
+                "name": "transition_duration",
+                "type": "float",
+                "value": 0
+            },
+            {
+                "name": "transition_iframes",
+                "type": "float",
+                "value": 0
+            },
+            {
+                "name": "transition_animation",
+                "propertyType": "boss_animation_keys",
+                "type": "string",
+                "value": "enrage"
+            },
+            {
+                "name": "transition_teleport_to",
+                "type": "string",
+                "value": ""
+            }
+        ],
+        "name": "boss_phase_transition",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 80,
+        "members": [
+            {
+                "name": "transition_camera_intensity",
+                "type": "float",
+                "value": 0
+            },
+            {
+                "name": "transition_camera_duration",
+                "type": "float",
+                "value": 0
+            },
+            {
+                "name": "transition_flash",
+                "type": "bool",
+                "value": false
+            },
+            {
+                "name": "transition_arena_darkness",
+                "type": "bool",
+                "value": false
+            },
+            {
+                "name": "transition_spawn_hazards",
+                "propertyType": "hazards",
+                "type": "string",
+                "value": "spikes"
+            },
+            {
+                "name": "transition_new_music",
+                "propertyType": "boss_music_tracks",
+                "type": "string",
+                "value": "none"
+            }
+        ],
+        "name": "boss_phase_transition_effects",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 81,
+        "members": [
+            {
+                "name": "boss_id",
+                "type": "string",
+                "value": ""
+            },
+            {
+                "name": "arena_id",
+                "type": "string",
+                "value": ""
+            }
+        ],
+        "name": "boss_phase_trigger_links",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 82,
+        "members": [
+            {
+                "name": "set_flag",
+                "type": "string",
+                "value": ""
+            }
+        ],
+        "name": "boss_phase_trigger_outcome",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 83,
+        "members": [
+            {
+                "name": "delay",
+                "type": "float",
+                "value": 0
+            },
+            {
+                "name": "transition_time",
+                "type": "float",
+                "value": 0
+            }
+        ],
+        "name": "boss_phase_trigger_timing",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 84,
+        "members": [
+            {
+                "name": "trigger_once",
+                "type": "bool",
+                "value": true
+            },
+            {
+                "name": "requires_flag",
+                "type": "string",
+                "value": ""
+            }
+        ],
+        "name": "boss_phase_trigger_triggering",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 229,
+        "members": [
+            {
+                "name": "override_player_feedback",
+                "type": "bool",
+                "value": false
+            },
+            {
+                "name": "player_hurt_sfx",
+                "propertyType": "sound_effects",
+                "type": "string",
+                "value": "player_hurt"
+            },
+            {
+                "name": "player_hitstop",
+                "type": "float",
+                "value": 0.06
+            },
+            {
+                "name": "player_flash_color",
+                "type": "color",
+                "value": "#ffff4040"
+            },
+            {
+                "name": "player_flash_duration",
+                "type": "float",
+                "value": 0.2
+            },
+            {
+                "name": "player_shake",
+                "type": "float",
+                "value": 5
+            },
+            {
+                "name": "player_rumble",
+                "type": "float",
+                "value": 0.18
+            },
+            {
+                "name": "player_stun_t",
+                "type": "float",
+                "value": 0.2
+            },
+            {
+                "name": "player_hurt_animation",
+                "type": "string",
+                "value": "hurt"
+            },
+            {
+                "name": "player_interrupt_attack",
+                "type": "bool",
+                "value": true
+            },
+            {
+                "name": "player_hurt_decel",
+                "type": "float",
+                "value": 5
+            }
+        ],
+        "name": "boss_player_hit_feedback",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 85,
+        "members": [
+            {
+                "name": "music_track",
+                "propertyType": "boss_music_tracks",
+                "type": "string",
+                "value": "none"
+            },
+            {
+                "name": "victory_music",
+                "propertyType": "boss_music_tracks",
+                "type": "string",
+                "value": "none"
+            },
+            {
+                "name": "intro_cutscene",
+                "type": "string",
+                "value": ""
+            }
+        ],
+        "name": "boss_presentation",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 86,
+        "members": [
+            {
+                "name": "defeat_flag",
+                "type": "string",
+                "value": ""
+            },
+            {
+                "name": "reward_currency_min",
+                "type": "int",
+                "value": 0
+            },
+            {
+                "name": "reward_currency_max",
+                "type": "int",
+                "value": 0
+            },
+            {
+                "name": "reward_drops",
+                "type": "string",
+                "value": ""
+            },
+            {
+                "name": "reward_loot_table",
+                "type": "string",
+                "value": ""
+            },
+            {
+                "name": "reward_unlock_flag",
+                "type": "string",
+                "value": ""
+            },
+            {
+                "name": "reward_unlock_fast_travel",
+                "type": "string",
+                "value": ""
+            }
+        ],
+        "name": "boss_rewards_and_persistence",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 87,
+        "members": [
+            {
+                "name": "boss_visual_type",
+                "propertyType": "boss_visual_types",
+                "type": "string",
+                "value": "sprite"
+            },
+            {
+                "name": "visual_component",
+                "type": "string",
+                "value": ""
+            }
+        ],
+        "name": "boss_visuals",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 88,
+        "members": [
+            {
+                "name": "active_phases",
+                "type": "string",
+                "value": ""
+            },
+            {
+                "name": "vulnerable",
+                "type": "bool",
+                "value": true
+            },
+            {
+                "name": "requires_flag",
+                "type": "string",
+                "value": ""
+            },
+            {
+                "name": "poll_interval",
+                "type": "float",
+                "value": 0.2
+            },
+            {
+                "name": "attach_to_boss",
+                "type": "bool",
+                "value": true
+            }
+        ],
+        "name": "boss_weak_point_availability",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 89,
+        "members": [
+            {
+                "name": "health",
+                "type": "float",
+                "value": 0
+            },
+            {
+                "name": "damage_mult",
+                "type": "float",
+                "value": 2
+            }
+        ],
+        "name": "boss_weak_point_durability_and_damage",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 90,
+        "members": [
+            {
+                "name": "destroy_flag",
+                "type": "string",
+                "value": ""
+            }
+        ],
+        "name": "boss_weak_point_outcome",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 91,
+        "members": [
+            {
+                "name": "use_defold_sprite",
+                "type": "bool",
+                "value": true
+            }
+        ],
+        "name": "boss_weak_point_visuals",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 92,
+        "members": [
+            {
+                "name": "cooldown",
+                "type": "float",
+                "value": 0.2
+            },
+            {
+                "name": "require_interact",
+                "type": "bool",
+                "value": false
+            },
+            {
+                "name": "range",
+                "type": "int",
+                "value": 80
+            }
+        ],
+        "name": "bounce_pad_activation",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 93,
+        "members": [
+            {
+                "name": "label",
+                "type": "string",
+                "value": "Bounce"
+            },
+            {
+                "name": "sound_id",
+                "propertyType": "sound_effects",
+                "type": "string",
+                "value": "none"
+            }
+        ],
+        "name": "bounce_pad_feedback_and_visuals",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 236,
+        "members": [
+            {
+                "name": "consume_effect",
+                "propertyType": "particle_effects",
+                "type": "string",
+                "value": "none"
+            },
+            {
+                "name": "interact_effect",
+                "propertyType": "particle_effects",
+                "type": "string",
+                "value": "none"
+            },
+            {
+                "name": "effect_offset_x",
+                "type": "float",
+                "value": 0
+            },
+            {
+                "name": "effect_offset_y",
+                "type": "float",
+                "value": 0
+            },
+            {
+                "name": "effect_scale",
+                "type": "float",
+                "value": 1
+            },
+            {
+                "name": "effect_cooldown",
+                "type": "float",
+                "value": 0
+            }
+        ],
+        "name": "breakable_wall_art_feedback",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 94,
+        "members": [
+            {
+                "name": "health",
+                "type": "int",
+                "value": 3
+            }
+        ],
+        "name": "breakable_wall_durability",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 95,
+        "members": [
+            {
+                "name": "particle_effect_name",
+                "propertyType": "particle_effects",
+                "type": "string",
+                "value": "hit_impact"
+            },
+            {
+                "name": "sound_break",
+                "propertyType": "sound_effects",
+                "type": "string",
+                "value": "wall_break"
+            }
+        ],
+        "name": "breakable_wall_feedback",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 96,
+        "members": [
+            {
+                "name": "drop_collectible",
+                "propertyType": "collectibles",
+                "type": "string",
+                "value": "none"
+            },
+            {
+                "name": "reveals_secret",
+                "type": "string",
+                "value": ""
+            }
+        ],
+        "name": "breakable_wall_rewards_and_secrets",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 97,
+        "members": [
+            {
+                "name": "swap_tiles_on_break",
+                "type": "bool",
+                "value": true
+            },
+            {
+                "name": "wall_layer",
+                "type": "string",
+                "value": "wall"
+            },
+            {
+                "name": "broken_wall_layer",
+                "type": "string",
+                "value": "broken_wall"
+            },
+            {
+                "name": "swap_width",
+                "type": "int",
+                "value": 0
+            },
+            {
+                "name": "swap_height",
+                "type": "int",
+                "value": 0
+            }
+        ],
+        "name": "breakable_wall_tile_swap",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 99,
+        "members": [
+            {
+                "name": "lock_x",
+                "type": "bool",
+                "value": false
+            },
+            {
+                "name": "lock_y",
+                "type": "bool",
+                "value": false
+            }
+        ],
+        "name": "camera_zone_axis_locks",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 100,
+        "members": [
+            {
+                "name": "deadzone_height",
+                "type": "int",
+                "value": 0
+            },
+            {
+                "name": "deadzone_width",
+                "type": "int",
+                "value": 0
+            },
+            {
+                "name": "smooth_follow",
+                "type": "bool",
+                "value": true
+            },
+            {
+                "name": "transition_speed",
+                "type": "float",
+                "value": 1
+            }
+        ],
+        "name": "camera_zone_follow",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 101,
+        "members": [
+            {
+                "name": "bounds_padding",
+                "type": "int",
+                "value": 0
+            },
+            {
+                "name": "focus_x",
+                "type": "int",
+                "value": 0
+            },
+            {
+                "name": "focus_y",
+                "type": "int",
+                "value": 0
+            },
+            {
+                "name": "parallax_override",
+                "type": "string",
+                "value": ""
+            },
+            {
+                "name": "zoom_level",
+                "type": "float",
+                "value": 1
+            },
+            {
+                "name": "auto_fit",
+                "type": "bool",
+                "value": false
+            }
+        ],
+        "name": "camera_zone_framing",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 102,
+        "members": [
+            {
+                "name": "trigger_once",
+                "type": "bool",
+                "value": false
+            },
+            {
+                "name": "requires_flag",
+                "type": "string",
+                "value": ""
+            },
+            {
+                "name": "set_flag",
+                "type": "string",
+                "value": ""
+            }
+        ],
+        "name": "checkpoint_activation",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 238,
+        "members": [
+            {
+                "name": "consume_effect",
+                "propertyType": "particle_effects",
+                "type": "string",
+                "value": "none"
+            },
+            {
+                "name": "interact_effect",
+                "propertyType": "particle_effects",
+                "type": "string",
+                "value": "none"
+            },
+            {
+                "name": "effect_offset_x",
+                "type": "float",
+                "value": 0
+            },
+            {
+                "name": "effect_offset_y",
+                "type": "float",
+                "value": 0
+            },
+            {
+                "name": "effect_scale",
+                "type": "float",
+                "value": 1
+            },
+            {
+                "name": "effect_cooldown",
+                "type": "float",
+                "value": 0
+            }
+        ],
+        "name": "checkpoint_art_feedback",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 103,
+        "members": [
+            {
+                "name": "sound_id",
+                "propertyType": "sound_effects",
+                "type": "string",
+                "value": "save_point"
+            }
+        ],
+        "name": "checkpoint_feedback_and_visuals",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 104,
+        "members": [
+            {
+                "name": "respawn_facing",
+                "type": "int",
+                "value": 1
+            }
+        ],
+        "name": "checkpoint_respawn",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 105,
+        "members": [
+            {
+                "name": "locked",
+                "type": "bool",
+                "value": false
+            },
+            {
+                "name": "requires_key",
+                "propertyType": "keys",
+                "type": "string",
+                "value": "none"
+            }
+        ],
+        "name": "chest_access",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 239,
+        "members": [
+            {
+                "name": "consume_effect",
+                "propertyType": "particle_effects",
+                "type": "string",
+                "value": "none"
+            },
+            {
+                "name": "interact_effect",
+                "propertyType": "particle_effects",
+                "type": "string",
+                "value": "none"
+            },
+            {
+                "name": "effect_offset_x",
+                "type": "float",
+                "value": 0
+            },
+            {
+                "name": "effect_offset_y",
+                "type": "float",
+                "value": 0
+            },
+            {
+                "name": "effect_scale",
+                "type": "float",
+                "value": 1
+            },
+            {
+                "name": "effect_cooldown",
+                "type": "float",
+                "value": 0
+            }
+        ],
+        "name": "chest_art_feedback",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 106,
+        "members": [
+            {
+                "name": "single_use",
+                "type": "bool",
+                "value": true
+            }
+        ],
+        "name": "chest_lifecycle",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 107,
+        "members": [
+            {
+                "name": "contents",
+                "type": "string",
+                "value": "currency:25"
+            }
+        ],
+        "name": "chest_rewards",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 240,
+        "members": [
+            {
+                "name": "consume_effect",
+                "propertyType": "particle_effects",
+                "type": "string",
+                "value": "none"
+            },
+            {
+                "name": "interact_effect",
+                "propertyType": "particle_effects",
+                "type": "string",
+                "value": "none"
+            },
+            {
+                "name": "effect_offset_x",
+                "type": "float",
+                "value": 0
+            },
+            {
+                "name": "effect_offset_y",
+                "type": "float",
+                "value": 0
+            },
+            {
+                "name": "effect_scale",
+                "type": "float",
+                "value": 1
+            },
+            {
+                "name": "effect_cooldown",
+                "type": "float",
+                "value": 0
+            }
+        ],
+        "name": "collectible_art_feedback",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 109,
+        "members": [
+            {
+                "name": "set_flag_on_collect",
+                "type": "string",
+                "value": ""
+            },
+            {
+                "name": "respawns",
+                "type": "bool",
+                "value": false
+            }
+        ],
+        "name": "collectible_persistence",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 111,
+        "members": [
+            {
+                "name": "affects_enemies",
+                "type": "bool",
+                "value": true
+            },
+            {
+                "name": "affects_items",
+                "type": "bool",
+                "value": false
+            }
+        ],
+        "name": "conveyor_affected_objects",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 112,
+        "members": [
+            {
+                "name": "speed",
+                "type": "float",
+                "value": 100
+            },
+            {
+                "name": "enabled",
+                "type": "bool",
+                "value": true
+            },
+            {
+                "name": "animation_speed",
+                "type": "float",
+                "value": 1
+            }
+        ],
+        "name": "conveyor_motion",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 114,
+        "members": [
+            {
+                "name": "one_way",
+                "type": "bool",
+                "value": true
+            },
+            {
+                "name": "co_y_offset",
+                "type": "float",
+                "value": 0
+            },
+            {
+                "name": "sensor_y_offset",
+                "type": "float",
+                "value": 0
+            }
+        ],
+        "name": "crumble_platform_collision",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 115,
+        "members": [
+            {
+                "name": "sound_crumble",
+                "propertyType": "sound_effects",
+                "type": "string",
+                "value": "none"
+            },
+            {
+                "name": "sound_respawn",
+                "propertyType": "sound_effects",
+                "type": "string",
+                "value": "none"
+            }
+        ],
+        "name": "crumble_platform_feedback",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 116,
+        "members": [
+            {
+                "name": "clear_visual_layer_tiles",
+                "type": "bool",
+                "value": true
+            },
+            {
+                "name": "visual_layer",
+                "type": "string",
+                "value": "environment"
+            }
+        ],
+        "name": "crumble_platform_tile_visuals",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 117,
+        "members": [
+            {
+                "name": "crumble_delay",
+                "type": "float",
+                "value": 0.5
+            },
+            {
+                "name": "respawn_delay",
+                "type": "float",
+                "value": 3
+            },
+            {
+                "name": "shake_before_crumble",
+                "type": "bool",
+                "value": true
+            }
+        ],
+        "name": "crumble_platform_timing",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 118,
+        "members": [
+            {
+                "name": "requires_flag",
+                "type": "string",
+                "value": ""
+            },
+            {
+                "name": "skip_if_flag",
+                "type": "string",
+                "value": ""
+            },
+            {
+                "name": "set_flag",
+                "type": "string",
+                "value": ""
+            }
+        ],
+        "name": "dialogue_trigger_conditions_and_outcomes",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 119,
+        "members": [
+            {
+                "name": "trigger_once",
+                "type": "bool",
+                "value": true
+            },
+            {
+                "name": "persist_once",
+                "type": "bool",
+                "value": true
+            },
+            {
+                "name": "once_flag",
+                "type": "string",
+                "value": ""
+            },
+            {
+                "name": "consume_on_fire",
+                "type": "bool",
+                "value": true
+            }
+        ],
+        "name": "dialogue_trigger_lifecycle",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 120,
+        "members": [
+            {
+                "name": "auto_play",
+                "type": "bool",
+                "value": true
+            },
+            {
+                "name": "delay",
+                "type": "float",
+                "value": 0
+            }
+        ],
+        "name": "dialogue_trigger_playback",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 216,
+        "members": [
+            {
+                "name": "enabled",
+                "type": "bool",
+                "value": true
+            },
+            {
+                "name": "activation_mode",
+                "propertyType": "elevator_activation_modes",
+                "type": "string",
+                "value": "on_board"
+            },
+            {
+                "name": "trigger_id",
+                "type": "string",
+                "value": ""
+            },
+            {
+                "name": "require_interact",
+                "type": "bool",
+                "value": false
+            }
+        ],
+        "name": "elevator_activation",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 217,
+        "members": [
+            {
+                "name": "camera_follow",
+                "type": "bool",
+                "value": true
+            },
+            {
+                "name": "camera_lock_x",
+                "type": "bool",
+                "value": true
+            },
+            {
+                "name": "camera_look_ahead",
+                "type": "float",
+                "value": 96
+            },
+            {
+                "name": "camera_blend_time",
+                "type": "float",
+                "value": 0.2
+            },
+            {
+                "name": "camera_priority",
+                "type": "int",
+                "value": 50
+            }
+        ],
+        "name": "elevator_camera",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 218,
+        "members": [
+            {
+                "name": "floor_offset",
+                "type": "float",
+                "value": 32
+            },
+            {
+                "name": "co_y_offset",
+                "type": "float",
+                "value": 0
+            },
+            {
+                "name": "sensor_y_offset",
+                "type": "float",
+                "value": 0
+            },
+            {
+                "name": "carry_player",
+                "type": "bool",
+                "value": true
+            },
+            {
+                "name": "carry_enemies",
+                "type": "bool",
+                "value": false
+            },
+            {
+                "name": "carry_pushables",
+                "type": "bool",
+                "value": true
+            },
+            {
+                "name": "require_rider",
+                "type": "bool",
+                "value": true
+            },
+            {
+                "name": "shaft_clearance",
+                "type": "float",
+                "value": 0
+            },
+            {
+                "name": "shaft_tolerance",
+                "type": "float",
+                "value": 0.5
+            }
+        ],
+        "name": "elevator_collision_and_rider",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 219,
+        "members": [
+            {
+                "name": "speed",
+                "type": "float",
+                "value": 96
+            },
+            {
+                "name": "acceleration",
+                "type": "float",
+                "value": 384
+            },
+            {
+                "name": "deceleration",
+                "type": "float",
+                "value": 384
+            },
+            {
+                "name": "endpoint_wait",
+                "type": "float",
+                "value": 0.35
+            },
+            {
+                "name": "start_delay",
+                "type": "float",
+                "value": 0
+            },
+            {
+                "name": "close_time",
+                "type": "float",
+                "value": 0.25
+            },
+            {
+                "name": "open_time",
+                "type": "float",
+                "value": 0.25
+            },
+            {
+                "name": "ready_timeout",
+                "type": "float",
+                "value": 5
+            }
+        ],
+        "name": "elevator_motion_and_timing",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 221,
+        "members": [
+            {
+                "name": "persist_landing",
+                "type": "bool",
+                "value": true
+            },
+            {
+                "name": "restore_to_last_landing",
+                "type": "bool",
+                "value": true
+            }
+        ],
+        "name": "elevator_persistence",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 222,
+        "members": [
+            {
+                "name": "source_layer",
+                "type": "string",
+                "value": "environment"
+            },
+            {
+                "name": "visual_z",
+                "type": "float",
+                "value": 0.5
+            }
+        ],
+        "name": "elevator_visuals",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 227,
+        "members": [
+            {
+                "name": "completion_id",
+                "type": "string",
+                "value": "ending"
+            }
+        ],
+        "name": "end_game_ending",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 61,
+        "members": [
+            {
+                "name": "attack_pattern",
+                "propertyType": "enemy_attack_patterns",
+                "type": "string",
+                "value": "type_default"
+            },
+            {
+                "name": "attack_pattern2",
+                "propertyType": "enemy_attack_patterns",
+                "type": "string",
+                "value": "type_default"
+            },
+            {
+                "name": "chase_speed",
+                "type": "float",
+                "value": -1
+            },
+            {
+                "name": "chase_speed_mult",
+                "type": "float",
+                "value": -1
+            },
+            {
+                "name": "detection_range",
+                "type": "float",
+                "value": -1
+            },
+            {
+                "name": "facing",
+                "type": "int",
+                "value": 0
+            },
+            {
+                "name": "hover_height",
+                "type": "float",
+                "value": -1
+            },
+            {
+                "name": "movement",
+                "propertyType": "enemy_movement",
+                "type": "string",
+                "value": "type_default"
+            },
+            {
+                "name": "patrol_distance",
+                "type": "float",
+                "value": -1
+            },
+            {
+                "name": "patrol_height",
+                "type": "float",
+                "value": -1
+            },
+            {
+                "name": "patrol_route",
+                "type": "string",
+                "value": ""
+            }
+        ],
+        "name": "enemy_movement_and_attacks",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 62,
+        "members": [
+            {
+                "name": "drops",
+                "type": "string",
+                "value": ""
+            },
+            {
+                "name": "loot_table",
+                "type": "string",
+                "value": ""
+            }
+        ],
+        "name": "enemy_rewards",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 63,
+        "members": [
+            {
+                "name": "ally_detection_range",
+                "type": "float",
+                "value": -1
+            },
+            {
+                "name": "contact_damage",
+                "type": "float",
+                "value": -1
+            },
+            {
+                "name": "contact_damage_cooldown",
+                "type": "float",
+                "value": -1
+            },
+            {
+                "name": "damage_mult",
+                "type": "float",
+                "value": -1
+            },
+            {
+                "name": "difficulty",
+                "propertyType": "difficulty",
+                "type": "string",
+                "value": "none"
+            },
+            {
+                "name": "elite",
+                "type": "bool",
+                "value": false
+            },
+            {
+                "name": "faction",
+                "type": "string",
+                "value": ""
+            },
+            {
+                "name": "group_id",
+                "type": "string",
+                "value": ""
+            },
+            {
+                "name": "health_mult",
+                "type": "float",
+                "value": -1
+            },
+            {
+                "name": "iframes_on_hit",
+                "type": "float",
+                "value": -1
+            },
+            {
+                "name": "knockback_force",
+                "type": "float",
+                "value": -1
+            },
+            {
+                "name": "speed_mult",
+                "type": "float",
+                "value": -1
+            }
+        ],
+        "name": "enemy_stats",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 64,
+        "members": [
+            {
+                "name": "attack_cooldown",
+                "type": "float",
+                "value": -1
+            },
+            {
+                "name": "attack_detection_range",
+                "type": "float",
+                "value": -1
+            },
+            {
+                "name": "attack_height",
+                "type": "float",
+                "value": -1
+            },
+            {
+                "name": "attack_range",
+                "type": "float",
+                "value": -1
+            },
+            {
+                "name": "attack_windup",
+                "type": "float",
+                "value": -1
+            },
+            {
+                "name": "charge_cooldown",
+                "type": "float",
+                "value": -1
+            },
+            {
+                "name": "charge_distance",
+                "type": "float",
+                "value": -1
+            },
+            {
+                "name": "charge_duration",
+                "type": "float",
+                "value": -1
+            },
+            {
+                "name": "charge_speed",
+                "type": "float",
+                "value": -1
+            },
+            {
+                "name": "dart_interval",
+                "type": "float",
+                "value": -1
+            },
+            {
+                "name": "dart_speed",
+                "type": "float",
+                "value": -1
+            },
+            {
+                "name": "dart_vertical_speed",
+                "type": "float",
+                "value": -1
+            },
+            {
+                "name": "projectile_damage",
+                "type": "float",
+                "value": -1
+            },
+            {
+                "name": "projectile_speed",
+                "type": "float",
+                "value": -1
+            },
+            {
+                "name": "rise_height",
+                "type": "float",
+                "value": -1
+            },
+            {
+                "name": "rise_range",
+                "type": "float",
+                "value": -1
+            },
+            {
+                "name": "rise_speed",
+                "type": "float",
+                "value": -1
+            },
+            {
+                "name": "shoot_cooldown",
+                "type": "float",
+                "value": -1
+            },
+            {
+                "name": "swoop_detection_range",
+                "type": "float",
+                "value": -1
+            },
+            {
+                "name": "swoop_duration",
+                "type": "float",
+                "value": -1
+            },
+            {
+                "name": "swoop_speed",
+                "type": "float",
+                "value": -1
+            }
+        ],
+        "name": "enemy_tuning",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 247,
+        "members": [
+            {
+                "name": "consume_effect",
+                "propertyType": "particle_effects",
+                "type": "string",
+                "value": "none"
+            },
+            {
+                "name": "interact_effect",
+                "propertyType": "particle_effects",
+                "type": "string",
+                "value": "none"
+            },
+            {
+                "name": "effect_offset_x",
+                "type": "float",
+                "value": 0
+            },
+            {
+                "name": "effect_offset_y",
+                "type": "float",
+                "value": 0
+            },
+            {
+                "name": "effect_scale",
+                "type": "float",
+                "value": 1
+            },
+            {
+                "name": "effect_cooldown",
+                "type": "float",
+                "value": 0
+            }
+        ],
+        "name": "energy_station_art_feedback",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 121,
+        "members": [
+            {
+                "name": "uses",
+                "type": "int",
+                "value": -1
+            },
+            {
+                "name": "cooldown",
+                "type": "float",
+                "value": 0
+            },
+            {
+                "name": "cost",
+                "type": "int",
+                "value": 0
+            }
+        ],
+        "name": "energy_station_availability",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 122,
+        "members": [
+            {
+                "name": "sound_id",
+                "propertyType": "sound_effects",
+                "type": "string",
+                "value": "none"
+            }
+        ],
+        "name": "energy_station_feedback",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 123,
+        "members": [
+            {
+                "name": "require_interact",
+                "type": "bool",
+                "value": true
+            },
+            {
+                "name": "range",
+                "type": "float",
+                "value": 96
+            }
+        ],
+        "name": "energy_station_interaction",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 124,
+        "members": [
+            {
+                "name": "restore_amount",
+                "type": "int",
+                "value": 0
+            },
+            {
+                "name": "restore_percent",
+                "type": "float",
+                "value": 0
+            }
+        ],
+        "name": "energy_station_restoration",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 248,
+        "members": [
+            {
+                "name": "consume_effect",
+                "propertyType": "particle_effects",
+                "type": "string",
+                "value": "none"
+            },
+            {
+                "name": "interact_effect",
+                "propertyType": "particle_effects",
+                "type": "string",
+                "value": "none"
+            },
+            {
+                "name": "effect_offset_x",
+                "type": "float",
+                "value": 0
+            },
+            {
+                "name": "effect_offset_y",
+                "type": "float",
+                "value": 0
+            },
+            {
+                "name": "effect_scale",
+                "type": "float",
+                "value": 1
+            },
+            {
+                "name": "effect_cooldown",
+                "type": "float",
+                "value": 0
+            }
+        ],
+        "name": "gate_art_feedback",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 126,
+        "members": [
+            {
+                "name": "open_message",
+                "type": "string",
+                "value": ""
+            }
+        ],
+        "name": "gate_messaging",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 127,
+        "members": [
+            {
+                "name": "required_key",
+                "propertyType": "keys",
+                "type": "string",
+                "value": "normal"
+            },
+            {
+                "name": "required_item",
+                "propertyType": "collectibles",
+                "type": "string",
+                "value": "none"
+            },
+            {
+                "name": "required_ability",
+                "propertyType": "optional_abilities",
+                "type": "string",
+                "value": "none"
+            },
+            {
+                "name": "required_action",
+                "propertyType": "actions",
+                "type": "string",
+                "value": "none"
+            },
+            {
+                "name": "required_energy",
+                "type": "int",
+                "value": -1
+            }
+        ],
+        "name": "gate_requirements",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 128,
+        "members": [
+            {
+                "name": "starts_open",
+                "type": "bool",
+                "value": false
+            },
+            {
+                "name": "stays_open",
+                "type": "bool",
+                "value": true
+            },
+            {
+                "name": "persist_unlock",
+                "type": "bool",
+                "value": true
+            }
+        ],
+        "name": "gate_state_and_persistence",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 130,
+        "members": [
+            {
+                "name": "enabled",
+                "type": "bool",
+                "value": true
+            },
+            {
+                "name": "sound_on_hit",
+                "propertyType": "sound_effects",
+                "type": "string",
+                "value": "spike_hit"
+            }
+        ],
+        "name": "hazard_activation_and_feedback",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 214,
+        "members": [
+            {
+                "name": "damage",
+                "type": "int",
+                "value": 1
+            },
+            {
+                "name": "damage_interval",
+                "type": "float",
+                "value": 0.5
+            },
+            {
+                "name": "stun_t",
+                "type": "float",
+                "value": -1
+            },
+            {
+                "name": "knockback_force",
+                "type": "int",
+                "value": 300
+            },
+            {
+                "name": "instant_kill",
+                "type": "bool",
+                "value": false
+            },
+            {
+                "name": "required_resistance",
+                "propertyType": "optional_abilities",
+                "type": "string",
+                "value": "none"
+            }
+        ],
+        "name": "hazard_damage_and_knockback",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 132,
+        "members": [
+            {
+                "name": "retractable",
+                "type": "bool",
+                "value": false
+            },
+            {
+                "name": "retract_time",
+                "type": "float",
+                "value": 2
+            },
+            {
+                "name": "extend_time",
+                "type": "float",
+                "value": 2
+            },
+            {
+                "name": "start_retracted",
+                "type": "bool",
+                "value": false
+            },
+            {
+                "name": "pattern",
+                "propertyType": "hazard_patterns",
+                "type": "string",
+                "value": "none"
+            },
+            {
+                "name": "pattern_speed",
+                "type": "float",
+                "value": 1
+            },
+            {
+                "name": "retract_visual_layer",
+                "type": "string",
+                "value": "player"
+            },
+            {
+                "name": "retract_hides_tiles",
+                "type": "bool",
+                "value": true
+            }
+        ],
+        "name": "hazard_motion",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 250,
+        "members": [
+            {
+                "name": "consume_effect",
+                "propertyType": "particle_effects",
+                "type": "string",
+                "value": "none"
+            },
+            {
+                "name": "interact_effect",
+                "propertyType": "particle_effects",
+                "type": "string",
+                "value": "none"
+            },
+            {
+                "name": "effect_offset_x",
+                "type": "float",
+                "value": 0
+            },
+            {
+                "name": "effect_offset_y",
+                "type": "float",
+                "value": 0
+            },
+            {
+                "name": "effect_scale",
+                "type": "float",
+                "value": 1
+            },
+            {
+                "name": "effect_cooldown",
+                "type": "float",
+                "value": 0
+            }
+        ],
+        "name": "health_station_art_feedback",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 134,
+        "members": [
+            {
+                "name": "uses",
+                "type": "int",
+                "value": 0
+            },
+            {
+                "name": "recharge_time",
+                "type": "float",
+                "value": 0
+            },
+            {
+                "name": "cost_currency",
+                "type": "int",
+                "value": 0
+            },
+            {
+                "name": "requires_flag",
+                "type": "string",
+                "value": ""
+            }
+        ],
+        "name": "health_station_availability",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 135,
+        "members": [
+            {
+                "name": "sound_id",
+                "propertyType": "sound_effects",
+                "type": "string",
+                "value": "collect_health"
+            }
+        ],
+        "name": "health_station_feedback",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 136,
+        "members": [
+            {
+                "name": "heal_amount",
+                "type": "int",
+                "value": 0
+            },
+            {
+                "name": "heal_percent",
+                "type": "float",
+                "value": 0
+            }
+        ],
+        "name": "health_station_healing",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 137,
+        "members": [
+            {
+                "name": "require_interact",
+                "type": "bool",
+                "value": true
+            },
+            {
+                "name": "range",
+                "type": "int",
+                "value": 96
+            }
+        ],
+        "name": "health_station_interaction",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 251,
+        "members": [
+            {
+                "name": "consume_effect",
+                "propertyType": "particle_effects",
+                "type": "string",
+                "value": "none"
+            },
+            {
+                "name": "interact_effect",
+                "propertyType": "particle_effects",
+                "type": "string",
+                "value": "none"
+            },
+            {
+                "name": "effect_offset_x",
+                "type": "float",
+                "value": 0
+            },
+            {
+                "name": "effect_offset_y",
+                "type": "float",
+                "value": 0
+            },
+            {
+                "name": "effect_scale",
+                "type": "float",
+                "value": 1
+            },
+            {
+                "name": "effect_cooldown",
+                "type": "float",
+                "value": 0
+            }
+        ],
+        "name": "hint_stone_art_feedback",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 139,
+        "members": [
+            {
+                "name": "trigger_once",
+                "type": "bool",
+                "value": false
+            },
+            {
+                "name": "requires_flag",
+                "type": "string",
+                "value": ""
+            },
+            {
+                "name": "set_flag",
+                "type": "string",
+                "value": ""
+            }
+        ],
+        "name": "hint_stone_conditions_and_persistence",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 140,
+        "members": [
+            {
+                "name": "position",
+                "propertyType": "hint_positions",
+                "type": "string",
+                "value": "top"
+            },
+            {
+                "name": "duration",
+                "type": "float",
+                "value": 4
+            }
+        ],
+        "name": "hint_stone_display",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 141,
+        "members": [
+            {
+                "name": "sound_id",
+                "propertyType": "sound_effects",
+                "type": "string",
+                "value": "none"
+            }
+        ],
+        "name": "hint_stone_feedback",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 142,
+        "members": [
+            {
+                "name": "label",
+                "type": "string",
+                "value": "Inspect"
+            },
+            {
+                "name": "range",
+                "type": "int",
+                "value": 96
+            }
+        ],
+        "name": "hint_stone_interaction",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 252,
+        "members": [
+            {
+                "name": "consume_effect",
+                "propertyType": "particle_effects",
+                "type": "string",
+                "value": "none"
+            },
+            {
+                "name": "interact_effect",
+                "propertyType": "particle_effects",
+                "type": "string",
+                "value": "none"
+            },
+            {
+                "name": "effect_offset_x",
+                "type": "float",
+                "value": 0
+            },
+            {
+                "name": "effect_offset_y",
+                "type": "float",
+                "value": 0
+            },
+            {
+                "name": "effect_scale",
+                "type": "float",
+                "value": 1
+            },
+            {
+                "name": "effect_cooldown",
+                "type": "float",
+                "value": 0
+            }
+        ],
+        "name": "key_art_feedback",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 144,
+        "members": [
+            {
+                "name": "amount",
+                "type": "int",
+                "value": 1
+            },
+            {
+                "name": "respawns",
+                "type": "bool",
+                "value": false
+            }
+        ],
+        "name": "key_pickup",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 146,
+        "members": [
+            {
+                "name": "climb_speed",
+                "type": "int",
+                "value": 80
+            },
+            {
+                "name": "can_jump_off",
+                "type": "bool",
+                "value": true
+            },
+            {
+                "name": "snap_to_center",
+                "type": "bool",
+                "value": true
+            },
+            {
+                "name": "climb_offset_x",
+                "type": "int",
+                "value": 0
+            }
+        ],
+        "name": "ladder_movement",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 147,
+        "members": [
+            {
+                "name": "pass_through_top",
+                "type": "bool",
+                "value": true
+            },
+            {
+                "name": "grab_extend_down",
+                "type": "int",
+                "value": 128
+            },
+            {
+                "name": "grab_extend_up",
+                "type": "int",
+                "value": 128
+            }
+        ],
+        "name": "ladder_reach_and_collision",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 254,
+        "members": [
+            {
+                "name": "consume_effect",
+                "propertyType": "particle_effects",
+                "type": "string",
+                "value": "none"
+            },
+            {
+                "name": "interact_effect",
+                "propertyType": "particle_effects",
+                "type": "string",
+                "value": "none"
+            },
+            {
+                "name": "effect_offset_x",
+                "type": "float",
+                "value": 0
+            },
+            {
+                "name": "effect_offset_y",
+                "type": "float",
+                "value": 0
+            },
+            {
+                "name": "effect_scale",
+                "type": "float",
+                "value": 1
+            },
+            {
+                "name": "effect_cooldown",
+                "type": "float",
+                "value": 0
+            }
+        ],
+        "name": "lever_art_feedback",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 148,
+        "members": [
+            {
+                "name": "set_flag_on",
+                "type": "string",
+                "value": ""
+            },
+            {
+                "name": "set_flag_off",
+                "type": "string",
+                "value": ""
+            },
+            {
+                "name": "requires_flag",
+                "type": "string",
+                "value": ""
+            }
+        ],
+        "name": "lever_conditions_and_flags",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 149,
+        "members": [
+            {
+                "name": "sound_on",
+                "propertyType": "sound_effects",
+                "type": "string",
+                "value": "lever_on"
+            },
+            {
+                "name": "sound_off",
+                "propertyType": "sound_effects",
+                "type": "string",
+                "value": "lever_off"
+            },
+            {
+                "name": "on_animation",
+                "type": "string",
+                "value": ""
+            },
+            {
+                "name": "off_animation",
+                "type": "string",
+                "value": ""
+            }
+        ],
+        "name": "lever_feedback",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 150,
+        "members": [
+            {
+                "name": "label_on",
+                "type": "string",
+                "value": "Switch On"
+            },
+            {
+                "name": "label_off",
+                "type": "string",
+                "value": "Switch Off"
+            },
+            {
+                "name": "range",
+                "type": "int",
+                "value": 96
+            }
+        ],
+        "name": "lever_interaction",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 151,
+        "members": [
+            {
+                "name": "message_on",
+                "type": "string",
+                "value": "activate"
+            },
+            {
+                "name": "message_off",
+                "type": "string",
+                "value": "deactivate"
+            }
+        ],
+        "name": "lever_messages",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 152,
+        "members": [
+            {
+                "name": "toggle",
+                "type": "bool",
+                "value": true
+            },
+            {
+                "name": "cooldown",
+                "type": "float",
+                "value": 0.2
+            },
+            {
+                "name": "reset_delay",
+                "type": "float",
+                "value": 0
+            }
+        ],
+        "name": "lever_switching",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 276,
+        "members": [
+            {
+                "name": "radius",
+                "type": "float",
+                "value": 200
+            },
+            {
+                "name": "intensity",
+                "type": "float",
+                "value": 1
+            },
+            {
+                "name": "enabled",
+                "type": "bool",
+                "value": true
+            },
+            {
+                "name": "track_position",
+                "type": "bool",
+                "value": false
+            }
+        ],
+        "name": "light_source_light",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 154,
+        "members": [
+            {
+                "name": "unlock_message",
+                "type": "string",
+                "value": "unlock"
+            },
+            {
+                "name": "sound_locked",
+                "propertyType": "sound_effects",
+                "type": "string",
+                "value": "none"
+            },
+            {
+                "name": "sound_unlock",
+                "propertyType": "sound_effects",
+                "type": "string",
+                "value": "none"
+            }
+        ],
+        "name": "locked_door_feedback",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 155,
+        "members": [
+            {
+                "name": "require_ability",
+                "propertyType": "optional_abilities",
+                "type": "string",
+                "value": "none"
+            },
+            {
+                "name": "require_key",
+                "propertyType": "keys",
+                "type": "string",
+                "value": "none"
+            },
+            {
+                "name": "require_item",
+                "propertyType": "collectibles",
+                "type": "string",
+                "value": "none"
+            },
+            {
+                "name": "consume_key",
+                "type": "bool",
+                "value": true
+            },
+            {
+                "name": "starts_locked",
+                "type": "bool",
+                "value": true
+            }
+        ],
+        "name": "locked_door_locking",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 256,
+        "members": [
+            {
+                "name": "consume_effect",
+                "propertyType": "particle_effects",
+                "type": "string",
+                "value": "none"
+            },
+            {
+                "name": "interact_effect",
+                "propertyType": "particle_effects",
+                "type": "string",
+                "value": "none"
+            },
+            {
+                "name": "effect_offset_x",
+                "type": "float",
+                "value": 0
+            },
+            {
+                "name": "effect_offset_y",
+                "type": "float",
+                "value": 0
+            },
+            {
+                "name": "effect_scale",
+                "type": "float",
+                "value": 1
+            },
+            {
+                "name": "effect_cooldown",
+                "type": "float",
+                "value": 0
+            }
+        ],
+        "name": "lore_item_art_feedback",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 156,
+        "members": [
+            {
+                "name": "destroyable",
+                "type": "bool",
+                "value": false
+            },
+            {
+                "name": "trigger_once",
+                "type": "bool",
+                "value": false
+            },
+            {
+                "name": "requires_flag",
+                "type": "string",
+                "value": ""
+            },
+            {
+                "name": "unlock_flag",
+                "type": "string",
+                "value": ""
+            }
+        ],
+        "name": "lore_item_conditions_and_persistence",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 157,
+        "members": [
+            {
+                "name": "title",
+                "type": "string",
+                "value": ""
+            },
+            {
+                "name": "text",
+                "type": "string",
+                "value": ""
+            }
+        ],
+        "name": "lore_item_content",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 158,
+        "members": [
+            {
+                "name": "sound_id",
+                "propertyType": "sound_effects",
+                "type": "string",
+                "value": "none"
+            }
+        ],
+        "name": "lore_item_feedback_and_visuals",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 159,
+        "members": [
+            {
+                "name": "prompt_text",
+                "type": "string",
+                "value": "Read"
+            },
+            {
+                "name": "range",
+                "type": "float",
+                "value": 96
+            },
+            {
+                "name": "auto_pickup",
+                "type": "bool",
+                "value": false
+            }
+        ],
+        "name": "lore_item_interaction",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 257,
+        "members": [
+            {
+                "name": "consume_effect",
+                "propertyType": "particle_effects",
+                "type": "string",
+                "value": "none"
+            },
+            {
+                "name": "interact_effect",
+                "propertyType": "particle_effects",
+                "type": "string",
+                "value": "none"
+            },
+            {
+                "name": "effect_offset_x",
+                "type": "float",
+                "value": 0
+            },
+            {
+                "name": "effect_offset_y",
+                "type": "float",
+                "value": 0
+            },
+            {
+                "name": "effect_scale",
+                "type": "float",
+                "value": 1
+            },
+            {
+                "name": "effect_cooldown",
+                "type": "float",
+                "value": 0
+            }
+        ],
+        "name": "map_fragment_art_feedback",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 160,
+        "members": [
+            {
+                "name": "respawns",
+                "type": "bool",
+                "value": false
+            }
+        ],
+        "name": "map_fragment_lifecycle",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 161,
+        "members": [
+            {
+                "name": "area_name",
+                "type": "string",
+                "value": ""
+            },
+            {
+                "name": "reveal_radius",
+                "type": "int",
+                "value": 1600
+            }
+        ],
+        "name": "map_fragment_reveal",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 163,
+        "members": [
+            {
+                "name": "marker_label",
+                "type": "string",
+                "value": ""
+            },
+            {
+                "name": "marker_icon",
+                "type": "string",
+                "value": "marker_default"
+            },
+            {
+                "name": "facing",
+                "type": "int",
+                "value": 1
+            }
+        ],
+        "name": "map_marker_presentation",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 164,
+        "members": [
+            {
+                "name": "show_on_minimap",
+                "type": "bool",
+                "value": true
+            },
+            {
+                "name": "show_on_world_map",
+                "type": "bool",
+                "value": true
+            },
+            {
+                "name": "visible_from_start",
+                "type": "bool",
+                "value": false
+            },
+            {
+                "name": "discovery_radius",
+                "type": "int",
+                "value": 0
+            }
+        ],
+        "name": "map_marker_visibility",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 165,
+        "members": [
+            {
+                "name": "range",
+                "type": "int",
+                "value": 96
+            },
+            {
+                "name": "cost",
+                "type": "int",
+                "value": 0
+            },
+            {
+                "name": "trigger_once",
+                "type": "bool",
+                "value": true
+            }
+        ],
+        "name": "map_station_access",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 259,
+        "members": [
+            {
+                "name": "consume_effect",
+                "propertyType": "particle_effects",
+                "type": "string",
+                "value": "none"
+            },
+            {
+                "name": "interact_effect",
+                "propertyType": "particle_effects",
+                "type": "string",
+                "value": "none"
+            },
+            {
+                "name": "effect_offset_x",
+                "type": "float",
+                "value": 0
+            },
+            {
+                "name": "effect_offset_y",
+                "type": "float",
+                "value": 0
+            },
+            {
+                "name": "effect_scale",
+                "type": "float",
+                "value": 1
+            },
+            {
+                "name": "effect_cooldown",
+                "type": "float",
+                "value": 0
+            }
+        ],
+        "name": "map_station_art_feedback",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 166,
+        "members": [
+            {
+                "name": "sound_id",
+                "propertyType": "sound_effects",
+                "type": "string",
+                "value": "collect_map"
+            }
+        ],
+        "name": "map_station_feedback",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 167,
+        "members": [
+            {
+                "name": "reveal_radius",
+                "type": "int",
+                "value": 320
+            },
+            {
+                "name": "reveal_full_biome",
+                "type": "bool",
+                "value": true
+            }
+        ],
+        "name": "map_station_reveal",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 169,
+        "members": [
+            {
+                "name": "enabled",
+                "type": "bool",
+                "value": true
+            },
+            {
+                "name": "trigger_id",
+                "type": "string",
+                "value": ""
+            }
+        ],
+        "name": "moving_platform_activation",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 170,
+        "members": [
+            {
+                "name": "co_y_offset",
+                "type": "float",
+                "value": 0
+            },
+            {
+                "name": "sensor_y_offset",
+                "type": "float",
+                "value": 0
+            },
+            {
+                "name": "player_parent",
+                "type": "bool",
+                "value": true
+            }
+        ],
+        "name": "moving_platform_collision_and_rider",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 171,
+        "members": [
+            {
+                "name": "speed",
+                "type": "int",
+                "value": 50
+            },
+            {
+                "name": "wait_time",
+                "type": "float",
+                "value": 1
+            },
+            {
+                "name": "start_delay",
+                "type": "float",
+                "value": 0
+            }
+        ],
+        "name": "moving_platform_motion_and_timing",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 172,
+        "members": [
+            {
+                "name": "path_name",
+                "type": "string",
+                "value": ""
+            },
+            {
+                "name": "distance",
+                "type": "int",
+                "value": 200
+            },
+            {
+                "name": "loop_mode",
+                "propertyType": "loop_modes",
+                "type": "string",
+                "value": "pingpong"
+            }
+        ],
+        "name": "moving_platform_path",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 173,
+        "members": [
+            {
+                "name": "stop_on_exit",
+                "type": "bool",
+                "value": true
+            },
+            {
+                "name": "trigger_once",
+                "type": "bool",
+                "value": false
+            }
+        ],
+        "name": "music_trigger_activation",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 174,
+        "members": [
+            {
+                "name": "fade_time",
+                "type": "float",
+                "value": 0.5
+            },
+            {
+                "name": "exit_music",
+                "propertyType": "music_tracks",
+                "type": "string",
+                "value": "none"
+            }
+        ],
+        "name": "music_trigger_transition",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 175,
+        "members": [
+            {
+                "name": "facing",
+                "type": "int",
+                "value": 1
+            }
+        ],
+        "name": "npc_appearance",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 262,
+        "members": [
+            {
+                "name": "consume_effect",
+                "propertyType": "particle_effects",
+                "type": "string",
+                "value": "none"
+            },
+            {
+                "name": "interact_effect",
+                "propertyType": "particle_effects",
+                "type": "string",
+                "value": "none"
+            },
+            {
+                "name": "effect_offset_x",
+                "type": "float",
+                "value": 0
+            },
+            {
+                "name": "effect_offset_y",
+                "type": "float",
+                "value": 0
+            },
+            {
+                "name": "effect_scale",
+                "type": "float",
+                "value": 1
+            },
+            {
+                "name": "effect_cooldown",
+                "type": "float",
+                "value": 0
+            }
+        ],
+        "name": "npc_art_feedback",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 176,
+        "members": [
+            {
+                "name": "dialogue_id",
+                "type": "string",
+                "value": ""
+            },
+            {
+                "name": "dialogue_text",
+                "type": "string",
+                "value": ""
+            },
+            {
+                "name": "interaction_range",
+                "type": "float",
+                "value": 48
+            }
+        ],
+        "name": "npc_dialogue",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 178,
+        "members": [
+            {
+                "name": "despawn_flag",
+                "type": "string",
+                "value": ""
+            }
+        ],
+        "name": "npc_lifecycle",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 179,
+        "members": [
+            {
+                "name": "debug_marker",
+                "type": "bool",
+                "value": false
+            },
+            {
+                "name": "debug_follow_player",
+                "type": "bool",
+                "value": false
+            }
+        ],
+        "name": "particle_emitter_diagnostics",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 180,
+        "members": [
+            {
+                "name": "auto_play",
+                "type": "bool",
+                "value": true
+            },
+            {
+                "name": "loop",
+                "type": "bool",
+                "value": true
+            },
+            {
+                "name": "loop_interval",
+                "type": "float",
+                "value": 0.5
+            },
+            {
+                "name": "start_delay",
+                "type": "float",
+                "value": 0
+            },
+            {
+                "name": "run_duration",
+                "type": "float",
+                "value": 0
+            }
+        ],
+        "name": "particle_emitter_playback",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 181,
+        "members": [
+            {
+                "name": "allow_player",
+                "type": "bool",
+                "value": true
+            },
+            {
+                "name": "allow_world",
+                "type": "bool",
+                "value": true
+            },
+            {
+                "name": "allow_enemy",
+                "type": "bool",
+                "value": false
+            }
+        ],
+        "name": "pressure_plate_activation_sources",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 265,
+        "members": [
+            {
+                "name": "consume_effect",
+                "propertyType": "particle_effects",
+                "type": "string",
+                "value": "none"
+            },
+            {
+                "name": "interact_effect",
+                "propertyType": "particle_effects",
+                "type": "string",
+                "value": "none"
+            },
+            {
+                "name": "effect_offset_x",
+                "type": "float",
+                "value": 0
+            },
+            {
+                "name": "effect_offset_y",
+                "type": "float",
+                "value": 0
+            },
+            {
+                "name": "effect_scale",
+                "type": "float",
+                "value": 1
+            },
+            {
+                "name": "effect_cooldown",
+                "type": "float",
+                "value": 0
+            }
+        ],
+        "name": "pressure_plate_art_feedback",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 182,
+        "members": [
+            {
+                "name": "sound_on",
+                "propertyType": "sound_effects",
+                "type": "string",
+                "value": "none"
+            },
+            {
+                "name": "sound_off",
+                "propertyType": "sound_effects",
+                "type": "string",
+                "value": "none"
+            }
+        ],
+        "name": "pressure_plate_feedback",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 183,
+        "members": [
+            {
+                "name": "stays_pressed",
+                "type": "bool",
+                "value": false
+            },
+            {
+                "name": "message_on",
+                "type": "string",
+                "value": "activate"
+            },
+            {
+                "name": "message_off",
+                "type": "string",
+                "value": "deactivate"
+            },
+            {
+                "name": "set_flag",
+                "type": "string",
+                "value": ""
+            }
+        ],
+        "name": "pressure_plate_response",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 184,
+        "members": [
+            {
+                "name": "anim_tilemap",
+                "type": "string",
+                "value": ""
+            },
+            {
+                "name": "anim_layer",
+                "type": "string",
+                "value": ""
+            },
+            {
+                "name": "anim_offset_x",
+                "type": "int",
+                "value": 0
+            },
+            {
+                "name": "anim_offset_y",
+                "type": "int",
+                "value": 0
+            },
+            {
+                "name": "tile_on",
+                "type": "int",
+                "value": 0
+            },
+            {
+                "name": "tile_off",
+                "type": "int",
+                "value": 0
+            }
+        ],
+        "name": "pressure_plate_tile_animation",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 277,
+        "members": [
+            {
+                "name": "mass",
+                "type": "float",
+                "value": 1
+            },
+            {
+                "name": "gravity_scale",
+                "type": "float",
+                "value": 1
+            },
+            {
+                "name": "reset_on_room_load",
+                "type": "bool",
+                "value": false
+            },
+            {
+                "name": "move_embedded_tiles",
+                "type": "bool",
+                "value": true
+            }
+        ],
+        "name": "pushable_block_motion",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 266,
+        "members": [
+            {
+                "name": "consume_effect",
+                "propertyType": "particle_effects",
+                "type": "string",
+                "value": "none"
+            },
+            {
+                "name": "interact_effect",
+                "propertyType": "particle_effects",
+                "type": "string",
+                "value": "none"
+            },
+            {
+                "name": "effect_offset_x",
+                "type": "float",
+                "value": 0
+            },
+            {
+                "name": "effect_offset_y",
+                "type": "float",
+                "value": 0
+            },
+            {
+                "name": "effect_scale",
+                "type": "float",
+                "value": 1
+            },
+            {
+                "name": "effect_cooldown",
+                "type": "float",
+                "value": 0
+            }
+        ],
+        "name": "save_point_art_feedback",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 186,
+        "members": [
+            {
+                "name": "sound_id",
+                "propertyType": "sound_effects",
+                "type": "string",
+                "value": "none"
+            }
+        ],
+        "name": "save_point_feedback_and_visuals",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 187,
+        "members": [
+            {
+                "name": "requires_interact",
+                "type": "bool",
+                "value": true
+            }
+        ],
+        "name": "save_point_interaction",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 188,
+        "members": [
+            {
+                "name": "heal_on_save",
+                "type": "bool",
+                "value": true
+            },
+            {
+                "name": "restore_energy",
+                "type": "bool",
+                "value": true
+            },
+            {
+                "name": "is_fast_travel",
+                "type": "bool",
+                "value": false
+            },
+            {
+                "name": "show_on_map",
+                "type": "bool",
+                "value": true
+            }
+        ],
+        "name": "save_point_services",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 189,
+        "members": [
+            {
+                "name": "intensity",
+                "type": "float",
+                "value": 0.5
+            },
+            {
+                "name": "tint_color",
+                "type": "string",
+                "value": "#00000080"
+            },
+            {
+                "name": "duration",
+                "type": "float",
+                "value": 0.3
+            },
+            {
+                "name": "underwater_overlay",
+                "type": "bool",
+                "value": true
+            }
+        ],
+        "name": "screen_effect_zone_effect",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 190,
+        "members": [
+            {
+                "name": "trigger_once",
+                "type": "bool",
+                "value": false
+            },
+            {
+                "name": "exit_darkness",
+                "type": "float",
+                "value": 0
+            },
+            {
+                "name": "exit_tint",
+                "type": "string",
+                "value": ""
+            }
+        ],
+        "name": "screen_effect_zone_lifecycle",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 268,
+        "members": [
+            {
+                "name": "consume_effect",
+                "propertyType": "particle_effects",
+                "type": "string",
+                "value": "none"
+            },
+            {
+                "name": "interact_effect",
+                "propertyType": "particle_effects",
+                "type": "string",
+                "value": "none"
+            },
+            {
+                "name": "effect_offset_x",
+                "type": "float",
+                "value": 0
+            },
+            {
+                "name": "effect_offset_y",
+                "type": "float",
+                "value": 0
+            },
+            {
+                "name": "effect_scale",
+                "type": "float",
+                "value": 1
+            },
+            {
+                "name": "effect_cooldown",
+                "type": "float",
+                "value": 0
+            }
+        ],
+        "name": "secret_art_feedback",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 191,
+        "members": [
+            {
+                "name": "hide_tiles",
+                "type": "bool",
+                "value": true
+            },
+            {
+                "name": "map_reveal",
+                "type": "bool",
+                "value": true
+            }
+        ],
+        "name": "secret_concealment",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 192,
+        "members": [
+            {
+                "name": "reveals_on",
+                "propertyType": "reveal_triggers",
+                "type": "string",
+                "value": "attack"
+            },
+            {
+                "name": "required_ability",
+                "propertyType": "optional_abilities",
+                "type": "string",
+                "value": "none"
+            }
+        ],
+        "name": "secret_discovery",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 215,
+        "members": [
+            {
+                "name": "notification",
+                "type": "bool",
+                "value": true
+            },
+            {
+                "name": "notification_text",
+                "type": "string",
+                "value": "Secret Found!"
+            }
+        ],
+        "name": "secret_feedback",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 194,
+        "members": [
+            {
+                "name": "reward_type",
+                "propertyType": "collectibles",
+                "type": "string",
+                "value": "none"
+            },
+            {
+                "name": "reward_amount",
+                "type": "int",
+                "value": 0
+            }
+        ],
+        "name": "secret_reward",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 269,
+        "members": [
+            {
+                "name": "consume_effect",
+                "propertyType": "particle_effects",
+                "type": "string",
+                "value": "none"
+            },
+            {
+                "name": "interact_effect",
+                "propertyType": "particle_effects",
+                "type": "string",
+                "value": "none"
+            },
+            {
+                "name": "effect_offset_x",
+                "type": "float",
+                "value": 0
+            },
+            {
+                "name": "effect_offset_y",
+                "type": "float",
+                "value": 0
+            },
+            {
+                "name": "effect_scale",
+                "type": "float",
+                "value": 1
+            },
+            {
+                "name": "effect_cooldown",
+                "type": "float",
+                "value": 0
+            }
+        ],
+        "name": "sign_art_feedback",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 195,
+        "members": [
+            {
+                "name": "trigger_once",
+                "type": "bool",
+                "value": false
+            },
+            {
+                "name": "requires_flag",
+                "type": "string",
+                "value": ""
+            },
+            {
+                "name": "set_flag",
+                "type": "string",
+                "value": ""
+            }
+        ],
+        "name": "sign_conditions_and_persistence",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 196,
+        "members": [
+            {
+                "name": "dialogue_id",
+                "type": "string",
+                "value": ""
+            }
+        ],
+        "name": "sign_content_link",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 197,
+        "members": [
+            {
+                "name": "sound_id",
+                "propertyType": "sound_effects",
+                "type": "string",
+                "value": "none"
+            }
+        ],
+        "name": "sign_feedback",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 198,
+        "members": [
+            {
+                "name": "label",
+                "type": "string",
+                "value": "Read"
+            },
+            {
+                "name": "range",
+                "type": "int",
+                "value": 96
+            }
+        ],
+        "name": "sign_interaction",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 199,
+        "members": [
+            {
+                "name": "display_mode",
+                "propertyType": "display_modes",
+                "type": "string",
+                "value": "toast"
+            },
+            {
+                "name": "duration",
+                "type": "float",
+                "value": 2.5
+            }
+        ],
+        "name": "sign_presentation",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 201,
+        "members": [
+            {
+                "name": "requires_flag",
+                "type": "string",
+                "value": ""
+            },
+            {
+                "name": "hide_when_locked",
+                "type": "bool",
+                "value": false
+            },
+            {
+                "name": "require_interact",
+                "type": "bool",
+                "value": false
+            },
+            {
+                "name": "one_way",
+                "type": "bool",
+                "value": false
+            }
+        ],
+        "name": "teleporter_access",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 272,
+        "members": [
+            {
+                "name": "consume_effect",
+                "propertyType": "particle_effects",
+                "type": "string",
+                "value": "none"
+            },
+            {
+                "name": "interact_effect",
+                "propertyType": "particle_effects",
+                "type": "string",
+                "value": "none"
+            },
+            {
+                "name": "effect_offset_x",
+                "type": "float",
+                "value": 0
+            },
+            {
+                "name": "effect_offset_y",
+                "type": "float",
+                "value": 0
+            },
+            {
+                "name": "effect_scale",
+                "type": "float",
+                "value": 1
+            },
+            {
+                "name": "effect_cooldown",
+                "type": "float",
+                "value": 0
+            }
+        ],
+        "name": "teleporter_art_feedback",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 202,
+        "members": [
+            {
+                "name": "label",
+                "type": "string",
+                "value": "Teleport"
+            },
+            {
+                "name": "fade_out",
+                "type": "float",
+                "value": 0.5
+            },
+            {
+                "name": "fade_in",
+                "type": "float",
+                "value": 0.5
+            },
+            {
+                "name": "active_effect_id",
+                "propertyType": "particle_effects",
+                "type": "string",
+                "value": "collectible_sparkle"
+            },
+            {
+                "name": "unlock_effect_id",
+                "propertyType": "particle_effects",
+                "type": "string",
+                "value": "none"
+            }
+        ],
+        "name": "teleporter_presentation",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 203,
+        "members": [
+            {
+                "name": "cooldown",
+                "type": "float",
+                "value": 0.5
+            },
+            {
+                "name": "transition_time",
+                "type": "float",
+                "value": 0
+            },
+            {
+                "name": "preserve_velocity",
+                "type": "bool",
+                "value": false
+            },
+            {
+                "name": "facing",
+                "type": "int",
+                "value": 0
+            }
+        ],
+        "name": "teleporter_transport",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 273,
+        "members": [
+            {
+                "name": "consume_effect",
+                "propertyType": "particle_effects",
+                "type": "string",
+                "value": "none"
+            },
+            {
+                "name": "interact_effect",
+                "propertyType": "particle_effects",
+                "type": "string",
+                "value": "none"
+            },
+            {
+                "name": "effect_offset_x",
+                "type": "float",
+                "value": 0
+            },
+            {
+                "name": "effect_offset_y",
+                "type": "float",
+                "value": 0
+            },
+            {
+                "name": "effect_scale",
+                "type": "float",
+                "value": 1
+            },
+            {
+                "name": "effect_cooldown",
+                "type": "float",
+                "value": 0
+            }
+        ],
+        "name": "timed_door_art_feedback",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 204,
+        "members": [
+            {
+                "name": "auto_close",
+                "type": "bool",
+                "value": false
+            },
+            {
+                "name": "close_on_release",
+                "type": "bool",
+                "value": false
+            },
+            {
+                "name": "open_duration",
+                "type": "float",
+                "value": 2.5
+            },
+            {
+                "name": "starts_open",
+                "type": "bool",
+                "value": false
+            }
+        ],
+        "name": "timed_door_behavior_and_timing",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 205,
+        "members": [
+            {
+                "name": "message_off",
+                "type": "string",
+                "value": "deactivate"
+            },
+            {
+                "name": "message_on",
+                "type": "string",
+                "value": "activate"
+            },
+            {
+                "name": "sound_close",
+                "propertyType": "sound_effects",
+                "type": "string",
+                "value": "door_close"
+            },
+            {
+                "name": "sound_open",
+                "propertyType": "sound_effects",
+                "type": "string",
+                "value": "door_open"
+            }
+        ],
+        "name": "timed_door_feedback",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 206,
+        "members": [
+            {
+                "name": "hide_when_open",
+                "type": "bool",
+                "value": true
+            }
+        ],
+        "name": "timed_door_presentation",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 278,
+        "members": [
+            {
+                "name": "label",
+                "type": "string",
+                "value": ""
+            },
+            {
+                "name": "label_lit",
+                "type": "string",
+                "value": ""
+            },
+            {
+                "name": "sound_on",
+                "propertyType": "sound_effects",
+                "type": "string",
+                "value": "none"
+            },
+            {
+                "name": "sound_off",
+                "propertyType": "sound_effects",
+                "type": "string",
+                "value": "none"
+            }
+        ],
+        "name": "torch_holder_feedback",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 279,
+        "members": [
+            {
+                "name": "starts_lit",
+                "type": "bool",
+                "value": false
+            },
+            {
+                "name": "require_interact",
+                "type": "bool",
+                "value": true
+            },
+            {
+                "name": "allow_extinguish",
+                "type": "bool",
+                "value": false
+            },
+            {
+                "name": "set_flag",
+                "type": "string",
+                "value": ""
+            }
+        ],
+        "name": "torch_holder_ignition",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 280,
+        "members": [
+            {
+                "name": "light_radius",
+                "type": "float",
+                "value": 220
+            },
+            {
+                "name": "light_intensity",
+                "type": "float",
+                "value": 1
+            }
+        ],
+        "name": "torch_holder_light",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 207,
+        "members": [
+            {
+                "name": "allow_slide",
+                "type": "bool",
+                "value": true
+            },
+            {
+                "name": "allow_jump",
+                "type": "bool",
+                "value": true
+            },
+            {
+                "name": "allow_climb",
+                "type": "bool",
+                "value": false
+            },
+            {
+                "name": "require_ability",
+                "propertyType": "optional_abilities",
+                "type": "string",
+                "value": "wall_jump"
+            }
+        ],
+        "name": "wall_jump_surface_abilities",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 208,
+        "members": [
+            {
+                "name": "slide_speed",
+                "type": "float",
+                "value": 0.3
+            },
+            {
+                "name": "jump_force_x",
+                "type": "float",
+                "value": 400
+            },
+            {
+                "name": "jump_force_y",
+                "type": "float",
+                "value": 500
+            },
+            {
+                "name": "facing",
+                "type": "int",
+                "value": 1
+            }
+        ],
+        "name": "wall_jump_surface_movement",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 210,
+        "members": [
+            {
+                "name": "splash_effect",
+                "type": "bool",
+                "value": true
+            },
+            {
+                "name": "tint_color",
+                "type": "string",
+                "value": ""
+            }
+        ],
+        "name": "water_volume_presentation",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 211,
+        "members": [
+            {
+                "name": "damage",
+                "type": "float",
+                "value": 0
+            },
+            {
+                "name": "damage_interval",
+                "type": "float",
+                "value": 1
+            },
+            {
+                "name": "oxygen_drain",
+                "type": "bool",
+                "value": true
+            },
+            {
+                "name": "oxygen_drain_rate",
+                "type": "float",
+                "value": 1
+            }
+        ],
+        "name": "water_volume_survival",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "id": 212,
+        "members": [
+            {
+                "name": "swim_enabled",
+                "type": "bool",
+                "value": true
+            },
+            {
+                "name": "swim_speed_mult",
+                "type": "float",
+                "value": 0.7
+            },
+            {
+                "name": "current_direction",
+                "propertyType": "water_directions",
+                "type": "string",
+                "value": "none"
+            },
+            {
+                "name": "current_strength",
+                "type": "float",
+                "value": 0
+            },
+            {
+                "name": "buoyancy",
+                "type": "float",
+                "value": 0.5
+            },
+            {
+                "name": "water_drag",
+                "type": "float",
+                "value": 0.85
+            },
+            {
+                "name": "surface_y_offset",
+                "type": "float",
+                "value": 0
+            }
+        ],
+        "name": "water_volume_swimming_and_current",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "name": "object_art",
+        "id": 275,
+        "type": "class",
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "useAs": [
+            "tile",
+            "object"
+        ],
+        "members": [
+            {
+                "name": "owner_ref",
+                "type": "object",
+                "value": 0
+            },
+            {
+                "name": "art_state",
+                "type": "string",
+                "value": "default"
+            },
+            {
+                "name": "art_opacity",
+                "type": "float",
+                "value": 1
+            },
+            {
+                "name": "art_z",
+                "type": "float",
+                "value": 0.01
+            }
+        ]
+    },
+    {
+        "name": "item_art",
+        "id": 274,
+        "type": "class",
+        "color": "#ff7f7f7f",
+        "drawFill": true,
+        "useAs": [
+            "tile",
+            "object"
+        ],
+        "members": [
+            {
+                "name": "item_type",
+                "type": "string",
+                "value": ""
+            },
+            {
+                "name": "item_width",
+                "type": "float",
+                "value": 0
+            },
+            {
+                "name": "item_height",
+                "type": "float",
+                "value": 0
+            },
+            {
+                "name": "consume_effect",
+                "type": "string",
+                "propertyType": "particle_effects",
+                "value": "none"
+            }
+        ]
+    }
+]

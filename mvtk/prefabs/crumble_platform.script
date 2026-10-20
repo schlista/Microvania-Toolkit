@@ -1,0 +1,774 @@
+-- Crumble platform script
+-- Platform that falls when player stands on it
+-- Supports shake warning, respawn timing, and sound/particle effects
+-- NOTE: Clears underlying tilemap tiles for collision removal
+
+go.property("platform_id", "")
+go.property("crumble_delay", 0.5)
+go.property("respawn_delay", 3.0)       -- seconds before platform respawns (0 = no respawn)
+go.property("shake_before_crumble", true) -- shake warning before crumbling
+go.property("one_way", true)            -- if true, player can jump through from below
+go.property("clear_visual_layer_tiles", true)
+go.property("visual_layer", "environment")
+go.property("co_y_offset", 0)           -- collision shape Y offset (set via editor_script hooks)
+go.property("sensor_y_offset", 0)       -- sensor trigger Y offset
+go.property("width", 64)
+go.property("height", 16)
+go.property("room_id", "")
+go.property("platform_tilemap_url", msg.url("#tilemap"))
+-- Generated collections override this with the parented collision child. The
+-- local default keeps older, unsplit generated platform GOs compatible.
+go.property("collision_url", msg.url("#co"))
+-- Optional sound/fx references
+go.property("sound_crumble", "platform_crumble")
+go.property("sound_respawn", "platform_respawn")
+
+local Debug = require "developer.config.debug_config"
+local FrameClock = require "mvtk.core.frame_clock"
+local raw_print = print
+local CRUMBLE_LOG_ENABLED = (Debug.global and Debug.global.enable) or
+    (Debug.rooms and Debug.rooms.loading) or
+    (Debug.physics and Debug.physics.collision)
+local function print(...)
+    if CRUMBLE_LOG_ENABLED then
+        raw_print(...)
+    end
+end
+
+local SHAKE_AMPLITUDE = 2
+local SHAKE_FREQUENCY = 30
+
+-- Load tile settings for tile size
+local TileSettings = nil
+local ok_tile, tile_data = pcall(require, "developer.config.tile_settings")
+if ok_tile then TileSettings = tile_data end
+
+-- Load room manager for tilemap access
+local RoomManager = nil
+local ok_rm, rm_data = pcall(require, "mvtk.map.streaming.room_manager")
+if ok_rm then RoomManager = rm_data end
+local Util = require "mvtk.core.util"
+local PU = require "mvtk.prefabs.prefab_utils"
+local TileTransfer = require "mvtk.prefabs.tile_transfer"
+local SurfaceClassifier = require "mvtk.core.surface_classifier"
+
+-- Try to load sound bank for sound IDs
+local SoundBank = nil
+local ok_sound, sound_data = pcall(require, "developer.config.sound_bank")
+if ok_sound then SoundBank = sound_data end
+
+
+-- Forward declarations for local functions
+local do_crumble
+local start_crumble
+local check_player_overlap
+local clear_tilemap_tiles
+local restore_tilemap_tiles
+
+-- Get tile size from settings
+local TILE_W = TileSettings and TileSettings.width or 128
+local TILE_H = TileSettings and TileSettings.height or 128
+
+local function resolve_room_collision_layer(tilemap_url)
+    return SurfaceClassifier.resolve_primary_collision_layer(tilemap_url, SurfaceClassifier.GROUPS.SOLID)
+end
+
+local function resolve_platform_tile_layer(tilemap_url)
+    return SurfaceClassifier.resolve_first_existing_layer(
+        tilemap_url,
+        { SurfaceClassifier.GROUPS.SOLID, SurfaceClassifier.GROUPS.GROUND },
+        SurfaceClassifier.GROUPS.SOLID
+    )
+end
+
+local function resolve_visual_room_layer(self, tilemap_url)
+    local configured = self and self.visual_layer
+    if not configured or configured == "" then
+        return nil
+    end
+    return SurfaceClassifier.resolve_first_existing_layer(tilemap_url, { configured }, nil)
+end
+
+local function get_platform_tile_bounds(self, tilemap_pos)
+    local plat_left = self.original_pos.x
+    local plat_right = self.original_pos.x + self.width
+    local plat_bottom = self.original_pos.y
+    local plat_top = self.original_pos.y + self.height
+
+    -- Match the runtime tilemap API convention used by tile_platform.script:
+    -- cell (1,1) renders at pixel (0,0) relative to the tilemap GO.
+    local min_tx = math.floor((plat_left - tilemap_pos.x) / TILE_W) + 1
+    local max_tx = math.ceil((plat_right - tilemap_pos.x) / TILE_W)
+    local min_ty = math.floor((plat_bottom - tilemap_pos.y) / TILE_H) + 1
+    local max_ty = math.ceil((plat_top - tilemap_pos.y) / TILE_H)
+
+    return min_tx, max_tx, min_ty, max_ty, plat_left, plat_right, plat_bottom, plat_top
+end
+
+local function collect_layer_tiles(tilemap_url, layer_hash, min_tx, max_tx, min_ty, max_ty)
+    local tiles = {}
+    if not layer_hash then
+        return tiles
+    end
+
+    for ty = min_ty, max_ty do
+        for tx = min_tx, max_tx do
+            local ok_get, tile_id = pcall(tilemap.get_tile, tilemap_url, layer_hash, tx, ty)
+            if ok_get and tile_id and tile_id > 0 then
+                tiles[#tiles + 1] = {
+                    x = tx,
+                    y = ty,
+                    tile_id = tile_id,
+                    layer = layer_hash,
+                }
+            end
+        end
+    end
+
+    return tiles
+end
+
+local function push_restore_tile(restore_tiles, restore_lookup, layer_hash, tx, ty, tile_id)
+    if not layer_hash or not tile_id or tile_id <= 0 then
+        return
+    end
+    local key = string.format("%s:%d:%d", tostring(layer_hash), tx, ty)
+    if restore_lookup[key] then
+        return
+    end
+    restore_lookup[key] = true
+    restore_tiles[#restore_tiles + 1] = {
+        x = tx,
+        y = ty,
+        tile_id = tile_id,
+        layer = layer_hash,
+    }
+end
+
+-- Avoid no-op tile writes. Defold broadcasts a tile-grid hull update for every
+-- `set_tile`, even when the cell already has the requested value.
+local function set_tile_if_changed(tilemap_url, layer, tx, ty, tile_id)
+    local ok_get, current = pcall(tilemap.get_tile, tilemap_url, layer, tx, ty)
+    if ok_get and current == tile_id then
+        return true
+    end
+    return pcall(tilemap.set_tile, tilemap_url, layer, tx, ty, tile_id)
+end
+
+local function clear_collected_room_tiles(tilemap_url, tiles, restore_tiles, restore_lookup)
+    local cleared = 0
+    for _, tile_info in ipairs(tiles or {}) do
+        push_restore_tile(
+            restore_tiles,
+            restore_lookup,
+            tile_info.layer,
+            tile_info.x,
+            tile_info.y,
+            tile_info.tile_id
+        )
+        local ok_set = set_tile_if_changed(tilemap_url, tile_info.layer, tile_info.x, tile_info.y, 0)
+        if ok_set then
+            cleared = cleared + 1
+        end
+    end
+    return cleared
+end
+
+local function write_tiles_to_platform(platform_tilemap_url, platform_layer, min_tx, min_ty, tiles)
+    local copied = 0
+    local origin_x, origin_y = 1, 1
+    local ok_bounds, bounds_x, bounds_y = pcall(tilemap.get_bounds, platform_tilemap_url)
+    if ok_bounds then
+        origin_x = bounds_x or origin_x
+        origin_y = bounds_y or origin_y
+    end
+
+    for _, tile_info in ipairs(tiles or {}) do
+        local local_tx = (tile_info.x - min_tx) + origin_x
+        local local_ty = (tile_info.y - min_ty) + origin_y
+        local ok_set, err = set_tile_if_changed(platform_tilemap_url, platform_layer, local_tx, local_ty, tile_info.tile_id)
+        if ok_set then
+            copied = copied + 1
+        else
+            print(string.format(
+                "[CRUMBLE] ERROR: Failed to set tile at local(%d,%d): %s",
+                local_tx,
+                local_ty,
+                tostring(err)
+            ))
+        end
+    end
+    return copied
+end
+
+--- Copy tiles from room tilemap to platform tilemap, then clear from room
+-- This makes tiles visible on the platform GO while removing from room
+local function copy_tiles_from_room(self)
+    -- Prevent copying multiple times
+    if self.tiles_copied then
+        print("[CRUMBLE] Tiles already copied, skipping duplicate copy")
+        return true
+    end
+    
+    if not RoomManager or not RoomManager.get_tilemap_url then
+        print("[CRUMBLE] WARNING: RoomManager not available, cannot copy tiles")
+        return false
+    end
+
+    -- Convert room_id hash to string for lookup
+    local room_id_str = type(self.room_id) == "userdata" and self.room_id or tostring(self.room_id)
+
+    local tilemap_url, tilemap_pos = RoomManager.get_tilemap_url(room_id_str)
+    if not tilemap_url then
+        print("[CRUMBLE] WARNING: Could not find tilemap for room: " .. tostring(room_id_str))
+        return false
+    end
+
+    self.tilemap_url = tilemap_url
+    self.tilemap_pos = tilemap_pos
+
+    -- Platform tilemap URL
+    local platform_tilemap_url = self.platform_tilemap_url
+
+    local min_tx, max_tx, min_ty, max_ty, plat_left, plat_right, plat_bottom, plat_top = get_platform_tile_bounds(self, tilemap_pos)
+
+    print(string.format("[CRUMBLE] DEBUG: GO pos=(%.1f,%.1f) size=(%dx%d)",
+        self.original_pos.x, self.original_pos.y, self.width, self.height))
+    print(string.format("[CRUMBLE] DEBUG: Platform world bounds: left=%.1f right=%.1f bottom=%.1f top=%.1f",
+        plat_left, plat_right, plat_bottom, plat_top))
+    print(string.format("[CRUMBLE] DEBUG: Tilemap pos=(%.1f,%.1f) TILE_W=%d TILE_H=%d",
+        tilemap_pos.x, tilemap_pos.y, TILE_W, TILE_H))
+
+    -- Ensure we have at least the tiles we expect based on width/height
+    local expected_tiles_x = math.ceil(self.width / TILE_W)
+    local expected_tiles_y = math.ceil(self.height / TILE_H)
+    local actual_tiles_x = max_tx - min_tx + 1
+    local actual_tiles_y = max_ty - min_ty + 1
+
+    print(string.format("[CRUMBLE] DEBUG: Tile coords: min_tx=%d max_tx=%d min_ty=%d max_ty=%d",
+        min_tx, max_tx, min_ty, max_ty))
+    print(string.format("[CRUMBLE] DEBUG: Expected tiles: %dx%d, Calculated: %dx%d",
+        expected_tiles_x, expected_tiles_y, actual_tiles_x, actual_tiles_y))
+
+    local collision_layer = resolve_room_collision_layer(tilemap_url)
+    local visual_layer = resolve_visual_room_layer(self, tilemap_url)
+    local platform_layer = resolve_platform_tile_layer(platform_tilemap_url)
+    local collision_tiles = collect_layer_tiles(tilemap_url, collision_layer, min_tx, max_tx, min_ty, max_ty)
+    local visual_tiles = {}
+    if visual_layer and visual_layer ~= collision_layer then
+        visual_tiles = collect_layer_tiles(tilemap_url, visual_layer, min_tx, max_tx, min_ty, max_ty)
+    end
+    local use_room_visual_layer = (#visual_tiles > 0)
+    local display_tiles = use_room_visual_layer and visual_tiles or collision_tiles
+    local display_layer = use_room_visual_layer and visual_layer or collision_layer
+    local cleared_tiles = {}
+    local cleared_lookup = {}
+
+    -- Platform tilemap local coords: GO is at bottom-left
+    -- Defold tilemaps use 0-based coordinates: tile (0,0) is at pixel (0,0) relative to GO
+
+    TileTransfer.clear_tilemap_layer(platform_tilemap_url, platform_layer)
+
+    print(string.format("[CRUMBLE] ========== TILE COPY DEBUG =========="))
+    print(string.format("[CRUMBLE] Tilemap URL: %s", tostring(tilemap_url)))
+    print(string.format("[CRUMBLE] Platform tilemap URL: %s", tostring(platform_tilemap_url)))
+    print(string.format("[CRUMBLE] Tile range: X[%d to %d] Y[%d to %d]", min_tx, max_tx, min_ty, max_ty))
+    print(string.format("[CRUMBLE] Expected tiles: %dx%d = %d total", 
+        max_tx - min_tx + 1, max_ty - min_ty + 1, (max_tx - min_tx + 1) * (max_ty - min_ty + 1)))
+
+    print(string.format(
+        "[CRUMBLE] Display source layer: %s (visual_tiles=%d collision_tiles=%d)",
+        tostring(display_layer),
+        #visual_tiles,
+        #collision_tiles
+    ))
+
+    local tiles_copied = 0
+    if not use_room_visual_layer then
+        tiles_copied = write_tiles_to_platform(platform_tilemap_url, platform_layer, min_tx, min_ty, display_tiles)
+    end
+    
+    print(string.format("[CRUMBLE] ========== COPY COMPLETE: %d/%d tiles copied ==========", 
+        tiles_copied, (max_tx - min_tx + 1) * (max_ty - min_ty + 1)))
+
+    if tiles_copied > 0 or use_room_visual_layer then
+        if #collision_tiles > 0 then
+            local collision_cleared = clear_collected_room_tiles(tilemap_url, collision_tiles, cleared_tiles, cleared_lookup)
+            print(string.format("[CRUMBLE] Cleared %d collision tiles from room tilemap", collision_cleared))
+        end
+
+        self.cleared_tiles = cleared_tiles
+        self.source_visual_tiles = visual_tiles
+        self.source_visual_layer = visual_layer
+        self.use_room_visual_layer = use_room_visual_layer
+        self.tiles_copied = (tiles_copied > 0) or use_room_visual_layer
+        
+        print(string.format("[CRUMBLE] Visual source ready (platform_tiles=%d expected=%d use_room_visual=%s)",
+            tiles_copied, expected_tiles_x * expected_tiles_y, tostring(use_room_visual_layer)))
+        
+        -- Tilemap renders at GO origin (0,0) - tiles copied to local coords (0-19, 0-1)
+        -- No offset needed since GO is positioned at the platform location
+        
+        -- If the room already has visual art in the configured layer, keep that
+        -- visible until crumble time and leave the platform tilemap hidden.
+        if use_room_visual_layer then
+            pcall(Util.post_component_enabled, platform_tilemap_url, false)
+            print(string.format("[CRUMBLE] Using room visual layer %s for intact platform art", tostring(visual_layer)))
+        else
+            local ok_enable = pcall(Util.post_component_enabled, platform_tilemap_url, true)
+            if ok_enable then
+                print("[CRUMBLE] Platform tilemap component ENABLED")
+            else
+                print("[CRUMBLE] WARNING: Failed to enable platform tilemap")
+            end
+            
+        end
+        
+    else
+        self.cleared_tiles = {}
+        self.source_visual_tiles = {}
+        self.source_visual_layer = nil
+        self.use_room_visual_layer = false
+        self.tiles_copied = false
+        pcall(Util.post_component_enabled, platform_tilemap_url, false)
+        print(string.format(
+            "[CRUMBLE] WARNING: crumble_platform '%s': no tiles found under its rectangle on the 'environment' layer — draw platform tiles there in Tiled or the platform will be invisible.",
+            tostring(PU.resolve_id(self.platform_id) or go.get_id())
+        ))
+        print("[CRUMBLE] WARNING: Room tilemap URL: " .. tostring(tilemap_url))
+        print("[CRUMBLE] WARNING: Platform tilemap URL: " .. tostring(platform_tilemap_url))
+    end
+    
+    return (tiles_copied > 0) or use_room_visual_layer
+end
+
+--- Clear tilemap tiles underneath the crumble platform
+-- Calculates which tiles are covered by the platform bounds and clears them
+clear_tilemap_tiles = function(self)
+    if not RoomManager or not RoomManager.get_tilemap_url then
+        print("[CRUMBLE] WARNING: RoomManager not available, cannot clear tiles")
+        return {}
+    end
+    
+    -- Convert room_id hash to string for lookup
+    local room_id_str = nil
+    if type(self.room_id) == "userdata" then
+        -- room_id is a hash, try to use it directly
+        room_id_str = self.room_id
+    else
+        room_id_str = tostring(self.room_id)
+    end
+    
+    local tilemap_url, tilemap_pos = RoomManager.get_tilemap_url(room_id_str)
+    if not tilemap_url then
+        print("[CRUMBLE] WARNING: Could not find tilemap for room: " .. tostring(room_id_str))
+        return {}
+    end
+    
+    print(string.format("[CRUMBLE] Got tilemap URL: %s at pos=(%.0f,%.0f)", 
+        tostring(tilemap_url), tilemap_pos.x, tilemap_pos.y))
+    self.tilemap_url = tilemap_url
+    self.tilemap_pos = tilemap_pos
+    
+    -- Calculate world bounds of the platform (GO is at bottom-left)
+    local plat_left = self.original_pos.x
+    local plat_right = self.original_pos.x + self.width
+    local plat_bottom = self.original_pos.y
+    local plat_top = self.original_pos.y + self.height
+
+    -- Convert world coords to tilemap coords
+    -- Tilemap tiles are at positions: tilemap_pos + (tile_x * TILE_W, tile_y * TILE_H)
+    local min_tx = math.floor((plat_left - tilemap_pos.x) / TILE_W)
+    local max_tx = math.floor((plat_right - tilemap_pos.x) / TILE_W)
+    local min_ty = math.floor((plat_bottom - tilemap_pos.y) / TILE_H)
+    local max_ty = math.floor((plat_top - tilemap_pos.y) / TILE_H)
+    
+    print(string.format("[CRUMBLE] Clearing tiles from (%d,%d) to (%d,%d) in layer '%s'",
+        min_tx, min_ty, max_tx, max_ty, tostring(resolve_room_collision_layer(tilemap_url))))
+    
+    -- Store cleared tiles for respawn restoration
+    local cleared_tiles = {}
+    local ground_layer = resolve_room_collision_layer(tilemap_url)
+    
+    for ty = min_ty, max_ty do
+        for tx = min_tx, max_tx do
+            -- Get current tile ID before clearing (for restoration)
+            local ok_get, tile_id = pcall(tilemap.get_tile, tilemap_url, ground_layer, tx, ty)
+            if ok_get and tile_id and tile_id > 0 then
+                table.insert(cleared_tiles, { x = tx, y = ty, tile_id = tile_id })
+                -- Clear the tile
+                local ok_set, err = set_tile_if_changed(tilemap_url, ground_layer, tx, ty, 0)
+                if ok_set then
+                    if CRUMBLE_LOG_ENABLED then
+                        raw_print(string.format("[CRUMBLE] Cleared tile at (%d,%d), was tile_id=%d", tx, ty, tile_id))
+                    end
+                else
+                    if CRUMBLE_LOG_ENABLED then
+                        raw_print(string.format("[CRUMBLE] Failed to clear tile at (%d,%d): %s", tx, ty, tostring(err)))
+                    end
+                end
+            end
+        end
+    end
+    
+    return cleared_tiles
+end
+
+do_crumble = function(self)
+    self.is_fallen = true
+    self.is_crumbling = false
+    self.player_on_platform = false
+    
+    print("[CRUMBLE] Platform crumbled! Disabling collision and hiding tiles")
+    
+    -- CRITICAL: Disable the kinematic collision object so player falls through
+    Util.post_component_enabled(self.collision_url, false)
+    print("[CRUMBLE] Collision object DISABLED - player should fall through")
+
+    -- Hide the platform tilemap (tiles were copied here at init)
+    local ok_tilemap = pcall(Util.post_component_enabled, self.platform_tilemap_url, false)
+    if ok_tilemap then
+        print("[CRUMBLE] Platform tilemap HIDDEN")
+    end
+
+    if self.clear_visual_layer_tiles and self.use_room_visual_layer and self.source_visual_tiles and #self.source_visual_tiles > 0 and RoomManager and RoomManager.get_tilemap_url then
+        local room_id_str = type(self.room_id) == "userdata" and self.room_id or tostring(self.room_id)
+        local tilemap_url, _ = RoomManager.get_tilemap_url(room_id_str)
+        if tilemap_url then
+            local hidden_visual_tiles = {}
+            local hidden_lookup = {}
+            local visual_cleared = clear_collected_room_tiles(tilemap_url, self.source_visual_tiles, hidden_visual_tiles, hidden_lookup)
+            self.hidden_visual_tiles = hidden_visual_tiles
+            print(string.format(
+                "[CRUMBLE] Cleared %d visual tiles from room layer %s during crumble",
+                visual_cleared,
+                tostring(self.source_visual_layer)
+            ))
+        end
+    end
+
+    -- Also hide the sprite if present (legacy support). Baked room platforms
+    -- get their art from the Tiled tile layer and have no sprite component, so
+    -- probe before posting -- pcall around msg.post cannot suppress the
+    -- engine's dispatch-time "component could not be found" error.
+    Util.set_component_enabled("#sprite", false)
+    
+    -- Store the GO's own URL for respawn
+    self.my_url = msg.url()
+
+    print("[CRUMBLE] *** PLATFORM FULLY DISABLED - PLAYER WILL FALL ***")
+    
+    -- No teleport / ground bypass: Create Rooms excludes baked tile collision
+    -- under platform rectangles (pinned by the integration tests), so
+    -- disabling this platform's collision is enough for the player to fall.
+    -- The old workaround teleported the player two tiles down and skipped
+    -- ground collision for ~0.5 s, which dropped them through the floor below.
+
+    -- Play crumble sound
+    PU.play_sound(self.sound_crumble, { room_id = self.room_id })
+    
+    -- Spawn dust/debris particles (if FX manager is present)
+    local fx_url = msg.url("main:/fx_manager#fx_manager")
+    if go.exists(fx_url) then
+        pcall(msg.post, fx_url, hash("spawn_effect"), {
+            effect_type = "platform_crumble",
+            position = self.original_pos
+        })
+    end
+    
+    -- Send respawn request to THIS game object if respawn is enabled
+    -- Don't delete the GO - it will respawn itself after the delay
+    if self.respawn_delay > 0 then
+        print(string.format("[CRUMBLE] Scheduling respawn in %.1fs", self.respawn_delay))
+
+        timer.delay(self.respawn_delay, false, function()
+            if not self or not self.my_url then
+                print("[CRUMBLE] ERROR: Cannot respawn - self or my_url is nil")
+                return
+            end
+            
+            -- First, restore the cleared tilemap tiles in the room
+            if RoomManager and RoomManager.get_tilemap_url then
+                local room_id_str = type(self.room_id) == "userdata" and self.room_id or tostring(self.room_id)
+                local tilemap_url, _ = RoomManager.get_tilemap_url(room_id_str)
+                if tilemap_url then
+                    if self.cleared_tiles and #self.cleared_tiles > 0 then
+                        for _, tile_info in ipairs(self.cleared_tiles) do
+                            local ok, err = set_tile_if_changed(
+                                tilemap_url,
+                                tile_info.layer,
+                                tile_info.x,
+                                tile_info.y,
+                                tile_info.tile_id
+                            )
+                            if ok then
+                                print(string.format("[CRUMBLE] Restored room tile at (%d,%d) to tile_id=%d", 
+                                    tile_info.x, tile_info.y, tile_info.tile_id))
+                            else
+                                print(string.format(
+                                    "[CRUMBLE] WARNING: Failed to restore tile at (%d,%d) on layer %s: %s",
+                                    tile_info.x,
+                                    tile_info.y,
+                                    tostring(tile_info.layer),
+                                    tostring(err)
+                                ))
+                            end
+                        end
+                        print(string.format("[CRUMBLE] Restored %d tiles to room tilemap", #self.cleared_tiles))
+                    end
+
+                    if self.hidden_visual_tiles and #self.hidden_visual_tiles > 0 then
+                        for _, tile_info in ipairs(self.hidden_visual_tiles) do
+                            local ok, err = set_tile_if_changed(
+                                tilemap_url,
+                                tile_info.layer,
+                                tile_info.x,
+                                tile_info.y,
+                                tile_info.tile_id
+                            )
+                            if not ok then
+                                print(string.format(
+                                    "[CRUMBLE] WARNING: Failed to restore visual tile at (%d,%d) on layer %s: %s",
+                                    tile_info.x,
+                                    tile_info.y,
+                                    tostring(tile_info.layer),
+                                    tostring(err)
+                                ))
+                            end
+                        end
+                        print(string.format("[CRUMBLE] Restored %d visual tiles to room tilemap", #self.hidden_visual_tiles))
+                        self.hidden_visual_tiles = nil
+                    end
+                end
+            end
+            self.tiles_copied = false
+            
+            -- Reset platform state
+            self.is_fallen = false
+            self.is_crumbling = false
+            self.player_on_platform = false
+            self.shake_time = 0
+            
+            -- Reset position (in case it was shaking)
+            go.set_position(self.original_pos)
+            
+            -- Re-enable collision object
+            Util.post_component_enabled(self.collision_url, true)
+            
+            -- Copy tiles from room again (they were just restored)
+            timer.delay(0.1, false, function()
+                if not self then return end
+                local success = copy_tiles_from_room(self)
+                if success then
+                    print("[CRUMBLE] Platform RESPAWNED with tiles!")
+                    
+                    if not self.use_room_visual_layer then
+                        -- Re-enable the platform tilemap only when it owns the visuals.
+                        pcall(Util.post_component_enabled, self.platform_tilemap_url, true)
+                    end
+                    
+                    -- Play respawn sound
+                    PU.play_sound(self.sound_respawn, { room_id = self.room_id })
+                else
+                    print("[CRUMBLE] WARNING: Platform respawned but no tiles copied")
+                end
+            end)
+        end)
+    else
+        -- No respawn - mark for deletion
+        self.pending_delete = true
+        print("[CRUMBLE] Platform crumbled, marked for deletion (no respawn)")
+    end
+end
+
+start_crumble = function(self)
+    if self.is_crumbling or self.is_fallen then
+        print(string.format("[CRUMBLE] start_crumble SKIPPED - already crumbling=%s fallen=%s", 
+            tostring(self.is_crumbling), tostring(self.is_fallen)))
+        return
+    end
+    
+    print(string.format("[CRUMBLE] ===== STARTING CRUMBLE SEQUENCE ===== delay=%.2fs", self.crumble_delay))
+    self.is_crumbling = true
+    self.shake_time = 0
+    
+    -- Play warning sound
+    PU.play_sound(self.sound_warning, { room_id = self.room_id })
+    
+    timer.delay(self.crumble_delay, false, function()
+        print("[CRUMBLE] ===== CRUMBLE DELAY COMPLETE - EXECUTING do_crumble() =====")
+        do_crumble(self)
+    end)
+end
+
+-- Check if player is standing on this platform using manual bounds check
+-- NOTE: platform_pos is GO position at bottom-left
+check_player_overlap = function(self, player_pos, platform_pos)
+    if self.is_fallen then return false end
+
+    -- Player hitbox is roughly 30 wide, feet are at player_pos.y - ~50
+    local player_feet_y = player_pos.y - 50
+    local player_half_width = 15
+
+    -- Check horizontal overlap (GO at bottom-left)
+    local player_left = player_pos.x - player_half_width
+    local player_right = player_pos.x + player_half_width
+    local platform_left = platform_pos.x
+    local platform_right = platform_pos.x + self.width
+
+    local h_overlap = player_right > platform_left and player_left < platform_right
+
+    -- Check if player feet are on top of platform (within a small range above platform top)
+    local platform_top = platform_pos.y + self.height
+    local v_on_top = player_feet_y >= platform_top - 10 and player_feet_y <= platform_top + 30
+
+    return h_overlap and v_on_top
+end
+
+function init(self)
+    -- Use world positions so comparisons remain valid across streamed collections
+    self.original_pos = go.get_world_position()
+    self.is_crumbling = false
+    self.is_fallen = false
+    self.shake_time = 0
+    self.player_on_platform = false
+    self.player_url = nil
+    self.debug_timer = 0
+    self.tiles_copied = false  -- Flag to prevent copying tiles multiple times
+    
+    -- Calculate bounds for manual collision checking
+    -- Platform position is bottom-left (not center)
+    self.half_width = self.width / 2
+    self.half_height = self.height / 2
+
+    -- NOTE: Collision shapes are now generated at build time by hooks.editor_script
+    -- so we don't need to resize them at runtime
+
+    -- Debug: platform bounds (GO at bottom-left)
+    local platform_left = self.original_pos.x
+    local platform_right = self.original_pos.x + self.width
+    local platform_top = self.original_pos.y + self.height
+    local platform_bottom = self.original_pos.y
+    
+    print(string.format("[CRUMBLE] ============ PLATFORM INIT ============"))
+    print(string.format("[CRUMBLE] id=%s room=%s pos=(%.0f,%.0f) size=%dx%d", 
+        tostring(self.platform_id), tostring(self.room_id), 
+        self.original_pos.x, self.original_pos.y, 
+        self.width, self.height))
+    
+    -- Copy tiles from room tilemap to platform tilemap, then clear from room
+    -- This makes the platform visually display its tiles while player uses #co for collision
+    -- We delay to ensure the room tilemap is fully loaded and ready
+    timer.delay(0.3, false, function()
+        if not self then
+            print("[CRUMBLE] ERROR: Self is nil in timer callback")
+            return
+        end
+        
+        local success = copy_tiles_from_room(self)
+        if success then
+            print("[CRUMBLE] SUCCESS: Tiles copied to platform tilemap - player will use #co collision")
+        else
+            print("[CRUMBLE] ERROR: No tiles copied! Platform will be invisible.")
+            print("[CRUMBLE] ERROR: Check that room tilemap has tiles at platform location")
+        end
+    end)
+    
+    print(string.format("[CRUMBLE] =========================================="))
+end
+
+function update(self, dt)
+    dt = FrameClock.snap(dt)
+    -- If we have a pending delete, delete now (only if no respawn)
+    if self.pending_delete and self.respawn_delay <= 0 then
+        print("[CRUMBLE] Deleting game object after crumble (no respawn)")
+        go.delete()
+        return
+    end
+    
+    self.debug_timer = (self.debug_timer or 0) + dt
+    self.proximity_timer = (self.proximity_timer or 0) + dt
+    self.update_count = (self.update_count or 0) + 1
+
+    -- Get player world position from global (set by player script each frame)
+    -- This is more reliable than go.get_world_position() for factory-spawned collections
+    local player_pos = rawget(_G, "PLAYER_WORLD_POS")
+    local platform_pos = go.get_world_position()
+    
+    -- Calculate overlap info every frame for detailed debug
+    local on_platform = false
+    local h_overlap = false
+    local v_on_top = false
+    local player_feet_y = 0
+    local platform_top = 0
+    
+    if player_pos and not self.is_fallen then
+        player_feet_y = player_pos.y - 50
+        -- GO at bottom-left
+        platform_top = platform_pos.y + self.height
+
+        local player_left = player_pos.x - 15
+        local player_right = player_pos.x + 15
+        local platform_left = platform_pos.x
+        local platform_right = platform_pos.x + self.width
+
+        h_overlap = player_right > platform_left and player_left < platform_right
+        v_on_top = player_feet_y >= platform_top - 10 and player_feet_y <= platform_top + 30
+        on_platform = h_overlap and v_on_top
+    end
+    
+    -- Debug every 0.3 seconds - show overlap status
+    if self.debug_timer >= 0.3 and player_pos then
+        local dx = math.abs(player_pos.x - platform_pos.x)
+        local dy = math.abs(player_pos.y - platform_pos.y)
+        
+        -- Only print if player is somewhat near (within 2000 pixels)
+        if dx < 2000 and dy < 2000 then
+            print(string.format("[CRUMBLE] %s: plat=(%.0f,%.0f) player=(%.0f,%.0f) feet=%.0f top=%.0f | H:%s V:%s ON:%s crumbling:%s fallen:%s",
+                tostring(self.platform_id), 
+                platform_pos.x, platform_pos.y, 
+                player_pos.x, player_pos.y, 
+                player_feet_y, platform_top,
+                tostring(h_overlap), tostring(v_on_top), tostring(on_platform),
+                tostring(self.is_crumbling), tostring(self.is_fallen)))
+        end
+        
+        self.debug_timer = 0
+    end
+
+    -- Manual player detection since go.set_scale() doesn't scale collision shapes
+    if not self.is_fallen and not self.is_crumbling and player_pos then
+        if on_platform and not self.player_on_platform then
+            self.player_on_platform = true
+            print("[CRUMBLE] *** PLAYER STEPPED ON PLATFORM - STARTING CRUMBLE! ***")
+            start_crumble(self)
+        elseif not on_platform then
+            self.player_on_platform = false
+        end
+    end
+    
+    if self.is_crumbling and self.shake_before_crumble then
+        self.shake_time = self.shake_time + dt
+        local offset_x = math.sin(self.shake_time * SHAKE_FREQUENCY) * SHAKE_AMPLITUDE
+        local pos = vmath.vector3(self.original_pos.x + offset_x, self.original_pos.y, self.original_pos.z)
+        go.set_position(pos)
+    end
+end
+
+function on_message(self, message_id, message, sender)
+    -- Still handle trigger/collision responses for small platforms that fit in default collision
+    if message_id == hash("trigger_response") then
+        print("[CRUMBLE] Trigger response: enter=" .. tostring(message.enter) .. " from " .. tostring(sender))
+        if message.enter and not self.is_crumbling and not self.is_fallen then
+            self.player_on_platform = true
+            start_crumble(self)
+        elseif not message.enter then
+            self.player_on_platform = false
+        end
+    elseif message_id == hash("collision_response") then
+        print("[CRUMBLE] Collision response: group=" .. tostring(message.group) .. " from " .. tostring(sender))
+        if message.group == hash("player") and not self.is_crumbling and not self.is_fallen then
+            start_crumble(self)
+        end
+    end
+end

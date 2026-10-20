@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<template>
+ <object name="Gate" type="gate" width="128" height="128">
+  <properties>
+   <property name="gate_type" propertytype="gates" value="key_gate"/>
+   <property name="gate_id" type="string" value=""/>
+   <property name="requirements" type="class" propertytype="gate_requirements">
+    <properties>
+     <property name="required_key" propertytype="keys" value="normal"/>
+     <property name="required_item" propertytype="collectibles" value="none"/>
+     <property name="required_ability" propertytype="optional_abilities" value="none"/>
+     <property name="required_action" propertytype="actions" value="none"/>
+     <property name="required_energy" type="int" value="-1"/>
+    </properties>
+   </property>
+   <property name="state_and_persistence" type="class" propertytype="gate_state_and_persistence">
+    <properties>
+     <property name="starts_open" type="bool" value="false"/>
+     <property name="stays_open" type="bool" value="true"/>
+     <property name="persist_unlock" type="bool" value="true"/>
+    </properties>
+   </property>
+   <property name="messaging" type="class" propertytype="gate_messaging">
+    <properties>
+     <property name="open_message" type="string" value=""/>
+    </properties>
+   </property>
+   <property name="art_item" type="string" value=""/>
+   <property name="art_feedback" type="class" propertytype="gate_art_feedback">
+    <properties>
+     <property name="consume_effect" type="string" propertytype="particle_effects" value="none"/>
+     <property name="interact_effect" type="string" propertytype="particle_effects" value="none"/>
+     <property name="effect_offset_x" type="float" value="0"/>
+     <property name="effect_offset_y" type="float" value="0"/>
+     <property name="effect_scale" type="float" value="1"/>
+     <property name="effect_cooldown" type="float" value="0"/>
+    </properties>
+   </property>
+   <property name="mvtk_template_version" type="string" value="2.8.0"/>
+  </properties>
+ </object>
+</template>

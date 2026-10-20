@@ -1,0 +1,211 @@
+-- mvtk/core/fast_travel_station.script
+-- Interactive fast travel station that can be unlocked by the player
+
+local FastTravel = require "mvtk.core.fast_travel"
+local Util = require "mvtk.core.util"
+local C = require "mvtk.core.constants"
+local SafeRequire = require "mvtk.core.safe_require"
+local Debug = require "developer.config.debug_config"
+
+go.property("station_id", "")
+go.property("station_name", "Fast Travel Point")
+go.property("station_description", "")
+go.property("room_id", "")
+go.property("auto_unlock", false)
+go.property("locked_color", vmath.vector4(0.5, 0.5, 0.5, 1.0))  -- Gray when locked
+go.property("unlocked_color", vmath.vector4(0.2, 0.5, 1.0, 1.0))  -- Blue when unlocked
+go.property("active_color", vmath.vector4(0.3, 0.8, 1.0, 1.0))  -- Bright blue when player nearby
+
+local MSG_COLLISION = hash("collision_response")
+local MSG_TRIGGER = hash("trigger_response")
+local UP_INPUTS = {
+  [hash("key_up")] = true,
+  [hash("key_w")] = true,
+  [hash("gamepad_lpad_up")] = true,
+  [hash("gamepad_lstick_up")] = true,
+}
+
+local function hash_prop_to_string(value, fallback)
+  return Util.hash_text(value, fallback or "")
+end
+
+local function ft_log(...)
+  if Debug.gameplay.fast_travel or Debug.global.enable then
+    print(...)
+  end
+end
+
+-----------------------------------------------------------
+-- Local Helper Functions
+-----------------------------------------------------------
+
+local function update_visual_state(self)
+  local sprite_url = msg.url("#sprite")
+  if not pcall(go.get, sprite_url, "tint") then
+    return  -- No sprite component
+  end
+
+  local target_color
+  if self.is_unlocked then
+    target_color = self.player_nearby and self.active_color or self.unlocked_color
+  else
+    target_color = self.locked_color
+  end
+
+  go.set(sprite_url, "tint", target_color)
+
+  -- Optionally animate the unlocked state
+  if self.is_unlocked and self.player_nearby then
+    -- Pulse effect when player nearby
+    local scale = 1.0 + math.sin(socket.gettime() * 4) * 0.05
+    go.set_scale(vmath.vector3(scale, scale, 1))
+  else
+    go.set_scale(vmath.vector3(1, 1, 1))
+  end
+end
+
+local function play_unlock_effect(self)
+  -- Visual feedback
+  go.animate("#sprite", "tint", go.PLAYBACK_ONCE_FORWARD, self.unlocked_color, go.EASING_INOUTQUAD, 0.5)
+
+  -- Scale pulse
+  local current_scale = go.get_scale()
+  go.animate(".", "scale", go.PLAYBACK_ONCE_FORWARD, current_scale * 1.5, go.EASING_OUTQUAD, 0.3, 0, function()
+    go.animate(".", "scale", go.PLAYBACK_ONCE_FORWARD, current_scale, go.EASING_INQUAD, 0.2)
+  end)
+
+  -- Play sound effect (if audio system available)
+  local ok_audio, Audio = SafeRequire("mvtk.audio.audio", "mvtk.core.fast_travel_station")
+  if ok_audio and Audio and Audio.sfx then
+    pcall(Audio.sfx, "unlock")  -- Assuming an "unlock" sound exists
+  end
+
+  -- Spawn particle effect
+  local pos = go.get_position()
+  local fx_url = msg.url("main:/fx_manager")
+  if go.exists(fx_url) then
+    msg.post(fx_url, hash("play_fx"), {
+      fx_type = "unlock",
+      position = pos
+    })
+  end
+end
+
+local function try_unlock(self)
+  if self.is_unlocked then
+    ft_log(string.format("[FAST_TRAVEL_STATION] %s already unlocked", self.station_name_str))
+    return false
+  end
+
+  if self.activation_cooldown > 0 then
+    return false
+  end
+
+  -- Unlock the station
+  local success = FastTravel.unlock(self.station_id_str)
+  if success then
+    self.is_unlocked = true
+    self.activation_cooldown = 1.0  -- Prevent rapid re-activation
+
+    ft_log(string.format("[FAST_TRAVEL_STATION] Unlocked: %s", self.station_name_str))
+
+    -- Play activation effect
+    play_unlock_effect(self)
+
+    return true
+  end
+
+  return false
+end
+
+-----------------------------------------------------------
+-- Lifecycle Functions
+-----------------------------------------------------------
+
+function init(self)
+  self.station_id_str = hash_prop_to_string(self.station_id, "")
+  if self.station_id_str == "" then
+    -- Generate ID from position if not set
+    local pos = go.get_position()
+    self.station_id_str = string.format("ft_%.0f_%.0f", pos.x, pos.y)
+  end
+
+  self.room_id_str = hash_prop_to_string(self.room_id, "unknown")
+  self.station_name_str = hash_prop_to_string(self.station_name, "Fast Travel Point")
+  self.station_description_str = hash_prop_to_string(self.station_description, "")
+
+  self.player_nearby = false
+  self.is_unlocked = false
+  self.activation_cooldown = 0
+
+  -- Register this station with the fast travel system
+  local pos = go.get_position()
+  FastTravel.register(self.station_id_str, {
+    pos = pos,
+    room_id = self.room_id_str,
+    name = self.station_name_str,
+    description = self.station_description_str,
+    auto_unlock = self.auto_unlock,
+  })
+
+  -- Check if already unlocked
+  self.is_unlocked = FastTravel.is_unlocked(self.station_id_str)
+
+  -- Set initial visual state
+  update_visual_state(self)
+
+  ft_log(string.format("[FAST_TRAVEL_STATION] Initialized: %s (%s) unlocked=%s",
+    self.station_name_str, self.station_id_str, tostring(self.is_unlocked)))
+end
+
+function final(self)
+  -- Station persists in FastTravel module even after object is deleted
+end
+
+function update(self, dt)
+  if self.activation_cooldown > 0 then
+    self.activation_cooldown = self.activation_cooldown - dt
+  end
+
+  -- Update visual based on player proximity
+  update_visual_state(self)
+end
+
+function on_message(self, message_id, message, sender)
+  if message_id == MSG_COLLISION or message_id == MSG_TRIGGER then
+    -- Check if it's the player
+    if message.group == C.GROUPS.PLAYER or message.other_group == C.GROUPS.PLAYER then
+      if message_id == MSG_TRIGGER then
+        if message.enter then
+          self.player_nearby = true
+          ft_log(string.format("[FAST_TRAVEL_STATION] Player entered: %s", self.station_name_str))
+        else
+          self.player_nearby = false
+          ft_log(string.format("[FAST_TRAVEL_STATION] Player left: %s", self.station_name_str))
+        end
+      else
+        -- Collision response - consider nearby if close enough
+        self.player_nearby = true
+      end
+    end
+  end
+end
+
+function on_input(self, action_id, action)
+  if not self.player_nearby then
+    return false
+  end
+
+  if UP_INPUTS[action_id] and action.pressed then
+    if not self.is_unlocked then
+      try_unlock(self)
+      return true
+    else
+      ft_log(string.format("[FAST_TRAVEL_STATION] %s already unlocked, use map to travel", self.station_name_str))
+      -- Could show UI message here
+      return true
+    end
+  end
+
+  return false
+end

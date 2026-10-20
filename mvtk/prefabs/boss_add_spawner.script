@@ -1,0 +1,385 @@
+-- mvtk/prefabs/boss_add_spawner.script
+-- Spawns enemy adds during boss fights based on phase rules.
+
+local PU = require "mvtk.prefabs.prefab_utils"
+local EnemyManager = require "mvtk.enemies.enemy_manager"
+local BossManagerOk, BossManager = pcall(require, "mvtk.bosses.boss_manager")
+local BossArenaOk, BossArena = pcall(require, "mvtk.bosses.boss_arena")
+local DebugOk, Debug = pcall(require, "developer.config.debug_config")
+local TimeOk, Time = pcall(require, "mvtk.core.time")
+
+local function debug_enabled()
+    if DebugOk and Debug then
+        if Debug.global and Debug.global.enable then return true end
+        if Debug.enemies and Debug.enemies.spawner then return true end
+        if Debug.bosses and Debug.bosses.manager then return true end
+    end
+    return false
+end
+
+local function now()
+    if TimeOk and Time and Time.gettime then
+        return Time.gettime()
+    end
+    return os.clock()
+end
+
+local function dlog(self, message)
+    if not debug_enabled() then return end
+    local id = self.spawner_id_str or tostring(go.get_id())
+    print(string.format("[BOSS_ADD_SPAWNER][%s] %s", tostring(id), tostring(message)))
+end
+
+local function dlog_throttle(self, key, interval, message)
+    if not debug_enabled() then return end
+    self._debug_throttle = self._debug_throttle or {}
+    local t = now()
+    local next_t = self._debug_throttle[key] or 0
+    if t >= next_t then
+        self._debug_throttle[key] = t + (interval or 1.0)
+        dlog(self, message)
+    end
+end
+
+local function count_types(types)
+    if type(types) ~= "table" then return 0 end
+    local c = 0
+    for _ in pairs(types) do c = c + 1 end
+    return c
+end
+
+local function ensure_enemy_type(self, enemy_type)
+    if not EnemyManager or not EnemyManager.get_enemy_type then
+        return false
+    end
+
+    if EnemyManager.get_enemy_type(enemy_type) then
+        return true
+    end
+
+    if not self._enemy_init_attempted and EnemyManager.init then
+        self._enemy_init_attempted = true
+        dlog(self, "EnemyManager.init() retry because enemy type missing")
+        EnemyManager.init()
+    end
+
+    if EnemyManager.get_enemy_type(enemy_type) then
+        return true
+    end
+
+    local all = EnemyManager.get_all_enemy_types and EnemyManager.get_all_enemy_types() or nil
+    dlog_throttle(self, "unknown_enemy_type", 2.0, string.format(
+        "Unknown enemy type '%s' (loaded types=%d). Check developer/config/enemy_types.lua is loading.",
+        tostring(enemy_type), count_types(all)
+    ))
+    return false
+end
+
+local function to_bool(value, default)
+    if value == nil then return default end
+    if type(value) == "boolean" then return value end
+    if type(value) == "string" then
+        local v = value:lower()
+        if v == "true" or v == "1" or v == "yes" then return true end
+        if v == "false" or v == "0" or v == "no" then return false end
+    end
+    return default
+end
+
+
+local function parse_phase_set(value)
+    local set = {}
+    if type(value) == "string" then
+        for phase in string.gmatch(value, "(%d+)") do
+            set[tonumber(phase)] = true
+        end
+    end
+    return set
+end
+
+local function random_offset(radius)
+    local r = math.max(0, radius or 0)
+    if r <= 0 then return vmath.vector3(0, 0, 0) end
+    local angle = math.random() * math.pi * 2
+    local dist = math.random() * r
+    return vmath.vector3(math.cos(angle) * dist, math.sin(angle) * dist, 0)
+end
+
+go.property("spawner_id", "")
+go.property("boss_id", "")
+go.property("boss_type", "")
+go.property("arena_id", "")
+go.property("enemy_type", "slime")
+
+go.property("spawn_interval", 4.0)
+go.property("spawn_count", 1)
+go.property("spawn_radius", 120.0)
+go.property("max_alive", 3)
+go.property("max_total", 0)
+go.property("behavior", "")
+
+go.property("active_phases", "")
+go.property("start_delay", 0.0)
+go.property("start_active", true)
+
+go.property("health_mult", 1.0)
+go.property("damage_mult", 1.0)
+go.property("speed_mult", 1.0)
+go.property("room_id", "")
+
+local function resolve_boss_id(self)
+    if not (BossManagerOk and BossManager) then return nil end
+    if BossManager.find_boss_id then
+        return BossManager.find_boss_id({
+            boss_id = self.boss_id_str,
+            boss_tag = self.boss_id_str,
+            boss_type = self.boss_type_str,
+        })
+    end
+    if self.boss_id_str ~= "" and BossManager.get_boss and BossManager.get_boss(self.boss_id_str) then
+        return self.boss_id_str
+    end
+    return nil
+end
+
+local function resolve_phase(self)
+    if BossManagerOk and BossManager and (self.boss_id_str ~= "" or self.boss_type_str ~= "") then
+        local boss_id = resolve_boss_id(self)
+        if boss_id then
+            local boss = BossManager.get_boss and BossManager.get_boss(boss_id)
+            if boss and not boss.defeated then
+                self._boss_id = boss_id
+                return BossManager.get_boss_phase and BossManager.get_boss_phase(boss_id) or 1, true, "boss_active"
+            end
+            return 0, false, "boss_defeated"
+        end
+        return 0, false, "boss_not_found"
+    end
+
+    if BossArenaOk and BossArena and BossArena.get_active_arena then
+        local active = BossArena.get_active_arena()
+        if active and active.id then
+            if self.arena_id_str == "" or active.id == self.arena_id_str then
+                local phase = BossArena.get_current_phase and BossArena.get_current_phase() or 0
+                local locked = BossArena.is_locked and BossArena.is_locked() or false
+                return phase, locked, locked and "arena_locked" or "arena_unlocked"
+            end
+            return 0, false, "arena_mismatch"
+        end
+        return 0, false, "no_active_arena"
+    end
+
+    return 0, false, "no_boss_or_arena"
+end
+
+local function phase_allowed(self, phase)
+    if not next(self.active_phase_set) then
+        return phase > 0
+    end
+    return self.active_phase_set[phase] or false
+end
+
+local function prune_active(self)
+    local alive = {}
+    for _, enemy_id in ipairs(self.active_spawn_ids or {}) do
+        local enemy = EnemyManager.get_enemy and EnemyManager.get_enemy(enemy_id)
+        if enemy and enemy.alive then
+            alive[#alive + 1] = enemy_id
+        end
+    end
+    self.active_spawn_ids = alive
+    return #alive
+end
+
+local function spawn_enemy_instance(self, enemy_type, pos)
+    if not ensure_enemy_type(self, enemy_type) then
+        return nil
+    end
+    local overrides = {
+        room_id = self.room_id_str ~= "" and self.room_id_str or nil,
+        health_mult = self.health_mult,
+        damage_mult = self.damage_mult,
+        speed_mult = self.speed_mult,
+        health_multiplier = self.health_mult,
+        damage_multiplier = self.damage_mult,
+        contact_damage_multiplier = self.damage_mult,
+    }
+
+    local spawn_id = EnemyManager.spawn_enemy(enemy_type, pos, overrides)
+    if not spawn_id then
+        dlog_throttle(self, "spawn_enemy_fail", 2.0, string.format("EnemyManager.spawn_enemy failed (type=%s)", tostring(enemy_type)))
+        return nil
+    end
+
+    local factory_url = msg.url("main:/room_manager#enemy_factory")
+    local ok, result = pcall(collectionfactory.create, factory_url, pos, nil, {}, 1)
+    if not ok then
+        EnemyManager.unregister_enemy_instance(spawn_id)
+        dlog_throttle(self, "factory_fail", 2.0, string.format("enemy_factory create failed: %s", tostring(result)))
+        return nil
+    end
+
+    local enemy_url = nil
+    for _, id in pairs(result) do
+        enemy_url = id
+        break
+    end
+    if not enemy_url then
+        EnemyManager.unregister_enemy_instance(spawn_id)
+        dlog_throttle(self, "factory_empty", 2.0, "enemy_factory returned no instances")
+        return nil
+    end
+
+    EnemyManager.register_enemy_instance(spawn_id, enemy_url)
+    msg.post(enemy_url, hash("apply_tiled_overrides"), {
+        spawn_id = spawn_id,
+        enemy_type = enemy_type,
+        room_id = overrides.room_id,
+        health_mult = overrides.health_mult,
+        damage_mult = overrides.damage_mult,
+        speed_mult = overrides.speed_mult,
+        behavior = (self.behavior_str ~= "" and self.behavior_str or nil),
+    })
+
+    return spawn_id
+end
+
+local function spawn_adds(self, phase)
+    local enemy_type = self.enemy_type_str or "slime"
+    local max_total = tonumber(self.max_total) or 0
+    if max_total > 0 and (self.spawned_total or 0) >= max_total then
+        dlog_throttle(self, "max_total", 2.0, string.format("Spawn blocked: max_total reached (%d)", max_total))
+        return
+    end
+
+    local active = prune_active(self)
+    local max_alive = tonumber(self.max_alive) or 0
+    if max_alive > 0 and active >= max_alive then
+        dlog_throttle(self, "max_alive", 2.0, string.format("Spawn blocked: max_alive reached (%d)", max_alive))
+        return
+    end
+
+    local count = math.max(1, tonumber(self.spawn_count) or 1)
+    local available = count
+    if max_alive > 0 then
+        available = math.min(available, max_alive - active)
+    end
+    if max_total > 0 then
+        available = math.min(available, max_total - (self.spawned_total or 0))
+    end
+    if available <= 0 then
+        dlog_throttle(self, "no_available", 2.0, "Spawn blocked: no available slots")
+        return
+    end
+
+    local base_pos = (go.get_world_position and go.get_world_position()) or go.get_position()
+    local spawned = 0
+    for _ = 1, available do
+        local pos = base_pos + random_offset(self.spawn_radius)
+        local spawned_id = spawn_enemy_instance(self, enemy_type, pos)
+        if spawned_id then
+            self.active_spawn_ids[#self.active_spawn_ids + 1] = spawned_id
+            self.spawned_total = (self.spawned_total or 0) + 1
+            spawned = spawned + 1
+        end
+    end
+    if spawned > 0 then
+        dlog(self, string.format("Spawned %d '%s' (phase=%s total=%d)", spawned, tostring(enemy_type), tostring(phase or "?"), tonumber(self.spawned_total) or 0))
+    else
+        dlog_throttle(self, "spawn_zero", 2.0, string.format("Spawn wave produced 0 adds (type=%s)", tostring(enemy_type)))
+    end
+end
+
+local function apply_props(self, props)
+    props = props or {}
+    if props.spawner_id ~= nil then self.spawner_id_str = tostring(props.spawner_id) end
+    if props.boss_id ~= nil then self.boss_id_str = tostring(props.boss_id) end
+    if props.boss_type ~= nil then self.boss_type_str = tostring(props.boss_type) end
+    if props.arena_id ~= nil then self.arena_id_str = tostring(props.arena_id) end
+    if props.enemy_type ~= nil then self.enemy_type_str = tostring(props.enemy_type) end
+    if props.spawn_interval ~= nil then self.spawn_interval = tonumber(props.spawn_interval) or self.spawn_interval end
+    if props.spawn_count ~= nil then self.spawn_count = tonumber(props.spawn_count) or self.spawn_count end
+    if props.spawn_radius ~= nil then self.spawn_radius = tonumber(props.spawn_radius) or self.spawn_radius end
+    if props.max_alive ~= nil then self.max_alive = tonumber(props.max_alive) or self.max_alive end
+    if props.max_total ~= nil then self.max_total = tonumber(props.max_total) or self.max_total end
+    if props.behavior ~= nil then self.behavior_str = tostring(props.behavior) end
+    if props.active_phases ~= nil then self.active_phases_str = tostring(props.active_phases) end
+    if props.start_delay ~= nil then self.start_delay = tonumber(props.start_delay) or self.start_delay end
+    if props.start_active ~= nil then self.start_active = to_bool(props.start_active, self.start_active) end
+    if props.health_mult ~= nil then self.health_mult = tonumber(props.health_mult) or self.health_mult end
+    if props.damage_mult ~= nil then self.damage_mult = tonumber(props.damage_mult) or self.damage_mult end
+    if props.speed_mult ~= nil then self.speed_mult = tonumber(props.speed_mult) or self.speed_mult end
+    if props.room_id ~= nil then self.room_id_str = tostring(props.room_id) end
+    self.active_phase_set = parse_phase_set(self.active_phases_str or "")
+end
+
+function init(self)
+    self.spawner_id_str = PU.normalize_hash_string(self.spawner_id) or tostring(go.get_id())
+    self.boss_id_str = PU.normalize_hash_string(self.boss_id) or ""
+    self.boss_type_str = PU.normalize_hash_string(self.boss_type) or ""
+    self.arena_id_str = PU.normalize_hash_string(self.arena_id) or ""
+    self.enemy_type_str = PU.normalize_hash_string(self.enemy_type) or "slime"
+    self.active_phases_str = PU.normalize_hash_string(self.active_phases) or ""
+    self.behavior_str = PU.normalize_hash_string(self.behavior) or ""
+    self.room_id_str = PU.normalize_hash_string(self.room_id) or ""
+
+    self.active_spawn_ids = {}
+    self.spawned_total = 0
+    self.active_phase_set = parse_phase_set(self.active_phases_str)
+
+    self.timer = tonumber(self.start_delay) or 0
+    if self.timer <= 0 then
+        self.timer = tonumber(self.spawn_interval) or 4.0
+    end
+
+    if debug_enabled() then
+        dlog(self, string.format("Init boss_id=%s boss_type=%s arena_id=%s enemy_type=%s behavior=%s spawn_interval=%.2f spawn_count=%d active_phases=%s start_active=%s",
+            tostring(self.boss_id_str), tostring(self.boss_type_str), tostring(self.arena_id_str),
+            tostring(self.enemy_type_str), tostring(self.behavior_str), tonumber(self.spawn_interval) or 0,
+            tonumber(self.spawn_count) or 0, tostring(self.active_phases_str),
+            tostring(self.start_active)))
+    end
+end
+
+function update(self, dt)
+    if self.start_active ~= true then
+        if not self._debug_disabled_logged then
+            dlog(self, "Spawner inactive: start_active=false")
+            self._debug_disabled_logged = true
+        end
+        return
+    end
+
+    local phase, active, reason = resolve_phase(self)
+    self._debug_state = self._debug_state or {}
+    if reason ~= self._debug_state.reason or active ~= self._debug_state.active or phase ~= self._debug_state.phase then
+        dlog(self, string.format("State: phase=%s active=%s reason=%s", tostring(phase), tostring(active), tostring(reason)))
+        self._debug_state.reason = reason
+        self._debug_state.active = active
+        self._debug_state.phase = phase
+    end
+    if not active then
+        return
+    end
+
+    if not phase_allowed(self, phase) then
+        if self._debug_state.block_phase ~= phase then
+            dlog(self, string.format("Phase %s not allowed (active_phases=%s)", tostring(phase), tostring(self.active_phases_str)))
+            self._debug_state.block_phase = phase
+        end
+        return
+    end
+
+    self.timer = (self.timer or 0) - dt
+    if self.timer <= 0 then
+        spawn_adds(self, phase)
+        self.timer = tonumber(self.spawn_interval) or 4.0
+    end
+end
+
+function on_message(self, message_id, message, sender)
+    if message_id == hash("apply_tiled_props") and message and message.properties then
+        apply_props(self, message.properties)
+        return
+    end
+end

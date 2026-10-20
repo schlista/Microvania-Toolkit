@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<template>
+ <object name="Pushable Block" type="pushable_block" width="128" height="128">
+  <properties>
+   <property name="block_id" type="string" value=""/>
+   <property name="motion" type="class" propertytype="pushable_block_motion">
+    <properties>
+     <property name="mass" type="float" value="1"/>
+     <property name="gravity_scale" type="float" value="1"/>
+     <property name="reset_on_room_load" type="bool" value="false"/>
+     <property name="move_embedded_tiles" type="bool" value="true"/>
+    </properties>
+   </property>
+   <property name="mvtk_template_version" type="string" value="2.7.0"/>
+  </properties>
+ </object>
+</template>

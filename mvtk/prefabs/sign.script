@@ -1,0 +1,132 @@
+-- mvtk/prefabs/sign.script
+-- Readable sign that shows text via toast, dialogue, or tutorial popup.
+
+local Flags = require "mvtk.core.flags"
+local PU = require "mvtk.prefabs.prefab_utils"
+local TiledProxy = require "mvtk.prefabs.tiled_proxy_util"
+
+local DEFAULT_LABEL = "Read"
+local DEFAULT_MODE = "toast"
+
+go.property("room_id", "") -- Room ownership emitted by Create Rooms.
+go.property("object_id", 0) -- Tiled object identity; preserves text without reversing hashes.
+go.property("sign_id", "")
+go.property("label", "")
+go.property("range", 96)
+go.property("text", "")
+go.property("title", "")
+go.property("display_mode", "")
+go.property("dialogue_id", "")
+go.property("duration", 2.5)
+go.property("trigger_once", false)
+go.property("set_flag", "")
+go.property("requires_flag", "")
+go.property("sound_id", "")
+
+
+local function update_label(self)
+    local label = self.label_str or DEFAULT_LABEL
+    PU.update_interaction_label(label)
+end
+
+local function apply_props(self, props)
+    props = props or {}
+    if props.text ~= nil then self.text_str = tostring(props.text) end
+    if props.title ~= nil then self.title_str = tostring(props.title) end
+    if props.display_mode ~= nil then self.mode_str = tostring(props.display_mode) end
+    if props.dialogue_id ~= nil then self.dialogue_id_str = tostring(props.dialogue_id) end
+    if props.label ~= nil then self.label_str = tostring(props.label) end
+    if props.duration ~= nil then self.duration = tonumber(props.duration) or self.duration end
+    if props.set_flag ~= nil then self.flag_id_str = PU.normalize_hash_string(props.set_flag) end
+    if props.requires_flag ~= nil then self.requires_flag_str = PU.normalize_hash_string(props.requires_flag) end
+    update_label(self)
+end
+
+local function show_text(self)
+    local mode = self.mode_str or DEFAULT_MODE
+    local title = self.title_str or ""
+    local body = self.text_str or ""
+    if body == "" then
+        body = "Nothing is written on this sign."
+    end
+    local text = body
+    if title ~= "" then
+        text = title .. "\n" .. body
+    end
+
+    if mode == "dialogue" then
+        if self.dialogue_id_str and self.dialogue_id_str ~= "" then
+            pcall(msg.post, msg.url("main:/dialogue_manager#dialogue"), hash("start_dialogue"), {
+                dialogue_id = self.dialogue_id_str,
+            })
+            return
+        end
+    elseif mode == "tutorial" then
+        pcall(msg.post, msg.url("main:/mode_hud#mode_hud"), hash("show_tutorial"), {
+            title = title ~= "" and title or "Hint",
+            description = body,
+            duration = self.duration,
+            position = "top",
+        })
+        return
+    end
+
+    pcall(msg.post, msg.url("main:/toast_gui#toast"), hash("toast"), {
+        text = text,
+        duration = self.duration,
+    })
+end
+
+function init(self)
+    self.sign_id_key = PU.resolve_id(self.sign_id) or tostring(go.get_id())
+    self.label_str = PU.normalize_hash_string(self.label) or DEFAULT_LABEL
+    self.text_str = PU.normalize_hash_string(self.text) or ""
+    self.title_str = PU.normalize_hash_string(self.title) or ""
+    self.mode_str = PU.normalize_hash_string(self.display_mode) or DEFAULT_MODE
+    self.dialogue_id_str = PU.normalize_hash_string(self.dialogue_id)
+    self.flag_id_str = PU.normalize_hash_string(self.set_flag)
+    self.requires_flag_str = PU.normalize_hash_string(self.requires_flag)
+
+    -- Baked hash properties cannot reliably recover free-form strings. Read
+    -- the original exported values while keeping this editor-authored GO.
+    local authored = TiledProxy.authored_object(self, "sign")
+    if authored then apply_props(self, authored) end
+
+    PU.register_interaction(self.label_str or DEFAULT_LABEL, self.range, 4)
+end
+
+function final(self)
+    PU.unregister_interaction()
+end
+
+function on_message(self, message_id, message, sender)
+    if message_id == hash("apply_tiled_props") and message and message.properties then
+        apply_props(self, message.properties)
+        return
+    end
+
+    if message_id ~= hash("mvtk_interact") then
+        return
+    end
+
+    if self.trigger_once and self._used then
+        return
+    end
+
+    if self.requires_flag_str and not Flags.has(self.requires_flag_str) then
+        return
+    end
+
+    if self.flag_id_str then
+        Flags.set(self.flag_id_str, true)
+    end
+
+    PU.play_sound(self.sound_id)
+    show_text(self)
+    require("mvtk.tiled.object_presentation").emit("interacted")
+
+    if self.trigger_once then
+        self._used = true
+        PU.unregister_interaction()
+    end
+end

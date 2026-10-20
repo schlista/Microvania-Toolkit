@@ -1,0 +1,1195 @@
+-- mvtk/world/gates/action_barrier.script
+-- Generic gate component for progression gates
+-- Attach this to any game object to make it a functional gate
+
+local GateManager = require "mvtk.world.gates.gate_manager"
+local EnergyState = require "mvtk.player.energy_state"
+local C = require "mvtk.core.constants"
+local Flags = require "mvtk.core.flags"
+local Util = require "mvtk.core.util"
+
+-- Component properties (configurable in editor) - text identifiers
+go.property("gate_id", "")
+go.property("gate_type", "")
+go.property("room_id", "")
+go.property("required_ability", "")
+go.property("required_action", "")
+go.property("required_item", "")
+go.property("required_key", "")
+-- Energy cost for resource gates (Tiled requirements.required_energy).
+-- -1 = use the gate type preset (developer/config/gate_types.lua).
+go.property("required_energy", -1)
+go.property("open_message", "")
+go.property("starts_open", false)
+go.property("stays_open", true)
+go.property("persist_unlock", true)
+go.property("persist_unlock_override", false)
+go.property("auto_register", true)
+go.property("use_config_sprite", false)
+go.property("has_particlefx", false)
+go.property("has_damage_particle_factory", false)
+go.property("show_sprite", true) -- false when the Tiled layer owns the visible art
+
+local EMPTY_HASH = hash("")
+
+local function has_sprite()
+    return Util.component_exists("#sprite")
+end
+
+local function gate_log(msg)
+    print("[GATE]", msg)
+end
+
+local function bool_str(value)
+    if value == nil then
+        return "nil"
+    end
+    return value and "true" or "false"
+end
+
+-- Gate save identities use authored text; opaque hashes have no text fallback.
+local function hstr(value)
+    return GateManager.normalize_gate_id(value) or ""
+end
+
+local text_or_nil = Util.normalize_hash_string
+
+local function normalize_action_tag(value)
+    local s = text_or_nil(value)
+    if not s then
+        return nil
+    end
+    if s:find("<unknown", 1, true) then
+        return nil
+    end
+    return s:lower()
+end
+
+local function action_tag_from_message(message)
+    if not message then
+        return nil
+    end
+    local v = message.attack_type
+        or message.damage_type
+        or message.dtype
+        or message.action_id
+        or message.ability_id
+    if v == "" or v == EMPTY_HASH then
+        return nil
+    end
+    return v
+end
+
+local function can_post_to_target(target)
+    if type(target) ~= "string" or target == "" then
+        return false
+    end
+    local ok_url, target_url = pcall(msg.url, target)
+    if not ok_url or not target_url then
+        return false
+    end
+    local ok_exists, exists = pcall(go.exists, target_url)
+    return ok_exists and exists or false
+end
+
+local function post_target_if_exists(target, message_id, payload)
+    if not can_post_to_target(target) then
+        return false
+    end
+    pcall(msg.post, target, message_id, payload or {})
+    return true
+end
+
+local function play_sound(sound_id)
+    local id = text_or_nil(sound_id)
+    if not id then
+        return false
+    end
+
+    local ok, Audio = pcall(require, "mvtk.audio.audio")
+    if ok and Audio and Audio.sfx then
+        local ok_play = pcall(Audio.sfx, id)
+        if ok_play then
+            return true
+        end
+    end
+
+    -- Backward-compatible fallback for older projects that route via /audio#audio.
+    return post_target_if_exists("/audio#audio", "play_sound", { name = id })
+end
+
+local function post_particlefx(self, message_id, payload)
+    if not self.has_particlefx then
+        return false
+    end
+    pcall(msg.post, "#particlefx", message_id, payload or {})
+    return true
+end
+
+local function player_url()
+    return C and C.URL and C.URL.PLAYER or nil
+end
+
+local function player_position()
+    local url = player_url()
+    if not url or not go.exists(url) then
+        return nil
+    end
+    return go.get_position(url)
+end
+
+local function fmt_num(value)
+    local n = tonumber(value)
+    if n == nil then
+        return tostring(value)
+    end
+    return string.format("%.2f", n)
+end
+
+local function vec_to_text(value)
+    if value == nil then
+        return "nil"
+    end
+    local okx, x = pcall(function() return tonumber(value.x) end)
+    local oky, y = pcall(function() return tonumber(value.y) end)
+    if okx and oky and x ~= nil and y ~= nil then
+        return string.format("(%.1f,%.1f)", x, y)
+    end
+    return tostring(value)
+end
+
+local function flag_value_for_gate(self)
+    local gate_id = self and self.gate_id_str or nil
+    if not gate_id or gate_id == "" then
+        return nil
+    end
+    return Flags.get("gate_" .. gate_id, nil)
+end
+
+local function requirement_ok(self)
+    if not self or not self.config or not self.gate_id_str or self.gate_id_str == "" then
+        return false
+    end
+    local ok, result = pcall(GateManager.check_gate_requirements, self.gate_id_str)
+    return ok and result and true or false
+end
+
+local function gate_state_summary(self)
+    local cfg = self and self.config or nil
+    local interaction = cfg and cfg.interaction or nil
+    local ok_gate_pos, gate_pos = pcall(go.get_position)
+    local player_pos = player_position()
+    local flag_value = flag_value_for_gate(self)
+    return string.format(
+        "gate=%s gate_type=%s cfg_type=%s unlocked=%s pending=%s nearby=%s collision=%s pass=%s explicit=%s req_ok=%s req_ability=%s req_action=%s req_item=%s flag=%s gate_pos=%s player_pos=%s",
+        tostring(self and self.gate_id_str or ""),
+        tostring(self and self.gate_type_key or ""),
+        tostring(cfg and cfg.type or "nil"),
+        bool_str(self and self.unlocked),
+        bool_str(self and self._unlock_pending),
+        bool_str(self and self.player_nearby),
+        bool_str(self and self._collision_enabled),
+        bool_str(interaction and interaction.pass_through),
+        bool_str(interaction and interaction.require_explicit_unlock),
+        bool_str(requirement_ok(self)),
+        tostring(cfg and cfg.required_ability or "nil"),
+        tostring(cfg and cfg.required_action or "nil"),
+        tostring(cfg and cfg.required_item or "nil"),
+        tostring(flag_value),
+        ok_gate_pos and vec_to_text(gate_pos) or "nil",
+        vec_to_text(player_pos)
+    )
+end
+
+local function message_summary(message, sender)
+    if not message then
+        return string.format("sender=%s message=nil", tostring(sender))
+    end
+    return string.format(
+        "sender=%s group=%s other_group=%s enter=%s distance=%s normal=%s other_id=%s own_id=%s",
+        tostring(sender),
+        hstr(message.group),
+        hstr(message.other_group),
+        bool_str(message.enter),
+        fmt_num(message.distance),
+        vec_to_text(message.normal),
+        tostring(message.other_id),
+        tostring(message.own_id)
+    )
+end
+
+local function gate_trace(self, event, message, sender, extra)
+    local line = string.format("%s | %s | %s", tostring(event), gate_state_summary(self), message_summary(message, sender))
+    if extra and extra ~= "" then
+        line = line .. " | " .. extra
+    end
+    gate_log(line)
+end
+
+local function gate_trace_dedup(self, slot, event, message, sender, extra)
+    local key = tostring(event) .. "|" .. tostring(extra or "")
+    if self and self[slot] == key then
+        return
+    end
+    if self then
+        self[slot] = key
+    end
+    gate_trace(self, event, message, sender, extra)
+end
+
+local function apply_collision_enabled(self, enabled)
+    local desired = enabled and true or false
+    if self._collision_enabled == desired then
+        return
+    end
+    self._collision_enabled = desired
+    pcall(Util.post_component_enabled, "#collision", desired)
+end
+
+local update_one_way_collision
+local update_hazard_damage
+local apply_locked_collision_mode
+
+-----------------------------------------------------------
+-- Visual & Audio Feedback (defined first - no dependencies)
+-----------------------------------------------------------
+
+local function setup_visuals(self)
+    local config = self.config
+    if not config.visual then return end
+
+    -- Set sprite
+    if has_sprite() and self.use_config_sprite and config.visual.sprite and config.visual.sprite ~= "" then
+        msg.post("#sprite", "play_animation", {id = hash(config.visual.sprite)})
+    end
+
+    -- Set color tint
+    if has_sprite() and config.visual.color then
+        go.set("#sprite", "tint", config.visual.color)
+    end
+
+    -- Set scale
+    local base_scale = self.base_scale or vmath.vector3(1, 1, 1)
+    local visual_scale = tonumber(config.visual.scale) or 1
+    go.set_scale(vmath.vector3(base_scale.x * visual_scale, base_scale.y * visual_scale, base_scale.z))
+
+    -- Start particle effect
+    if config.visual.particle and config.visual.particle ~= "" then
+        post_particlefx(self, "play_animation", { id = hash(config.visual.particle) })
+    end
+end
+
+local function hide_proximity_hint(self)
+    if not self.showing_hint then return end
+
+    post_target_if_exists("/hud#hud", "hide_hint", { gate_id = self.gate_id_str })
+    self.showing_hint = false
+end
+
+local function show_proximity_hint(self)
+    if self.showing_hint then return end
+
+    local config = self.config
+    if not config.interaction or not config.interaction.proximity_hint then return end
+
+    -- Post message to HUD to show hint
+    local hint_text = config.interaction.proximity_hint
+
+    -- Add requirement info
+    if config.type == "action_barrier" then
+        local required_action = text_or_nil(config.required_action) or text_or_nil(config.required_ability)
+        if required_action then
+            hint_text = hint_text .. string.format("\n[Action: %s]", required_action)
+        end
+    elseif config.type == "ability_requirement" and config.required_ability then
+        hint_text = hint_text .. string.format("\n[Requires: %s]", config.required_ability)
+    elseif config.type == "item_requirement" and config.required_item then
+        hint_text = hint_text .. string.format("\n[Requires: %s]", config.required_item)
+    elseif config.type == "resource_requirement" and tonumber(config.resource_amount) then
+        -- The cost line comes from the live amount (a Tiled required_energy
+        -- override changes it), not from fixed preset text.
+        local unit = config.required_resource == "currency" and "Gold" or "Energy"
+        hint_text = hint_text .. string.format("\nCosts: %d %s", tonumber(config.resource_amount), unit)
+    end
+
+    post_target_if_exists("/hud#hud", "show_hint", {
+        text = hint_text,
+        gate_id = self.gate_id_str
+    })
+
+    self.showing_hint = true
+end
+
+local function show_open_message(self, opts)
+    if opts and opts.silent then
+        return
+    end
+    if self._open_message_shown then
+        return
+    end
+    local config = self.config
+    local message = nil
+    if config then
+        message = config.open_message
+        if not message and config.interaction then
+            message = config.interaction.open_message
+        end
+    end
+    message = text_or_nil(message)
+    if not message then
+        return
+    end
+    self._open_message_shown = true
+    post_target_if_exists("main:/toast_gui#toast", hash("toast"), { text = message })
+end
+
+local function play_locked_feedback(self)
+    local config = self.config
+
+    -- Play locked sound
+    if config.audio and config.audio.locked_sound then
+        play_sound(config.audio.locked_sound)
+    end
+
+    -- Shake sprite
+    if config.interaction and config.interaction.shake_on_hit then
+        local original = go.get_position()
+        go.animate(".", "position.x", go.PLAYBACK_ONCE_PINGPONG, original.x + 5, go.EASING_LINEAR, 0.05, 0, nil, go.PLAYBACK_LOOP_PINGPONG)
+        timer.delay(0.2, false, function()
+            go.set_position(original)
+        end)
+    end
+
+    -- Flash color
+    if has_sprite() then
+        local original_tint = go.get("#sprite", "tint")
+        go.set("#sprite", "tint", vmath.vector4(1, 0.5, 0.5, original_tint.w))
+        go.animate("#sprite", "tint", go.PLAYBACK_ONCE_FORWARD, original_tint, go.EASING_LINEAR, 0.2)
+    end
+end
+
+local function play_damage_feedback(self)
+    -- Shake
+    if self.config.interaction and self.config.interaction.shake_on_hit then
+        local original = go.get_position()
+        go.animate(".", "position.x", go.PLAYBACK_ONCE_PINGPONG, original.x + 3, go.EASING_LINEAR, 0.03)
+        go.animate(".", "position.y", go.PLAYBACK_ONCE_PINGPONG, original.y + 3, go.EASING_LINEAR, 0.03)
+    end
+
+    -- Spawn damage particles
+    if self.has_damage_particle_factory and self.config.visual and self.config.visual.particle then
+        pcall(factory.create, "#damage_particle_factory", go.get_position())
+    end
+end
+
+-----------------------------------------------------------
+-- State Handlers (depend on visual/audio helpers above)
+-----------------------------------------------------------
+
+local function handle_unlocked_state(self, opts)
+    opts = opts or {}
+    local config = self.config
+    local presentation = require("mvtk.tiled.object_presentation")
+    if opts.silent then presentation.restore("opened")
+    else presentation.emit("opened", "opened") end
+    presentation.visible(false)
+
+    gate_log(string.format("Gate %s entered unlocked state", self.gate_id_str))
+    gate_trace(self, "UNLOCKED_STATE_ENTER", nil, nil, string.format("silent=%s destroy_on_unlock=%s", bool_str(opts and opts.silent), bool_str(config and config.interaction and config.interaction.destroy_on_unlock)))
+
+    -- Play unlock animation/sound
+    if config.audio and config.audio.unlock_sound then
+        play_sound(config.audio.unlock_sound)
+    end
+
+    show_open_message(self, opts)
+
+    if config.interaction and config.interaction.destroy_on_unlock then
+        -- Play destruction animation then delete
+        if has_sprite() then
+            msg.post("#sprite", "play_animation", {id = hash("break")})
+        end
+        timer.delay(0.5, false, function()
+            go.delete()
+        end)
+    else
+        -- Just make passable
+        apply_collision_enabled(self, false)
+        gate_trace(self, "UNLOCKED_COLLISION_DISABLED", nil, nil, "reason=handle_unlocked_state")
+
+        -- Fade out visual
+        if has_sprite() then
+            go.animate("#sprite", "tint.w", go.PLAYBACK_ONCE_FORWARD, 0, go.EASING_LINEAR, 0.3)
+        end
+
+        -- Stop particles
+        if config.visual and config.visual.particle then
+            post_particlefx(self, "stop")
+        end
+    end
+
+    -- Hide hint
+    hide_proximity_hint(self)
+end
+
+local function restore_locked_state(self, reason)
+    require("mvtk.tiled.object_presentation").visible(true)
+    require("mvtk.tiled.object_presentation").restore("closed")
+    if self._unlock_timer then
+        timer.cancel(self._unlock_timer)
+        self._unlock_timer = nil
+    end
+
+    self.unlocked = false
+    self._unlock_pending = nil
+    apply_collision_enabled(self, true)
+    setup_visuals(self)
+    apply_locked_collision_mode(self)
+    gate_trace(self, "LOCKED_STATE_RESTORED", nil, nil, string.format("reason=%s", tostring(reason)))
+
+    if self.config.audio and self.config.audio.locked_sound then
+        play_sound(self.config.audio.locked_sound)
+    end
+
+    if reason == "timer_expired" then
+        -- Reset proximity hint state so it can show again when the player returns
+        self.player_nearby = false
+        self.showing_hint = false
+    end
+end
+
+-----------------------------------------------------------
+-- Resource & Unlock Logic
+-----------------------------------------------------------
+
+local function consume_resources(self)
+    local config = self.config
+    if config.required_resource == "currency" then
+        local ok, Inventory = pcall(require, "mvtk.core.inventory")
+        if ok and Inventory.get_currency and Inventory.set_currency then
+            local current = Inventory.get_currency()
+            if current >= config.resource_amount then
+                Inventory.set_currency(current - config.resource_amount)
+                return true
+            end
+        end
+    elseif config.required_resource == "energy" then
+        return EnergyState.consume(config.resource_amount, { reason = "gate" })
+    end
+    return false
+end
+
+local function start_timed_unlock(self, duration, source)
+    duration = tonumber(duration) or 0
+    if duration <= 0 then
+        GateManager.unlock_gate(self.gate_id_str, source)
+        return
+    end
+
+    if self._unlock_timer then
+        timer.cancel(self._unlock_timer)
+        self._unlock_timer = nil
+    end
+
+    gate_log(string.format("Gate %s temporary unlock for %.2fs", self.gate_id_str, duration))
+
+    GateManager.unlock_gate(self.gate_id_str, source, { temporary = true })
+    self.unlocked = true
+
+    -- Allow player through for the duration
+    apply_collision_enabled(self, false)
+    gate_trace(self, "TIMED_UNLOCK_START", nil, nil, string.format("duration=%s source=%s", fmt_num(duration), tostring(source)))
+    hide_proximity_hint(self)
+
+    -- Visual/audio feedback
+    if self.config.audio and self.config.audio.unlock_sound then
+        play_sound(self.config.audio.unlock_sound)
+    end
+    if self.config.visual and self.config.visual.particle then
+        post_particlefx(self, "stop")
+    end
+
+    self._unlock_timer = timer.delay(duration, false, function()
+        self._unlock_timer = nil
+        GateManager.lock_gate(self.gate_id_str, "timer_expired")
+    end)
+end
+
+local function attempt_unlock(self, source)
+    local config = self.config
+    gate_trace(self, "ATTEMPT_UNLOCK", nil, nil, string.format("source=%s", tostring(source)))
+    if not config then return false end
+
+    if config.type == "action_barrier" then
+        -- Action barriers only unlock from matching attack/action hits.
+        gate_trace(self, "ATTEMPT_UNLOCK_BLOCKED", nil, nil, string.format("source=%s reason=action_barrier", tostring(source)))
+        play_locked_feedback(self)
+        return false
+    end
+
+    if self.unlocked then
+        local timer_duration = config.interaction and config.interaction.timer_duration
+        if timer_duration and timer_duration > 0 and self._unlock_timer then
+            start_timed_unlock(self, timer_duration, source or "refresh")
+        end
+        return true
+    end
+    if self._unlock_pending then
+        gate_trace(self, "ATTEMPT_UNLOCK_PENDING", nil, nil, string.format("source=%s", tostring(source)))
+        return true
+    end
+
+    -- Check requirements
+    if not GateManager.check_gate_requirements(self.gate_id_str) then
+        gate_trace(self, "ATTEMPT_UNLOCK_BLOCKED", nil, nil, string.format("source=%s reason=requirements_failed", tostring(source)))
+        play_locked_feedback(self)
+        return false
+    end
+
+    -- Handle resource consumption
+    if config.type == "resource_requirement" then
+        local ok = consume_resources(self)
+        if not ok then
+            gate_trace(self, "ATTEMPT_UNLOCK_BLOCKED", nil, nil, string.format("source=%s reason=resource_failed", tostring(source)))
+            play_locked_feedback(self)
+            return false
+        end
+    end
+
+    -- Handle item consumption
+    if config.type == "item_requirement" and config.consume_item then
+        local ok, Inventory = pcall(require, "mvtk.core.inventory")
+        if ok and Inventory.remove_item then
+            Inventory.remove_item(config.required_item)
+        end
+    end
+
+    local timer_duration = config.interaction and config.interaction.timer_duration
+    if timer_duration and timer_duration > 0 then
+        gate_trace(self, "ATTEMPT_UNLOCK_TIMED", nil, nil, string.format("source=%s duration=%s", tostring(source), fmt_num(timer_duration)))
+        start_timed_unlock(self, timer_duration, source)
+        return true
+    end
+
+    -- Unlock via manager (permanent)
+    gate_trace(self, "ATTEMPT_UNLOCK_SUCCESS", nil, nil, string.format("source=%s mode=permanent", tostring(source)))
+    local unlocked = GateManager.unlock_gate(self.gate_id_str, source)
+    if unlocked then
+        -- Open immediately on the local instance so the first impact doesn't still feel blocked
+        -- while the manager's gate_unlocked message is in flight.
+        self._unlock_pending = true
+        apply_collision_enabled(self, false)
+        gate_trace(self, "ATTEMPT_UNLOCK_LOCAL_OPEN", nil, nil, string.format("source=%s", tostring(source)))
+    end
+    return unlocked
+end
+
+local function check_auto_unlock(self)
+    if self.unlocked then return end
+
+    local config = self.config
+    if config.interaction and config.interaction.auto_unlock_on_requirement then
+        return attempt_unlock(self, "auto_requirement_met")
+    end
+    return false
+end
+
+local function gate_pass_through(self)
+    local interaction = self.config and self.config.interaction or nil
+    return interaction and interaction.pass_through and true or false
+end
+
+local function gate_requires_explicit_unlock(self)
+    local interaction = self.config and self.config.interaction or nil
+    return interaction and interaction.require_explicit_unlock and true or false
+end
+
+local function gate_supports_auto_unlock(self)
+    if not self.config then
+        return false
+    end
+    return self.config.type ~= "one_way"
+        and self.config.type ~= "hazard_barrier"
+        and self.config.type ~= "action_barrier"
+end
+
+apply_locked_collision_mode = function(self)
+    if self.unlocked or not self.config then
+        apply_collision_enabled(self, false)
+        gate_trace(self, "COLLISION_MODE", nil, nil, "reason=unlocked_or_no_config enabled=false")
+        return
+    end
+
+    if self.config.type == "hazard_barrier" then
+        apply_collision_enabled(self, false)
+        gate_trace(self, "COLLISION_MODE", nil, nil, "reason=hazard_barrier enabled=false")
+        return
+    end
+
+    if self.config.type == "one_way" then
+        gate_trace(self, "COLLISION_MODE", nil, nil, "reason=one_way delegated=update_one_way_collision")
+        update_one_way_collision(self)
+        return
+    end
+
+    -- Informational gates like ledge markers should remain non-blocking.
+    apply_collision_enabled(self, not gate_pass_through(self))
+    gate_trace(self, "COLLISION_MODE", nil, nil, string.format("reason=locked_mode enabled=%s", bool_str(not gate_pass_through(self))))
+end
+
+local function maybe_auto_unlock(self, source)
+    if self.unlocked then
+        gate_trace_dedup(self, "_last_auto_unlock_trace", "AUTO_UNLOCK_SKIP", nil, nil, string.format("source=%s reason=already_unlocked", tostring(source)))
+        return true
+    end
+    if self._unlock_pending then
+        gate_trace_dedup(self, "_last_auto_unlock_trace", "AUTO_UNLOCK_SKIP", nil, nil, string.format("source=%s reason=unlock_pending", tostring(source)))
+        return true
+    end
+    if not gate_supports_auto_unlock(self) then
+        gate_trace_dedup(self, "_last_auto_unlock_trace", "AUTO_UNLOCK_SKIP", nil, nil, string.format("source=%s reason=unsupported_type", tostring(source)))
+        return false
+    end
+    if gate_requires_explicit_unlock(self) then
+        gate_trace_dedup(self, "_last_auto_unlock_trace", "AUTO_UNLOCK_SKIP", nil, nil, string.format("source=%s reason=require_explicit_unlock", tostring(source)))
+        return false
+    end
+    if not GateManager.check_gate_requirements(self.gate_id_str) then
+        gate_trace_dedup(self, "_last_auto_unlock_trace", "AUTO_UNLOCK_SKIP", nil, nil, string.format("source=%s reason=requirements_failed", tostring(source)))
+        return false
+    end
+    gate_trace_dedup(self, "_last_auto_unlock_trace", "AUTO_UNLOCK_FIRE", nil, nil, string.format("source=%s", tostring(source)))
+    return attempt_unlock(self, source or "auto")
+end
+
+local function handle_action_barrier_hit(self, message)
+    if self.unlocked then
+        return
+    end
+    if not self.config or self.config.type ~= "action_barrier" then
+        return
+    end
+
+    local required_action = normalize_action_tag(self.config.required_action)
+        or normalize_action_tag(self.config.required_ability)
+    local required_action_hash = nil
+    if required_action then
+        required_action_hash = hash(required_action)
+    else
+        if self.required_action and self.required_action ~= "" then
+            required_action_hash = hash(self.required_action)
+        elseif self.required_ability and self.required_ability ~= "" then
+            required_action_hash = hash(self.required_ability)
+        end
+    end
+    local action_value = action_tag_from_message(message)
+
+    local matched = false
+    if required_action or required_action_hash then
+        if type(action_value) == "userdata" then
+            matched = required_action_hash and (action_value == required_action_hash) or false
+        else
+            local action_tag = normalize_action_tag(action_value)
+            if action_tag then
+                if required_action and action_tag == required_action then
+                    matched = true
+                elseif required_action_hash and hash(action_tag) == required_action_hash then
+                    matched = true
+                end
+            end
+        end
+    else
+        matched = action_value ~= nil
+    end
+
+    if not matched then
+        play_locked_feedback(self)
+        return
+    end
+
+    GateManager.unlock_gate(self.gate_id_str, "action_barrier_hit")
+end
+
+update_one_way_collision = function(self)
+    if self.unlocked then
+        apply_collision_enabled(self, false)
+        return
+    end
+    if self.config.type ~= "one_way" then
+        return
+    end
+
+    local interaction = self.config.interaction or {}
+    local direction = tostring(interaction.direction or "right"):lower()
+    local margin = tonumber(interaction.direction_margin) or 8
+    local player_pos = player_position()
+    if not player_pos then
+        apply_collision_enabled(self, true)
+        self._one_way_block = true
+        return
+    end
+
+    local gate_pos = go.get_position()
+    local block = self._one_way_block
+    if block == nil then
+        block = true
+    end
+
+    if direction == "right" then
+        if player_pos.x <= gate_pos.x - margin then
+            block = false
+        elseif player_pos.x >= gate_pos.x + margin then
+            block = true
+        end
+    elseif direction == "left" then
+        if player_pos.x >= gate_pos.x + margin then
+            block = false
+        elseif player_pos.x <= gate_pos.x - margin then
+            block = true
+        end
+    elseif direction == "up" then
+        if player_pos.y <= gate_pos.y - margin then
+            block = false
+        elseif player_pos.y >= gate_pos.y + margin then
+            block = true
+        end
+    elseif direction == "down" then
+        if player_pos.y >= gate_pos.y + margin then
+            block = false
+        elseif player_pos.y <= gate_pos.y - margin then
+            block = true
+        end
+    else
+        block = true
+    end
+
+    self._one_way_block = block
+    apply_collision_enabled(self, block)
+end
+
+update_hazard_damage = function(self, dt)
+    if self.config.type ~= "hazard_barrier" then
+        return
+    end
+
+    -- Hazard zones should be pass-through; they gate progression via resistance.
+    apply_collision_enabled(self, false)
+
+    if GateManager.check_gate_requirements(self.gate_id_str) then
+        self._hazard_damage_accum = 0
+        return
+    end
+
+    if not self.player_nearby then
+        self._hazard_damage_accum = 0
+        return
+    end
+
+    local dps = tonumber(self.config.interaction and self.config.interaction.damage_per_second) or 0
+    if dps <= 0 then
+        return
+    end
+
+    self._hazard_damage_accum = (self._hazard_damage_accum or 0) + (dps * dt)
+    local whole = math.floor(self._hazard_damage_accum)
+    if whole <= 0 then
+        return
+    end
+    self._hazard_damage_accum = self._hazard_damage_accum - whole
+
+    local purl = player_url()
+    if purl and go.exists(purl) then
+        pcall(msg.post, purl, hash("take_damage"), {
+            amount = whole,
+            damage = whole,
+            dtype = "hazard",
+            source = msg.url(),
+        })
+    end
+end
+
+-----------------------------------------------------------
+-- Destructible Gate Logic
+-----------------------------------------------------------
+
+local function handle_damage(self, message)
+    if self.unlocked then return end
+    if self.config.type ~= "destructible" then return end
+
+    if not self.health then
+        self.health = self.config.interaction.health or 3
+    end
+
+    self.health = self.health - (message.damage or 1)
+
+    gate_log(string.format("Gate %s damaged: %d health remaining", self.gate_id_str, self.health))
+
+    if self.health <= 0 then
+        -- Gate destroyed
+        attempt_unlock(self, "destroyed")
+    else
+        -- Show damage feedback
+        play_damage_feedback(self)
+    end
+end
+
+-----------------------------------------------------------
+-- Collision & Trigger Handling
+-----------------------------------------------------------
+
+local function handle_collision(self, message)
+    gate_trace(self, "COLLISION_RESPONSE", message, nil, "handler=handle_collision")
+    local other_group = message and (message.other_group or message.group)
+    -- Check if it's the player
+    if other_group == hash("player") then
+        if message.enter ~= nil then
+            self.player_nearby = message.enter and true or false
+        else
+            local distance = tonumber(message.distance)
+            if distance ~= nil then
+                self.player_nearby = distance > 0
+            else
+                -- Some collision payloads omit distance; treat contact as nearby.
+                self.player_nearby = true
+            end
+        end
+        gate_trace(self, "COLLISION_RESPONSE_PLAYER", message, nil, string.format("player_nearby=%s", bool_str(self.player_nearby)))
+        if self.player_nearby then
+            maybe_auto_unlock(self, "collision_contact")
+        end
+    end
+end
+
+local function handle_trigger(self, message)
+    gate_trace(self, "TRIGGER_RESPONSE", message, nil, "handler=handle_trigger")
+    local other_group = message and (message.other_group or message.group)
+    if other_group ~= hash("player") then
+        gate_trace(self, "TRIGGER_RESPONSE_IGNORED", message, nil, string.format("reason=non_player other_group=%s", hstr(other_group)))
+        return
+    end
+    -- Proximity trigger for hints
+    if message.enter then
+        self.player_nearby = true
+        gate_trace(self, "TRIGGER_ENTER", message, nil, "player_nearby=true")
+        maybe_auto_unlock(self, "trigger_contact")
+    else
+        self.player_nearby = false
+        gate_trace(self, "TRIGGER_EXIT", message, nil, "player_nearby=false")
+    end
+end
+
+-----------------------------------------------------------
+-- Lifecycle Functions
+-----------------------------------------------------------
+
+function init(self)
+    if not self.show_sprite then
+        Util.set_component_enabled("#sprite", false)
+    end
+    if GateManager.init then
+        pcall(GateManager.init)
+    end
+
+    -- Use self.* to access properties directly (not go.get)
+    self.gate_id_key = hstr(self.gate_id)
+    self.gate_type_key = hstr(self.gate_type)
+    -- Define gate_id_str for consistent use in GateManager calls
+    self.gate_id_str = self.gate_id_key
+    self.base_scale = go.get_scale()
+    self._collision_enabled = true
+
+    local required_ability = text_or_nil(self.required_ability)
+    if required_ability and required_ability:find("<unknown", 1, true) then
+        required_ability = nil
+    end
+    local required_action = text_or_nil(self.required_action)
+    if required_action and required_action:find("<unknown", 1, true) then
+        required_action = nil
+    end
+    local required_item = text_or_nil(self.required_item)
+    local required_key = text_or_nil(self.required_key)
+    if not required_item then
+        required_item = required_key
+    end
+    local open_message = text_or_nil(self.open_message)
+    local room_id = text_or_nil(self.room_id)
+
+    if self.gate_id_str == "" then
+        self.gate_id_str = Util.go_id_text(go.get_id()) or ""
+    end
+
+    local existing_config = nil
+    if self.gate_id_str ~= "" then
+        existing_config = GateManager.get_gate_config(self.gate_id_str) or GateManager.get_gate_config(self.gate_id)
+    end
+
+    -- Build-time generated gates can self-register config so they don't rely on runtime spawner.
+    -- Only do this if no config already exists (runtime spawner path).
+    if not existing_config and self.gate_id_str ~= "" and self.gate_type_key ~= "" then
+        local pos = go.get_position()
+        local inline_config = {
+            id = self.gate_id_str,
+            gate_type = self.gate_type_key,
+            room_id = room_id,
+            position = { x = pos.x, y = pos.y },
+            starts_open = self.starts_open and true or false,
+            stays_open = self.stays_open and true or false,
+        }
+        if required_ability then
+            inline_config.required_ability = required_ability
+        end
+        if required_action then
+            inline_config.required_action = required_action
+        elseif required_ability then
+            inline_config.required_action = required_ability
+        end
+        if required_item then
+            inline_config.required_item = required_item
+        end
+        if open_message then
+            inline_config.open_message = open_message
+            inline_config.interaction = {
+                open_message = open_message,
+                proximity_hint = open_message,
+            }
+        end
+        if self.persist_unlock_override then
+            inline_config.persist_unlock = self.persist_unlock and true or false
+        end
+
+        pcall(GateManager.spawn_gate, inline_config)
+        if self.starts_open then
+            pcall(GateManager.unlock_gate, self.gate_id_str, "baked_start", {
+                temporary = not inline_config.stays_open,
+                persist_unlock = inline_config.persist_unlock,
+            })
+        end
+    end
+
+    -- Load gate configuration from manager using the authored text id
+    self.config = existing_config
+    if self.gate_id ~= "" then
+        self.config = GateManager.get_gate_config(self.gate_id_str) or GateManager.get_gate_config(self.gate_id)
+    end
+
+    -- If no config found, try to create from properties
+    if not self.config and self.gate_type ~= "" then
+        local gate_type = GateManager.get_gate_type(self.gate_type) or GateManager.get_gate_type(self.gate_type_key)
+        if gate_type then
+            self.config = {}
+            for k, v in pairs(gate_type) do
+                self.config[k] = v
+            end
+            self.config.gate_type = self.gate_type_key
+            self.config.id = self.gate_id_str
+            if required_ability then
+                self.config.required_ability = required_ability
+            end
+            if required_action then
+                self.config.required_action = required_action
+            elseif required_ability then
+                self.config.required_action = required_ability
+            end
+            if required_item then
+                self.config.required_item = required_item
+            end
+            if open_message then
+                self.config.open_message = open_message
+                self.config.interaction = self.config.interaction or {}
+                self.config.interaction.open_message = open_message
+            end
+            if self.persist_unlock_override then
+                self.config.persist_unlock = self.persist_unlock and true or false
+            end
+        end
+    end
+
+    if not self.config then
+        gate_log(string.format("ERROR: No configuration for gate %s", self.gate_id_key))
+        return
+    end
+
+    -- Authored energy cost overrides the preset (the energy_gate preset used
+    -- to demand more energy than a player could ever hold).
+    local required_energy = tonumber(self.required_energy)
+    if required_energy and required_energy >= 0 and self.config.required_resource == "energy" then
+        self.config.resource_amount = required_energy
+    end
+
+    if self.gate_id_str == "" then
+        self.gate_id_str = hstr(self.config.id)
+    end
+
+    if self.config.type == "action_barrier" and not self.config.required_action then
+        self.config.required_action = self.config.required_ability
+    end
+
+    -- Check if already unlocked with manager policy (persistent vs temporary)
+    self.unlocked = GateManager.is_gate_unlocked(self.gate_id_str, self.config)
+
+    if self.unlocked then
+        handle_unlocked_state(self, { silent = true })
+        return
+    end
+
+    -- Register with manager (use self.auto_register directly)
+    if self.auto_register then
+        GateManager.register_gate_instance(self.gate_id_str, msg.url())
+    end
+
+    -- Initialize state
+    self.player_nearby = false
+    self.showing_hint = false
+    self.health = self.config.interaction and self.config.interaction.health or nil
+    self._hazard_damage_accum = 0
+
+    -- Set up visuals
+    setup_visuals(self)
+
+    apply_locked_collision_mode(self)
+
+    -- Acquire input for collision detection
+    msg.post(".", "acquire_input_focus")
+
+    gate_log(string.format("Gate initialized: %s (type: %s)", self.gate_id_key, self.gate_type_key))
+    gate_trace(self, "INIT_COMPLETE", nil, nil, "input_focus=acquired")
+end
+
+function final(self)
+    -- Unregister from manager
+    if self.gate_id_str and self.gate_id_str ~= "" then
+        gate_log(string.format("Gate finalizing: %s url=%s", tostring(self.gate_id_str), tostring(msg.url())))
+        GateManager.unregister_gate_instance(self.gate_id_str, msg.url())
+    end
+    if self._unlock_timer then
+        timer.cancel(self._unlock_timer)
+        self._unlock_timer = nil
+    end
+end
+
+function update(self, dt)
+    if self.unlocked then
+        local interaction = self.config and self.config.interaction or nil
+        if self.config and self.config.type == "resource_requirement"
+            and interaction
+            and interaction.allow_repeated_use
+            and not self.stays_open
+            and not self.player_nearby then
+            GateManager.lock_gate(self.gate_id_str, "resource_exit")
+        end
+        return
+    end
+
+    if self.config.type == "one_way" then
+        update_one_way_collision(self)
+    end
+
+    if self.config.type == "hazard_barrier" then
+        update_hazard_damage(self, dt)
+    end
+
+    if self.player_nearby then
+        maybe_auto_unlock(self, "auto")
+    end
+
+    -- Update hint display
+    if self.player_nearby and not self.showing_hint then
+        show_proximity_hint(self)
+    elseif not self.player_nearby and self.showing_hint then
+        hide_proximity_hint(self)
+    end
+end
+
+function on_message(self, message_id, message, sender)
+    gate_trace(self, "ON_MESSAGE", message, sender, string.format("message_id=%s", tostring(message_id)))
+    if message_id == hash("collision_response") then
+        handle_collision(self, message)
+
+    elseif message_id == hash("trigger_response") then
+        handle_trigger(self, message)
+
+    elseif message_id == hash("contact_point_response") then
+        local other_group = message and (message.other_group or message.group)
+        gate_trace(self, "CONTACT_POINT_RESPONSE", message, sender, string.format("other_group=%s", hstr(other_group)))
+        if other_group == hash("player") then
+            self.player_nearby = true
+        end
+        local unlocked_now = false
+        if other_group == hash("player") then
+            -- Direct player contact should unlock immediately once the requirement is met.
+            unlocked_now = maybe_auto_unlock(self, "contact_point")
+        end
+        -- Player trying to pass through
+        if not unlocked_now and not self.unlocked and self.config.type ~= "hazard_barrier" then
+            local pass_through = gate_pass_through(self)
+            if self.config.type == "one_way" then
+                if self._one_way_block then
+                    gate_trace(self, "CONTACT_BLOCKED", message, sender, "reason=one_way_block")
+                    play_locked_feedback(self)
+                end
+            elseif not pass_through then
+                -- Solid barrier - bounce player back
+                gate_trace(self, "CONTACT_BLOCKED", message, sender, "reason=solid_locked_gate")
+                play_locked_feedback(self)
+            else
+                gate_trace(self, "CONTACT_ALLOWED", message, sender, "reason=pass_through")
+            end
+        else
+            gate_trace(self, "CONTACT_ALLOWED", message, sender, string.format("reason=unlocked_or_hazard unlocked_now=%s", bool_str(unlocked_now)))
+        end
+
+    elseif message_id == hash("gate_unlocked") then
+        if message and message.temporary then
+            -- Temporary unlock handled elsewhere (e.g. timed gates)
+            gate_trace(self, "GATE_UNLOCKED_MESSAGE_IGNORED", message, sender, "reason=temporary_unlock")
+            return
+        end
+        -- Notification from manager
+        self._unlock_pending = nil
+        self.unlocked = true
+        gate_trace(self, "GATE_UNLOCKED_MESSAGE", message, sender, string.format("source=%s persist_unlock=%s", tostring(message and message.source), bool_str(message and message.persist_unlock)))
+        handle_unlocked_state(self)
+
+    elseif message_id == hash("gate_locked") then
+        gate_trace(self, "GATE_LOCKED_MESSAGE", message, sender, string.format("reason=%s", tostring(message and message.reason)))
+        restore_locked_state(self, message and message.reason)
+
+    elseif message_id == hash("ability_unlocked") then
+        gate_trace(self, "ABILITY_UNLOCKED_MESSAGE", message, sender, string.format("ability=%s", tostring(message and (message.ability_id or message.id))))
+        -- Player unlocked an ability - check if this opens gate
+        if self.config.type ~= "one_way" and self.config.type ~= "hazard_barrier" and self.config.type ~= "action_barrier"
+            and GateManager.check_gate_requirements(self.gate_id_str) then
+            check_auto_unlock(self)
+        end
+
+    elseif message_id == hash("item_acquired") then
+        gate_trace(self, "ITEM_ACQUIRED_MESSAGE", message, sender, string.format("item=%s", tostring(message and (message.item_id or message.id))))
+        -- Player got an item - check if this opens gate
+        if self.config.type ~= "one_way" and self.config.type ~= "hazard_barrier" and self.config.type ~= "action_barrier"
+            and GateManager.check_gate_requirements(self.gate_id_str) then
+            check_auto_unlock(self)
+        end
+
+    elseif message_id == hash("damage")
+        or message_id == hash("attack_hit")
+        or message_id == hash("mvtk_apply_damage") then
+        local payload = message or {}
+        gate_trace(self, "DAMAGE_MESSAGE", payload, sender, string.format("message_id=%s", tostring(message_id)))
+        if message_id == hash("mvtk_apply_damage") and payload.amount and not payload.damage then
+            payload.damage = payload.amount
+        end
+        if self.config.type == "action_barrier" then
+            handle_action_barrier_hit(self, payload)
+        else
+            -- Gate took damage (for destructible gates)
+            handle_damage(self, payload)
+        end
+
+    elseif message_id == hash("interact") then
+        gate_trace(self, "INTERACT_MESSAGE", message, sender, "player_requested_unlock")
+        -- Player explicitly interacted with gate
+        if self.config.type ~= "one_way" and self.config.type ~= "hazard_barrier" and self.config.type ~= "action_barrier" then
+            attempt_unlock(self, "interact")
+        end
+    end
+end

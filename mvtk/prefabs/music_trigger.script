@@ -1,0 +1,180 @@
+-- mvtk/prefabs/music_trigger.script
+-- Area trigger that changes music or theme when the player enters.
+
+local Audio = require "mvtk.audio.audio"
+local PU = require "mvtk.prefabs.prefab_utils"
+local AmbienceTracks = require "developer.config.ambience_tracks"
+
+go.property("trigger_id", "")
+go.property("music_id", "")
+go.property("area_theme", "")
+go.property("fade_time", 0.5)
+go.property("stop_on_exit", true)
+go.property("exit_music", "")
+go.property("exit_area", "")
+go.property("trigger_once", false)
+
+local function trace(self, event, extra)
+    local trigger_id = self and self.trigger_id_key or "<uninitialized>"
+    local message = string.format(
+        "[MUSIC_TRIGGER] event=%s trigger=%s go=%s music=%s area=%s exit_music=%s exit_area=%s inside=%s",
+        tostring(event),
+        tostring(trigger_id),
+        tostring(go.get_id()),
+        tostring(self and self.music_id_str or "<unset>"),
+        tostring(self and self.area_theme_str or "<unset>"),
+        tostring(self and self.exit_music_str or "<unset>"),
+        tostring(self and self.exit_area_str or "<unset>"),
+        tostring(self and self.inside or false)
+    )
+    if extra and extra ~= "" then
+        message = message .. " " .. tostring(extra)
+    end
+    print(message)
+end
+
+local function apply_props(self, props)
+    props = props or {}
+    if props.music_id ~= nil then self.music_id_str = PU.resolve_id(props.music_id) end
+    if props.area_theme ~= nil then self.area_theme_str = PU.resolve_id(props.area_theme) end
+    if props.exit_music ~= nil then self.exit_music_str = PU.resolve_id(props.exit_music) end
+    if props.exit_area ~= nil then self.exit_area_str = PU.resolve_id(props.exit_area) end
+    if props.fade_time ~= nil then self.fade_time = tonumber(props.fade_time) or self.fade_time end
+    if props.stop_on_exit ~= nil then self.stop_on_exit = props.stop_on_exit ~= false end
+    if props.trigger_once ~= nil then self.trigger_once = props.trigger_once == true end
+    trace(self, "apply_props", string.format(
+        "props_music=%s props_area=%s props_exit_music=%s props_exit_area=%s fade_time=%s stop_on_exit=%s trigger_once=%s",
+        tostring(props.music_id),
+        tostring(props.area_theme),
+        tostring(props.exit_music),
+        tostring(props.exit_area),
+        tostring(self.fade_time),
+        tostring(self.stop_on_exit),
+        tostring(self.trigger_once)
+    ))
+end
+
+local function is_selected(value)
+    return value ~= nil and value ~= "" and value ~= "none"
+end
+
+local function start_music(self)
+    if is_selected(self.music_id_str) then
+        trace(self, "start_request", "method=music id=" .. tostring(self.music_id_str) .. " fade=" .. tostring(self.fade_time))
+        Audio.music(self.music_id_str, { t = self.fade_time })
+    elseif is_selected(self.area_theme_str) then
+        trace(self, "start_request", "method=area_theme id=" .. tostring(self.area_theme_str))
+        Audio.set_area_theme(self.area_theme_str)
+    else
+        trace(self, "start_skipped", "reason=missing_music_id_and_area_theme")
+    end
+end
+
+local function stop_music(self)
+    if not self.stop_on_exit then
+        trace(self, "stop_skipped", "reason=stop_on_exit_false")
+        return
+    end
+    if is_selected(self.exit_music_str) then
+        trace(self, "stop_request", "method=exit_music id=" .. tostring(self.exit_music_str) .. " fade=" .. tostring(self.fade_time))
+        Audio.music(self.exit_music_str, { t = self.fade_time })
+    elseif is_selected(self.exit_area_str) then
+        trace(self, "stop_request", "method=exit_area id=" .. tostring(self.exit_area_str))
+        Audio.set_area_theme(self.exit_area_str)
+    else
+        -- Restore authored room music. Biomes only control visuals and need
+        -- not name a registered track (for example, "desert").
+        local ok_rm, RoomManager = pcall(require, "mvtk.map.streaming.room_manager")
+        if not (ok_rm and RoomManager and RoomManager.get_current_room) then
+            trace(self, "stop_skipped", "reason=no_room_manager")
+            return
+        end
+        local room_id = RoomManager.get_current_room()
+        if not room_id then
+            trace(self, "stop_skipped", "reason=no_current_room")
+            return
+        end
+        local ok_reg, Registry = pcall(require, "mvtk.tiled.tiled_room_registry")
+        if not (ok_reg and Registry and Registry.get_room_metadata) then
+            trace(self, "stop_skipped", "reason=no_room_registry room=" .. tostring(room_id))
+            return
+        end
+        local meta = Registry.get_room_metadata(room_id)
+        local music = meta and (meta.music or meta.ambience)
+        if meta and meta.world_music_enabled and (music == "none" or music == "hush") then
+            Audio.music("none", { silence = true })
+        elseif is_selected(music) and music ~= "hush" then
+            local cue = AmbienceTracks[music]
+            local track = cue and cue.cue and cue.cue:match("/([^/]+)%.sound$") or music
+            trace(self, "stop_request", "method=room_music room=" .. tostring(room_id) .. " music=" .. tostring(track))
+            Audio.music(track, { t = self.fade_time })
+        else
+            trace(self, "stop_skipped", "reason=no_room_music room=" .. tostring(room_id))
+        end
+    end
+end
+
+function init(self)
+    self.trigger_id_key = PU.resolve_id(self.trigger_id) or tostring(go.get_id())
+    self.music_id_str = PU.resolve_id(self.music_id)
+    self.area_theme_str = PU.resolve_id(self.area_theme)
+    self.exit_music_str = PU.resolve_id(self.exit_music)
+    self.exit_area_str = PU.resolve_id(self.exit_area)
+    self.inside = false
+    trace(self, "init", string.format(
+        "fade_time=%s stop_on_exit=%s trigger_once=%s",
+        tostring(self.fade_time),
+        tostring(self.stop_on_exit),
+        tostring(self.trigger_once)
+    ))
+end
+
+function on_message(self, message_id, message, sender)
+    if message_id == hash("apply_tiled_props") and message and message.properties then
+        apply_props(self, message.properties)
+        return
+    end
+
+    if message_id ~= hash("trigger_response") then
+        return
+    end
+
+    local other_group = message.other_group or message.group
+    trace(self, "trigger_response", string.format(
+        "sender=%s enter=%s other_group=%s group=%s other_id=%s",
+        tostring(sender),
+        tostring(message.enter),
+        tostring(message.other_group),
+        tostring(message.group),
+        tostring(message.other_id)
+    ))
+    if other_group ~= hash("player") then
+        trace(self, "trigger_ignored", "reason=non_player")
+        return
+    end
+
+    if message.enter then
+        if self.trigger_once and self._used then
+            trace(self, "enter_ignored", "reason=trigger_once_already_used")
+            return
+        end
+        if not self.inside then
+            self.inside = true
+            trace(self, "enter", "action=start_music")
+            start_music(self)
+            if self.trigger_once then
+                self._used = true
+            end
+        else
+            trace(self, "enter_ignored", "reason=already_inside")
+        end
+    else
+        if self.inside then
+            self.inside = false
+            trace(self, "exit", "action=stop_music")
+            stop_music(self)
+        else
+            trace(self, "exit_ignored", "reason=already_outside")
+        end
+    end
+end

@@ -1,0 +1,263 @@
+-- mvtk/world/light_manager.script
+-- Manages global darkness and per-source local light glow data.
+
+local C = require "mvtk.core.constants"
+local Util = require "mvtk.core.util"
+local Config = require "developer.config.resolved_config"
+local CameraState = require "mvtk.camera.camera_state"
+
+local PUBLISH_HOOK_KEY = "light_manager"
+
+local RoomManager = nil
+local function get_room_manager()
+    if RoomManager ~= nil then return RoomManager end
+    local ok, mod = pcall(require, "mvtk.map.streaming.room_manager")
+    RoomManager = ok and mod or false
+    return RoomManager
+end
+
+-- Use shared Util.clamp instead of duplicating it locally.
+local clamp = Util.clamp
+
+-- Negative = use developer/config/game_config.lua visual.default_room_darkness.
+-- Set >= 0 on the instance to override that config value.
+go.property("base_darkness", -1)
+go.property("min_darkness", 0.0)
+go.property("max_darkness", 0.9)
+
+go.property("enable_room_filter", true)
+go.property("max_local_lights", 24)
+go.property("local_light_intensity_scale", 0.6)
+
+local lights = {}
+local room_darkness = {}
+-- Loader instance that registered each room's darkness. A clear (level = nil)
+-- from any other instance is stale (re-streamed room) and ignored.
+local room_darkness_owner = {}
+local configured_default_darkness = tonumber(Config and Config.visual and Config.visual.default_room_darkness) or 0.0
+local overlay_url = msg.url("main:/darkness_overlay#gui")
+local camera_component_url = msg.url("main:/camera#camera")
+
+-- Register the overlay URL so other systems can resolve it via C.URL.OVERLAY.
+-- Override the default by setting C.set_url("OVERLAY", ...) earlier in boot,
+-- or via developer/config/url_map.lua.
+if C and C.set_url then
+    pcall(C.set_url, "OVERLAY", overlay_url)
+end
+
+local window_cfg = Config and Config.window or nil
+local camera_cfg = Config and Config.camera or nil
+local target_width = tonumber(window_cfg and (window_cfg.target_width or window_cfg.base_width)) or 1920
+local target_height = tonumber(window_cfg and (window_cfg.target_height or window_cfg.base_height)) or 1080
+local default_zoom = tonumber(camera_cfg and camera_cfg.default_zoom) or 1.0
+
+local normalize_id = Util.normalize_hash_string
+
+local normalize_room_key = Util.normalize_hash_string
+
+local function current_room_id()
+    local rm = get_room_manager()
+    if rm and rm.get_current_room then
+        return rm.get_current_room()
+    end
+    return nil
+end
+
+local function match_room(light_room, player_room)
+    if not light_room or light_room == "" then return true end
+    if not player_room or player_room == "" then return false end
+    return tostring(light_room) == tostring(player_room)
+end
+
+local function update_overlay_darkness(level)
+    Util.safe_post(overlay_url, hash("set_darkness"), { level = level },
+        { check_exists = true })
+end
+
+local function update_overlay_lights(light_list, intensity_scale)
+    Util.safe_post(overlay_url, hash("set_light_sources"), {
+        lights = light_list,
+        intensity_scale = intensity_scale,
+    }, { check_exists = true })
+end
+
+local function get_camera_position(fallback)
+    local has_camera_state, camera_x, camera_y = CameraState.get()
+    if has_camera_state then
+        return camera_x, camera_y
+    end
+
+    local cam_script_url = C.URL and C.URL.CAMERA
+    if cam_script_url and go.exists(cam_script_url) then
+        local ok, pos = pcall(go.get_position, cam_script_url)
+        if ok and pos then return pos.x, pos.y end
+    end
+    if fallback then
+        return fallback.x, fallback.y
+    end
+    return 0, 0
+end
+
+local function get_camera_zoom()
+    local has_camera_state, _, _, published_zoom = CameraState.get()
+    if has_camera_state then
+        local zoom = tonumber(published_zoom) or 1.0
+        if zoom <= 0 then zoom = 1.0 end
+        return zoom
+    end
+
+    local zoom = default_zoom
+    local ok_zoom, camera_zoom = pcall(go.get, camera_component_url, "orthographic_zoom")
+    if ok_zoom and type(camera_zoom) == "number" and camera_zoom > 0 then
+        zoom = camera_zoom
+    end
+    if zoom <= 0 then zoom = 1.0 end
+    return zoom
+end
+
+local function compose_lights(self, camera_x, camera_y, zoom, room_id)
+    local filtered_room_id = self.enable_room_filter and room_id or nil
+    local view_w = target_width / zoom
+    local view_h = target_height / zoom
+    if view_w <= 0 or view_h <= 0 then
+        update_overlay_lights({}, self.local_light_intensity_scale)
+        return
+    end
+
+    local left = camera_x - (view_w * 0.5)
+    local bottom = camera_y - (view_h * 0.5)
+    local visible_lights = {}
+
+    for _, light in pairs(lights) do
+        if light.enabled ~= false then
+            if not self.enable_room_filter or match_room(light.room_id, filtered_room_id) then
+                local radius = tonumber(light.radius) or 0
+                local intensity = tonumber(light.intensity) or 0
+                if radius > 0 and intensity > 0 then
+                    local nx = (light.position.x - left) / view_w
+                    local ny = (light.position.y - bottom) / view_h
+                    local radius_x = radius / view_w
+                    local radius_y = radius / view_h
+                    local margin_x = radius_x * 1.5
+                    local margin_y = radius_y * 1.5
+                    if nx >= -margin_x and nx <= (1 + margin_x) and ny >= -margin_y and ny <= (1 + margin_y) then
+                        visible_lights[#visible_lights + 1] = {
+                            nx = nx,
+                            ny = ny,
+                            radius_x = radius_x,
+                            radius_y = radius_y,
+                            intensity = clamp(intensity, 0, 4),
+                        }
+                    end
+                end
+            end
+        end
+    end
+
+    if #visible_lights > 1 then
+        table.sort(visible_lights, function(a, b)
+            return (a.intensity or 0) > (b.intensity or 0)
+        end)
+    end
+
+    local max_lights = math.max(0, math.floor(tonumber(self.max_local_lights) or 0))
+    if max_lights > 0 and #visible_lights > max_lights then
+        for i = #visible_lights, max_lights + 1, -1 do
+            visible_lights[i] = nil
+        end
+    end
+
+    update_overlay_lights(visible_lights, tonumber(self.local_light_intensity_scale) or 0.6)
+end
+
+function init(self)
+    self._base_darkness_override = nil
+    -- Compose the light overlay from the camera's published view, inside its
+    -- late_update, so light positions never lag the world by a frame.
+    CameraState.on_publish(PUBLISH_HOOK_KEY, function(x, y, zoom)
+        compose_lights(self, x, y, zoom, current_room_id())
+    end)
+end
+
+function final(self)
+    CameraState.off_publish(PUBLISH_HOOK_KEY)
+end
+
+function update(self, dt)
+    local room_id = current_room_id()
+
+    local base = self._base_darkness_override
+    if base == nil then
+        local room_key = normalize_room_key(room_id)
+        if room_key ~= nil then
+            base = room_darkness[room_key]
+        end
+        if base == nil then
+            local override = tonumber(self.base_darkness)
+            base = (override and override >= 0) and override or configured_default_darkness
+        end
+    end
+    local final_darkness = clamp(base, self.min_darkness, self.max_darkness)
+    update_overlay_darkness(final_darkness)
+
+    -- Before the camera's first publish there is no view yet; fall back to the
+    -- player/camera object position so the overlay is not empty at boot.
+    local has_camera_state = CameraState.get()
+    if not has_camera_state then
+        local player_pos = nil
+        local player_url = C.URL and C.URL.PLAYER
+        if player_url and go.exists(player_url) then
+            player_pos = go.get_world_position(player_url)
+        end
+        local camera_x, camera_y = get_camera_position(player_pos)
+        compose_lights(self, camera_x, camera_y, get_camera_zoom(), room_id)
+    end
+end
+
+function on_message(self, message_id, message, sender)
+    if message_id == hash("register_light_source") then
+        local id = normalize_id(message.id) or tostring(message.id or "")
+        if id ~= "" then
+            lights[id] = {
+                id = id,
+                position = message.position or vmath.vector3(0, 0, 0),
+                radius = tonumber(message.radius) or 200,
+                intensity = tonumber(message.intensity) or 1.0,
+                enabled = message.enabled ~= false,
+                room_id = message.room_id,
+            }
+        end
+    elseif message_id == hash("update_light_source") then
+        local id = normalize_id(message.id) or tostring(message.id or "")
+        local entry = lights[id]
+        if entry then
+            if message.position then entry.position = message.position end
+            if message.radius ~= nil then entry.radius = tonumber(message.radius) or entry.radius end
+            if message.intensity ~= nil then entry.intensity = tonumber(message.intensity) or entry.intensity end
+            if message.enabled ~= nil then entry.enabled = message.enabled and true or false end
+            if message.room_id ~= nil then entry.room_id = message.room_id end
+        end
+    elseif message_id == hash("unregister_light_source") then
+        local id = normalize_id(message.id) or tostring(message.id or "")
+        lights[id] = nil
+    elseif message_id == hash("set_darkness") then
+        self._base_darkness_override = tonumber(message and message.level)
+    elseif message_id == hash("set_room_darkness") then
+        local room_key = normalize_room_key(message and message.room_id)
+        if room_key then
+            local level = tonumber(message and message.level)
+            local owner = message and message.owner
+            if level == nil then
+                -- Only the instance that registered the level may clear it.
+                if owner == nil or room_darkness_owner[room_key] == nil
+                    or room_darkness_owner[room_key] == owner then
+                    room_darkness[room_key] = nil
+                    room_darkness_owner[room_key] = nil
+                end
+            else
+                room_darkness[room_key] = level
+                room_darkness_owner[room_key] = owner
+            end
+        end
+    end
+end

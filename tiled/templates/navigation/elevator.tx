@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<template>
+ <object name="Elevator" type="elevator" width="128" height="32">
+  <properties>
+   <property name="elevator_id" type="string" value=""/>
+   <property name="start_node_id" type="string" value=""/>
+   <property name="motion_and_timing" type="class" propertytype="elevator_motion_and_timing">
+    <properties>
+     <property name="speed" type="float" value="96"/>
+     <property name="acceleration" type="float" value="384"/>
+     <property name="deceleration" type="float" value="384"/>
+     <property name="endpoint_wait" type="float" value="0.35"/>
+     <property name="start_delay" type="float" value="0"/>
+     <property name="close_time" type="float" value="0.25"/>
+     <property name="open_time" type="float" value="0.25"/>
+     <property name="ready_timeout" type="float" value="5"/>
+    </properties>
+   </property>
+   <property name="activation" type="class" propertytype="elevator_activation">
+    <properties>
+     <property name="enabled" type="bool" value="true"/>
+     <property name="activation_mode" propertytype="elevator_activation_modes" value="on_board"/>
+     <property name="trigger_id" type="string" value=""/>
+     <property name="require_interact" type="bool" value="false"/>
+    </properties>
+   </property>
+   <property name="collision_and_rider" type="class" propertytype="elevator_collision_and_rider">
+    <properties>
+     <property name="floor_offset" type="float" value="32"/>
+     <property name="co_y_offset" type="float" value="0"/>
+     <property name="sensor_y_offset" type="float" value="0"/>
+     <property name="carry_player" type="bool" value="true"/>
+     <property name="carry_enemies" type="bool" value="false"/>
+     <property name="carry_pushables" type="bool" value="true"/>
+     <property name="require_rider" type="bool" value="true"/>
+     <property name="shaft_clearance" type="float" value="0"/>
+     <property name="shaft_tolerance" type="float" value="0.5"/>
+    </properties>
+   </property>
+   <property name="camera" type="class" propertytype="elevator_camera">
+    <properties>
+     <property name="camera_follow" type="bool" value="true"/>
+     <property name="camera_lock_x" type="bool" value="true"/>
+     <property name="camera_look_ahead" type="float" value="96"/>
+     <property name="camera_blend_time" type="float" value="0.2"/>
+     <property name="camera_priority" type="int" value="50"/>
+    </properties>
+   </property>
+   <property name="persistence" type="class" propertytype="elevator_persistence">
+    <properties>
+     <property name="persist_landing" type="bool" value="true"/>
+     <property name="restore_to_last_landing" type="bool" value="true"/>
+    </properties>
+   </property>
+   <property name="visuals" type="class" propertytype="elevator_visuals">
+    <properties>
+     <property name="source_layer" type="string" value="environment"/>
+     <property name="visual_z" type="float" value="0.5"/>
+    </properties>
+   </property>
+   <property name="mvtk_template_version" type="string" value="2.7.0"/>
+  </properties>
+ </object>
+</template>

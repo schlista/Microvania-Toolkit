@@ -1,0 +1,8 @@
+animations { id: "sword" images { image: "/developer/assets/atlas/collectibles/relic_sword.png" } playback: PLAYBACK_NONE fps: 1 }
+animations { id: "crystal" images { image: "/developer/assets/atlas/collectibles/relic_crystal.png" } playback: PLAYBACK_NONE fps: 1 }
+animations { id: "chalice" images { image: "/developer/assets/atlas/collectibles/relic_chalice.png" } playback: PLAYBACK_NONE fps: 1 }
+animations { id: "slot" images { image: "/developer/assets/atlas/collectibles/charm_slot.png" } playback: PLAYBACK_NONE fps: 1 }
+animations { id: "material" images { image: "/developer/assets/atlas/collectibles/upgrade_material.png" } playback: PLAYBACK_NONE fps: 1 }
+margin: 2
+extrude_borders: 0
+inner_padding: 0

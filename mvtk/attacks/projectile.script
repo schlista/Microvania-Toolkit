@@ -1,0 +1,164 @@
+-- mvtk/attacks/projectile.script
+local v3 = vmath.vector3
+local Pause = require "mvtk.core.pause"
+local C = require "mvtk.core.constants"
+local Util = require "mvtk.core.util"
+local DamagePayload = require "mvtk.combat.damage_payload"
+local CombatFeedback = require "mvtk.combat.combat_feedback"
+local SurfaceClassifier = require "mvtk.core.surface_classifier"
+
+go.property("speed", 1200.0)
+go.property("dir", 1.0)
+go.property("dir_x", 0.0)
+go.property("dir_y", 0.0)
+go.property("projectile_visual", "")
+go.property("lifetime", 1.5)
+go.property("damage", 1.0)
+go.property("attack_type", "")    -- optional action tag for action barriers
+go.property("source_attack", "")  -- standardized combat payload field
+go.property("source_actor", msg.url())  -- standardized combat payload field
+go.property("boss_id", "")       -- encounter feedback lookup; empty for non-boss attacks
+go.property("parryable", true)          -- enemy projectiles are parryable by default
+go.property("reaction_type", "")  -- light/medium/heavy/launch/stun
+go.property("kx", 0.0)                  -- explicit knockback x
+go.property("ky", 0.0)                  -- explicit knockback y
+go.property("stun_t", 0.06)             -- optional custom stun duration
+go.property("origin_x", 0.0)            -- shooter anchor for the first terrain sweep (see probe_origin)
+go.property("origin_y", 0.0)
+go.property("probe_origin", false)      -- sweep origin->spawn too, so a shot fired into a wall the shooter touches dies at once
+
+local function apply_visual(self)
+  if self.projectile_visual and self.projectile_visual ~= "" then
+    pcall(sprite.play_flipbook, "#sprite", self.projectile_visual)
+  end
+end
+
+local function direction_angle(dy, dx)
+  if math.atan2 then
+    return math.atan2(dy, dx)
+  end
+  if dx > 0 then
+    return math.atan(dy / dx)
+  elseif dx < 0 then
+    return math.atan(dy / dx) + (dy >= 0 and math.pi or -math.pi)
+  elseif dy > 0 then
+    return math.pi * 0.5
+  elseif dy < 0 then
+    return -math.pi * 0.5
+  end
+  return 0
+end
+
+local function apply_direction_rotation(dx, dy)
+  if (dx == 0 and dy == 0) or not vmath.quat_rotation_z or not go.set_rotation then
+    return
+  end
+  pcall(go.set_rotation, vmath.quat_rotation_z(direction_angle(dy, dx)))
+end
+
+local hash_to_string = Util.hash_text
+
+-- Terrain that stops a projectile: solid tiles, world objects, room bounds and
+-- one-way platforms (the groups enemy line-of-sight rays test against).
+local BLOCKING_GROUPS = SurfaceClassifier.RAYCAST.TERRAIN
+local GROUP_WORLD = SurfaceClassifier.GROUPS.WORLD
+
+local hit -- defined after update; forward-declared so the sweep can deliver hits
+
+-- Sweep the segment from -> to against terrain. The trigger only reports
+-- overlaps with bodies that mask "attack", and baked tile collision does not,
+-- so a raycast is what stops the shot. Returns the closest hit or nil.
+local function terrain_hit(from, to)
+  if not (physics and physics.raycast) then return nil end
+  if from.x == to.x and from.y == to.y then return nil end
+  local ok, hit = pcall(physics.raycast, from, to, BLOCKING_GROUPS)
+  if ok then return hit end
+  return nil
+end
+
+function init(self)
+  local speed = self.speed or 1200
+  local dx = self.dir_x or 0
+  local dy = self.dir_y or 0
+  if dx ~= 0 or dy ~= 0 then
+    local len = math.sqrt(dx * dx + dy * dy)
+    if len > 0 then
+      dx = dx / len
+      dy = dy / len
+    end
+    self.vel = v3(speed * dx, speed * dy, 0)
+    self._knock_dir = (dx ~= 0 and dx) or (self.dir or 1)
+  else
+    local dir = self.dir or 1
+    self.vel = v3(speed * dir, 0, 0)
+    self._knock_dir = dir
+    dx, dy = dir, 0
+  end
+  apply_visual(self)
+  apply_direction_rotation(dx, dy)
+  self.t = self.lifetime or 1.5
+  if self.probe_origin then
+    self._sweep_from = v3(self.origin_x or 0, self.origin_y or 0, 0)
+  end
+  self.attack_type_id = (self.attack_type and self.attack_type ~= "") and self.attack_type or nil
+  self.source_attack_str = hash_to_string(self.source_attack)
+  self.reaction_type_str = hash_to_string(self.reaction_type)
+end
+
+function update(self, dt)
+  if Pause and Pause.get and Pause.get() then return end
+  local p = go.get_position()
+  local to = v3(p.x + self.vel.x * dt, p.y + self.vel.y * dt, p.z)
+  local from = self._sweep_from or p
+  self._sweep_from = nil
+  local blocked = terrain_hit(from, to)
+  if blocked then
+    -- Stop at walls, floors, ceilings and platforms instead of flying through.
+    -- "world" objects (breakable walls, doors, pushable blocks) still receive
+    -- the hit so a breakable wall takes projectile damage as before.
+    if blocked.group == GROUP_WORLD and blocked.id then
+      hit(self, blocked.id)
+    else
+      go.delete(".")
+    end
+    return
+  end
+  go.set_position(to)
+  self.t = self.t - dt
+  if self.t <= 0 then go.delete(".") end
+end
+
+function hit(self, other)
+  -- Send to the game object id directly so any script component id can handle
+  -- damage (e.g. "#enemy", "#script", etc).
+  local target = other
+  local dmg = self.damage or 1
+  local dir = self._knock_dir or (self.dir or 1)
+  local payload = DamagePayload.build({
+    amount = dmg,
+    damage_type = "projectile",
+    kx = (self.kx ~= 0) and self.kx or (60 * dir),
+    ky = self.ky or 0,
+    stun_t = self.stun_t or 0.06,
+    parryable = self.parryable == true,
+    source_actor = self.source_actor or msg.url(),
+    boss_id = self.boss_id,
+    source_attack = self.source_attack_str,
+    reaction_type = self.reaction_type_str,
+    attack_type = self.attack_type_id,
+  })
+  if self.attack_type_id then
+    payload.attack_type = self.attack_type_id
+  end
+  pcall(msg.post, target, hash("mvtk_apply_damage"), payload)
+  CombatFeedback.attack_impact("projectile", dmg, self.boss_id, other, { sfx = "hit_projectile" })
+  go.delete(".")
+end
+
+function on_message(self, message_id, message, sender)
+  if message_id == hash("trigger_response") then
+    if message.enter and message.other_id then hit(self, message.other_id) end
+  elseif message_id == hash("contact_point_response") then
+    go.delete(".")
+  end
+end

@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<template>
+ <object name="Player Start" type="spawn_point">
+  <point/>
+  <properties>
+   <property name="spawn_type" type="string" value="player"/>
+   <property name="facing" type="int" value="1"/>
+   <property name="is_default" type="bool" value="true"/>
+   <property name="checkpoint_id" type="string" value="start"/>
+   <property name="mvtk_template_version" type="string" value="2.3.0"/>
+  </properties>
+ </object>
+</template>

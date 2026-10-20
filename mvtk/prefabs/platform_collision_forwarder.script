@@ -1,0 +1,20 @@
+-- For generated platform collision children. Collision messages are delivered to
+-- the game object that owns the collision component, while the platform logic
+-- remains on the parent game object. Relay only the physics notifications the
+-- root platform scripts already handle.
+
+local FORWARDED_MESSAGES = {
+    [hash("collision_response")] = true,
+    [hash("trigger_response")] = true,
+}
+
+function on_message(self, message_id, message)
+    if not FORWARDED_MESSAGES[message_id] then
+        return
+    end
+
+    local ok, parent_id = pcall(go.get_parent)
+    if ok and parent_id then
+        msg.post(parent_id, message_id, message)
+    end
+end

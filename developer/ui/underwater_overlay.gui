@@ -1,0 +1,38 @@
+script: "/developer/ui/underwater_overlay.gui_script"
+fonts {
+  name: "default"
+  font: "/builtins/fonts/default.font"
+}
+nodes {
+  size {
+    x: 1920.0
+    y: 1080.0
+  }
+  color {
+    x: 0.2
+    y: 0.4
+    z: 0.8
+  }
+  type: TYPE_BOX
+  id: "overlay"
+  adjust_mode: ADJUST_MODE_FIT
+  pivot: PIVOT_SW
+  alpha: 0.0
+}
+nodes {
+  position {
+    x: 20.0
+    y: 40.0
+  }
+  size {
+    x: 300.0
+    y: 32.0
+  }
+  type: TYPE_TEXT
+  text: "Oxygen: 100%"
+  font: "default"
+  id: "oxygen"
+  pivot: PIVOT_SW
+  alpha: 0.0
+}
+material: "/builtins/materials/gui.material"

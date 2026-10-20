@@ -1,0 +1,8 @@
+script: "/developer/ui/game/cutscene_test.gui_script"
+material: "/builtins/materials/gui.material"
+adjust_reference: ADJUST_REFERENCE_PARENT
+fonts {
+  name: "system"
+  font: "/builtins/fonts/default.font"
+}
+

@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<template>
+ <object name="Music Trigger" type="music_trigger" width="384" height="384">
+  <properties>
+   <property name="music_id" propertytype="music_tracks" value="none"/>
+   <property name="trigger_id" type="string" value=""/>
+   <property name="transition" type="class" propertytype="music_trigger_transition">
+    <properties>
+     <property name="fade_time" type="float" value="0.5"/>
+     <property name="exit_music" propertytype="music_tracks" value="none"/>
+    </properties>
+   </property>
+   <property name="activation" type="class" propertytype="music_trigger_activation">
+    <properties>
+     <property name="stop_on_exit" type="bool" value="true"/>
+     <property name="trigger_once" type="bool" value="false"/>
+    </properties>
+   </property>
+   <property name="mvtk_template_version" type="string" value="2.7.0"/>
+  </properties>
+ </object>
+</template>

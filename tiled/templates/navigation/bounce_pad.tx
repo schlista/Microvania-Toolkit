@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<template>
+ <object name="Bounce Pad" type="bounce_pad" width="64" height="16">
+  <properties>
+   <property name="bounce_speed" type="int" value="900"/>
+   <property name="activation" type="class" propertytype="bounce_pad_activation">
+    <properties>
+     <property name="cooldown" type="float" value="0.2"/>
+     <property name="require_interact" type="bool" value="false"/>
+     <property name="range" type="int" value="80"/>
+    </properties>
+   </property>
+   <property name="feedback_and_visuals" type="class" propertytype="bounce_pad_feedback_and_visuals">
+    <properties>
+     <property name="label" type="string" value="Bounce"/>
+     <property name="sound_id" propertytype="sound_effects" value="none"/>
+    </properties>
+   </property>
+   <property name="mvtk_template_version" type="string" value="2.7.0"/>
+  </properties>
+ </object>
+</template>

@@ -1,0 +1,299 @@
+-- Guarded editor hook for Defold.
+-- Loads hooks from hooks/editor_core.lua + hooks/editor_script.lua.
+-- Falls back to safe no-op hooks if loading fails.
+
+local function log(msg)
+    print("[hooks.editor_script] " .. tostring(msg))
+end
+
+local SAFE_HOOKS = {}
+
+local function empty_list()
+    return {}
+end
+
+-- Never fail silently. If the full hook cannot boot, keep one visible Project
+-- command so creators know the editor script was found and where to look.
+SAFE_HOOKS.get_commands = function()
+    return {
+        {
+            label = "MVTK: Editor Script Failed (see Console)",
+            locations = { "Project" },
+            run = function()
+                log("The full editor script did not load. Check the earlier BOOT FAILED message.")
+                return {}
+            end,
+        },
+    }
+end
+SAFE_HOOKS.get_keymap = empty_list
+SAFE_HOOKS.get_http_server_routes = empty_list
+SAFE_HOOKS.on_build_started = function() end
+SAFE_HOOKS.on_build_finished = function() end
+SAFE_HOOKS.on_project_loaded = function() end
+
+local function normalized(path)
+    if not path then
+        return ""
+    end
+    path = path:gsub("\\", "/")
+    return path:gsub("/+", "/")
+end
+
+-- Resolve the hooks directory from candidate locations.
+-- Returns (hooks_dir, project_root) where project_root may be nil.
+local function find_hooks_dir()
+    local candidates = {}
+
+    -- Defold does not guarantee that the editor process CWD is the project
+    -- root, and debug.getinfo may expose only the resource name. Ask the
+    -- editor to resolve a project-relative file before trying those fallbacks.
+    if editor and editor.external_file_attributes then
+        local ok_attrs, attrs = pcall(editor.external_file_attributes, "hooks/editor_script.lua")
+        if ok_attrs and attrs and attrs.exists and attrs.is_file and attrs.path then
+            local script_path = normalized(attrs.path)
+            local dir = script_path:match("^(.*)/[^/]+$")
+            if dir and dir ~= "" then
+                candidates[#candidates + 1] = dir
+            end
+        end
+    end
+
+    -- Prefer absolute paths from debug.getinfo (this proxy file is loaded
+    -- by Defold with an absolute path, so source will be absolute).
+    if debug and debug.getinfo then
+        local info = debug.getinfo(1, "S")
+        local source = info and info.source or ""
+        source = normalized(source:gsub("^@", ""))
+        local dir = source:match("^(.*)/[^/]+$")
+        if dir and dir ~= "" then
+            candidates[#candidates + 1] = dir .. "/hooks"
+        end
+    end
+
+    -- Relative fallbacks (work when CWD is the project dir)
+    candidates[#candidates + 1] = "hooks"
+    candidates[#candidates + 1] = "./hooks"
+
+    for _, dir in ipairs(candidates) do
+        local test = io.open(dir .. "/editor_script.lua", "rb")
+        if test then
+            test:close()
+            return dir
+        end
+    end
+    return nil
+end
+
+-- Load and compile a Lua file using io.open + load (Defold sandboxes loadfile).
+local function load_lua_file(path)
+    local fh = io.open(path, "rb")
+    if not fh then
+        return nil, "cannot open " .. path
+    end
+    local content = fh:read("*a")
+    fh:close()
+    log("Read " .. path .. " (" .. #content .. " bytes)")
+    local load_fn = loadstring or load
+    local chunk, err = load_fn(content, "@" .. path)
+    if not chunk then
+        return nil, err
+    end
+    return chunk
+end
+
+local function set_boot_project_root(project_root)
+    local ok_boot_env, BootEnv = pcall(require, "hooks.core.boot_env")
+    if ok_boot_env and BootEnv and BootEnv.set_project_root then
+        BootEnv.set_project_root(project_root)
+    end
+end
+
+local function load_full_hooks()
+    local hooks_dir = find_hooks_dir()
+    if not hooks_dir then
+        log("Could not find hooks directory")
+        return nil
+    end
+
+    -- Resolve an absolute project root while CWD is still the project dir.
+    -- The hooks dir is a child of the project root, so strip the trailing
+    -- "/hooks" (or "hooks") component.  If hooks_dir is relative, prepend
+    -- an absolute CWD obtained the same way project_root() would.
+    do
+        local abs_hooks = normalized(hooks_dir)
+        -- Make it absolute if it isn't already
+        if not abs_hooks:match("^[A-Za-z]:") and abs_hooks:sub(1,1) ~= "/" then
+            -- Strategy 1: derive from this proxy file's debug.getinfo source
+            local abs_cwd = nil
+            if debug and debug.getinfo then
+                local src = (debug.getinfo(1, "S").source or ""):gsub("^@", "")
+                src = normalized(src)
+                local proxy_dir = src:match("^(.*)/[^/]+$")
+                if proxy_dir and proxy_dir:match("^[A-Za-z]:") then
+                    abs_cwd = proxy_dir
+                end
+            end
+            -- Strategy 2: lfs.currentdir
+            if not abs_cwd then
+                local ok_lfs, lfs_mod = pcall(require, "lfs")
+                if ok_lfs and lfs_mod and lfs_mod.currentdir then
+                    local ok_c, v = pcall(lfs_mod.currentdir)
+                    if ok_c and v then abs_cwd = v end
+                end
+            end
+            -- Strategy 3: os.execute("cd") → temp file → io.open
+            -- Use a known relative temp file because os.tmpname is unavailable
+            -- in Defold's LuaJ sandbox.  CWD-relative io.open works fine.
+            if not abs_cwd and os and os.execute and type(os.execute) == "function" then
+                local tmp = "hooks/.mvtk_root.tmp"
+                local is_win = package and package.config and package.config:sub(1,1) == "\\"
+                local stderr_redirect = is_win and "2>nul" or "2>/dev/null"
+                os.execute((is_win and "cd" or "pwd") .. ' > "' .. tmp .. '" ' .. stderr_redirect)
+                local fh = io.open(tmp, "r")
+                if fh then
+                    local line = fh:read("*l")
+                    fh:close()
+                    if line and line ~= "" then abs_cwd = normalized(line) end
+                end
+                pcall(os.remove, tmp)
+            end
+            -- Strategy 4: io.popen (last resort, often sandboxed)
+            if not abs_cwd and io and io.popen then
+                local is_win = package and package.config and package.config:sub(1,1) == "\\"
+                local ok_p, proc = pcall(io.popen, is_win and "cd" or "pwd")
+                if ok_p and proc then
+                    local line = proc:read("*l")
+                    proc:close()
+                    if line and line ~= "" then abs_cwd = line end
+                end
+            end
+            if abs_cwd then
+                abs_hooks = normalized(abs_cwd) .. "/" .. abs_hooks
+            end
+        end
+        -- Derive project root = parent of hooks dir
+        local project_root = abs_hooks:match("^(.*)/hooks$") or abs_hooks:match("^(.*)/[^/]+$")
+        if project_root and project_root ~= "" then
+            set_boot_project_root(project_root)
+            log("Resolved project root: " .. project_root)
+        else
+            log("WARNING: Could not resolve absolute project root (hooks_dir=" .. tostring(hooks_dir) .. ")")
+        end
+    end
+
+    -- Step 1: Load and run editor_core.lua (sets up hooks.core.context)
+    log("BOOT STEP 1: Loading editor_core.lua...")
+    local core_path = hooks_dir .. "/editor_core.lua"
+    local core_chunk, core_err = load_lua_file(core_path)
+    if not core_chunk then
+        log("BOOT FAILED: Could not compile core: " .. tostring(core_err))
+        return nil
+    end
+    log("BOOT STEP 1: Core compiled OK, executing...")
+    local ok_core, core_result = pcall(core_chunk)
+    if not ok_core then
+        log("BOOT FAILED: Core execution error: " .. tostring(core_result))
+        return nil
+    end
+    log("BOOT STEP 1: Core loaded OK from: " .. core_path)
+
+    if type(core_result) ~= "table" then
+        log("BOOT FAILED: editor_core.lua did not return a context table")
+        return nil
+    end
+    log("BOOT STEP 1: editor context exists, editor_api=" .. tostring(core_result.editor_api) .. " HEADLESS=" .. tostring(core_result.HEADLESS))
+
+    -- Step 2: Load and run editor_script.lua (init phase - stores locals to hooks.core.context)
+    log("BOOT STEP 2: Loading editor_script.lua...")
+    local script_path = hooks_dir .. "/editor_script.lua"
+    local script_chunk, script_err = load_lua_file(script_path)
+    if not script_chunk then
+        log("BOOT FAILED: Could not compile script: " .. tostring(script_err))
+        return nil
+    end
+    log("BOOT STEP 2: Script compiled OK, executing...")
+    local ok_script, script_result = pcall(script_chunk)
+    if not ok_script then
+        log("BOOT FAILED: Script execution error: " .. tostring(script_result))
+        return nil
+    end
+    log("BOOT STEP 2: editor_script.lua loaded OK (init stage)")
+
+    -- Step 3: Load and run editor_generators.lua (gen_collection - stores to hooks.core.context)
+    log("BOOT STEP 3: Loading editor_generators.lua...")
+    local gen_path = hooks_dir .. "/editor_generators.lua"
+    local gen_chunk, gen_err = load_lua_file(gen_path)
+    if not gen_chunk then
+        log("BOOT FAILED: Could not compile generators: " .. tostring(gen_err))
+        return nil
+    end
+    log("BOOT STEP 3: Generators compiled OK, executing...")
+    local ok_gen, gen_result = pcall(gen_chunk)
+    if not ok_gen then
+        log("BOOT FAILED: Generators execution error: " .. tostring(gen_result))
+        return nil
+    end
+    log("BOOT STEP 3: editor_generators.lua loaded OK")
+
+    -- Step 4: Load and run editor_commands.lua (returns M module table)
+    log("BOOT STEP 4: Loading editor_commands.lua...")
+    local cmd_path = hooks_dir .. "/editor_commands.lua"
+    local cmd_chunk, cmd_err = load_lua_file(cmd_path)
+    if not cmd_chunk then
+        log("BOOT FAILED: Could not compile commands: " .. tostring(cmd_err))
+        return nil
+    end
+    log("BOOT STEP 4: Commands compiled OK, executing...")
+    local ok_cmd, cmd_result = pcall(cmd_chunk)
+    if not ok_cmd then
+        log("BOOT FAILED: Commands execution error: " .. tostring(cmd_result))
+        return nil
+    end
+    log("BOOT STEP 4: Commands executed, result type=" .. type(cmd_result))
+    if type(cmd_result) == "table" then
+        -- Verify get_commands exists
+        if cmd_result.get_commands then
+            log("BOOT SUCCESS: get_commands found, testing...")
+            local ok_cmds, cmds = pcall(cmd_result.get_commands)
+            if ok_cmds then
+                log("BOOT SUCCESS: get_commands returned " .. tostring(#cmds) .. " commands")
+                for i, cmd in ipairs(cmds) do
+                    log("  CMD " .. i .. ": " .. tostring(cmd.id) .. " label=" .. tostring(cmd.label) .. " locations=" .. table.concat(cmd.locations or {}, ","))
+                end
+            else
+                log("BOOT WARNING: get_commands() errored: " .. tostring(cmds))
+            end
+        else
+            log("BOOT WARNING: cmd_result has no get_commands function")
+        end
+        log("BOOT SUCCESS: Loaded full hooks from 4 files")
+        return cmd_result
+    end
+    log("BOOT FAILED: Commands did not return a table (got " .. type(cmd_result) .. ": " .. tostring(cmd_result) .. ")")
+    return nil
+end
+
+local function boot()
+    log("BOOT: Starting editor script boot sequence...")
+    local force_safe = os and os.getenv and os.getenv("MVTK_FORCE_SAFE_HOOKS") == "1"
+    if force_safe then
+        log("BOOT: MVTK_FORCE_SAFE_HOOKS=1, using safe hooks.")
+        return SAFE_HOOKS
+    end
+
+    local ok_full, full = pcall(load_full_hooks)
+    if not ok_full then
+        log("BOOT FAILED: Unhandled loader error: " .. tostring(full))
+        full = nil
+    end
+    if full then
+        log("BOOT: Full hooks loaded successfully, returning module to Defold")
+        return full
+    end
+
+    log("BOOT: load_full_hooks() returned nil — using safe hooks fallback (NO PROJECT MENU)")
+    return SAFE_HOOKS
+end
+
+return boot()

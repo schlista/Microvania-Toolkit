@@ -1,0 +1,18 @@
+-- mvtk/prefabs/loot_coin.script
+local Inv = require "mvtk.core.inventory"
+local Util = require "mvtk.core.util"
+
+go.property("amount", 5.0)
+
+function on_message(self, message_id, message, sender)
+  if message_id == hash('trigger_response') then
+    if message.enter and message.other_id and message.group == hash('player') then
+      if self.collected then return end
+      Inv.add_currency(math.floor(self.amount or 1))
+      self.collected = true
+      if Util.component_exists("#consume_fx") then particlefx.play("#consume_fx") end
+      go.delete('.')
+    end
+  end
+end
+

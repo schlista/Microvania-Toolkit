@@ -1,0 +1,15 @@
+script: "/developer/ui/game/minimap.gui_script"
+material: "/builtins/materials/gui.material"
+adjust_reference: ADJUST_REFERENCE_PARENT
+max_nodes: 4096
+max_dynamic_textures: 256
+
+textures {
+  name: "minimap_atlas"
+  texture: "/developer/assets/minimap/minimap.atlas"
+}
+
+materials {
+  name: "fog"
+  material: "/mvtk/ui/minimap/fog.material"
+}

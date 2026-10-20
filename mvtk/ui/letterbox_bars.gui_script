@@ -1,0 +1,41 @@
+local Viewport = require "mvtk.ui.viewport"
+local Settings = require "developer.config.display_settings"
+
+local function place(node, x, y, width, height)
+    gui.set_enabled(node, width > 0 and height > 0)
+    if width <= 0 or height <= 0 then return end
+    gui.set_position(node, vmath.vector3(x + width / 2, y + height / 2, 0))
+    gui.set_size(node, vmath.vector3(width, height, 0))
+end
+
+local function layout(self)
+    local rect = Viewport.rect()
+    if rect == self.rect then return end
+    self.rect = rect
+    if not rect then
+        for _, node in pairs(self.bars) do gui.set_enabled(node, false) end
+        return
+    end
+    place(self.bars.left, 0, 0, rect.x, rect.window_h)
+    place(self.bars.right, rect.x + rect.w, 0, rect.window_w - rect.x - rect.w, rect.window_h)
+    place(self.bars.bottom, rect.x, 0, rect.w, rect.y)
+    place(self.bars.top, rect.x, rect.y + rect.h, rect.w, rect.window_h - rect.y - rect.h)
+end
+
+function init(self)
+    gui.set_render_order(15)
+    self.bars = {}
+    local c = Settings.letterbox_color
+    for _, name in ipairs({ "left", "right", "bottom", "top" }) do
+        local node = gui.get_node(name)
+        self.bars[name] = node
+        gui.set_color(node, vmath.vector4(c.r, c.g, c.b, 1))
+        gui.set_enabled(node, false)
+    end
+    layout(self)
+end
+
+function update(self, dt)
+    -- Poll instead of occupying window.set_listener, which creators may use.
+    layout(self)
+end

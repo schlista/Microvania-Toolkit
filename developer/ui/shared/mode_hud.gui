@@ -1,0 +1,282 @@
+script: "/developer/ui/shared/mode_hud.gui_script"
+fonts {
+  name: "system"
+  font: "/builtins/fonts/default.font"
+}
+nodes {
+  position {
+    x: 88.0
+    y: 689.0
+  }
+  size {
+    x: 119.0
+    y: 58.0
+  }
+  color {
+    x: 0.0
+    y: 0.0
+    z: 0.0
+  }
+  type: TYPE_BOX
+  id: "root"
+  alpha: 0.0
+}
+nodes {
+  position {
+    x: 8.0
+    y: -8.0
+  }
+  size {
+    x: 82.0
+    y: 21.0
+  }
+  color {
+    x: 0.25
+    y: 0.25
+    z: 0.25
+  }
+  type: TYPE_BOX
+  id: "btn_menu"
+  pivot: PIVOT_NW
+  parent: "root"
+}
+nodes {
+  position {
+    x: 0.0
+    y: 0.0
+  }
+  size {
+    x: 65.0
+    y: 20.0
+  }
+  type: TYPE_TEXT
+  text: "Menu"
+  font: "system"
+  id: "btn_menu_label"
+  parent: "btn_menu"
+  pivot: PIVOT_CENTER
+}
+nodes {
+  position {
+    x: 12.0
+    y: -14.0
+  }
+  size {
+    x: 150.0
+    y: 20.0
+  }
+  color {
+    x: 0.95
+    y: 0.95
+    z: 0.95
+  }
+  type: TYPE_TEXT
+  font: "system"
+  id: "mode_label"
+  pivot: PIVOT_NW
+  parent: "root"
+}
+nodes {
+  position {
+    x: 12.0
+    y: -44.0
+  }
+  size {
+    x: 200.0
+    y: 16.0
+  }
+  color {
+    x: 0.15
+    y: 0.05
+    z: 0.05
+  }
+  type: TYPE_BOX
+  id: "health_bar_bg"
+  pivot: PIVOT_NW
+  parent: "root"
+  alpha: 0.75
+}
+nodes {
+  position {
+    x: 2.0
+    y: 2.0
+  }
+  size {
+    x: 196.0
+    y: 12.0
+  }
+  color {
+    x: 0.85
+    y: 0.2
+    z: 0.15
+  }
+  type: TYPE_BOX
+  id: "health_bar_fg"
+  pivot: PIVOT_NW
+  parent: "health_bar_bg"
+  alpha: 0.95
+}
+nodes {
+  position {
+    x: 12.0
+    y: -67.0
+  }
+  size {
+    x: 140.0
+    y: 12.0
+  }
+  color {
+    x: 0.05
+    y: 0.15
+    z: 0.25
+  }
+  type: TYPE_BOX
+  id: "energy_bar_bg"
+  pivot: PIVOT_NW
+  parent: "root"
+  alpha: 0.75
+}
+nodes {
+  position {
+    x: 2.0
+    y: 2.0
+  }
+  size {
+    x: 136.0
+    y: 8.0
+  }
+  color {
+    x: 0.25
+    y: 0.6
+    z: 0.95
+  }
+  type: TYPE_BOX
+  id: "energy_bar_fg"
+  pivot: PIVOT_NW
+  parent: "energy_bar_bg"
+  alpha: 0.95
+}
+nodes {
+  position {
+    x: 12.0
+    y: -84.0
+  }
+  size {
+    x: 140.0
+    y: 10.0
+  }
+  color {
+    x: 0.05
+    y: 0.2
+    z: 0.05
+  }
+  type: TYPE_BOX
+  id: "stamina_bar_bg"
+  pivot: PIVOT_NW
+  parent: "root"
+  alpha: 0.75
+}
+nodes {
+  position {
+    x: 2.0
+    y: 2.0
+  }
+  size {
+    x: 136.0
+    y: 6.0
+  }
+  color {
+    x: 0.3
+    y: 0.85
+    z: 0.35
+  }
+  type: TYPE_BOX
+  id: "stamina_bar_fg"
+  pivot: PIVOT_NW
+  parent: "stamina_bar_bg"
+  alpha: 0.95
+}
+nodes {
+  position {
+    x: 12.0
+    y: -101.0
+  }
+  size {
+    x: 150.0
+    y: 20.0
+  }
+  color {
+    x: 0.95
+    y: 0.85
+    z: 0.3
+  }
+  type: TYPE_TEXT
+  font: "system"
+  id: "currency_text"
+  pivot: PIVOT_NW
+  parent: "root"
+}
+nodes {
+  position {
+    x: 12.0
+    y: -126.0
+  }
+  size {
+    x: 250.0
+    y: 20.0
+  }
+  color {
+    x: 0.6
+    y: 0.8
+  }
+  type: TYPE_TEXT
+  font: "system"
+  id: "abilities_text"
+  pivot: PIVOT_NW
+  parent: "root"
+  alpha: 0.95
+}
+
+nodes {
+  position {
+    x: 12.0
+    y: 3.0
+  }
+  size {
+    x: 200.0
+    y: 20.0
+  }
+  color {
+    x: 0.9
+    y: 0.9
+    z: 0.7
+  }
+  type: TYPE_TEXT
+  font: "system"
+  id: "interact_hint_text"
+  pivot: PIVOT_NW
+  parent: "root"
+  alpha: 0.0
+}
+nodes {
+  position {
+    x: 207.0
+    y: -100.0
+  }
+  size {
+    x: 100.0
+    y: 20.0
+  }
+  color {
+    x: 0.95
+    y: 0.95
+    z: 0.3
+  }
+  type: TYPE_TEXT
+  font: "system"
+  id: "cooldown_flash_text"
+  pivot: PIVOT_NW
+  parent: "root"
+  alpha: 0.0
+}
+material: "/builtins/materials/gui.material"

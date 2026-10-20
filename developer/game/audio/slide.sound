@@ -1,0 +1,3 @@
+sound: "/developer/assets/sfx/slide.wav"
+looping: 0
+group: "sfx"

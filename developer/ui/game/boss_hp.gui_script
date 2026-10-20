@@ -1,0 +1,93 @@
+local Viewport = require "mvtk.ui.viewport"
+-- developer/ui/game/boss_hp.gui_script
+local v3 = vmath.vector3
+
+function init(self)
+  msg.post(".", "acquire_input_focus")
+  self.enabled = false
+  msg.post(".", "disable")
+
+  -- Backing bar
+  self.root = gui.new_box_node(v3(0,0,0), v3(1,1,0))
+  gui.set_pivot(self.root, gui.PIVOT_SW)
+  gui.set_color(self.root, vmath.vector4(0,0,0,0))
+
+  self.w, self.h = Viewport.design_size()
+
+  local w = math.max(300, self.w * 0.6)
+  local x = (self.w - w) * 0.5
+  local y = self.h - 60
+
+  self.frame = gui.new_box_node(v3(x, y, 0), v3(w, 18, 0))
+  gui.set_pivot(self.frame, gui.PIVOT_SW)
+  gui.set_color(self.frame, vmath.vector4(0.2,0.2,0.2,0.9))
+
+  self.fill = gui.new_box_node(v3(x+2, y+2, 0), v3(w-4, 14, 0))
+  gui.set_pivot(self.fill, gui.PIVOT_SW)
+  gui.set_color(self.fill, vmath.vector4(0.9,0.15,0.15,0.95))
+
+  self.label = gui.new_text_node(v3(self.w * 0.5, y + 28, 0), "")
+  gui.set_pivot(self.label, gui.PIVOT_CENTER)
+
+  -- Hide all elements initially
+  gui.set_visible(self.root, false)
+  gui.set_visible(self.frame, false)
+  gui.set_visible(self.fill, false)
+  gui.set_visible(self.label, false)
+
+  self.hp, self.hp_max = 0, 1
+  self.name = ""
+end
+
+local function layout(self)
+  self.w, self.h = Viewport.design_size()
+  local w = math.max(300, self.w * 0.6)
+  local x = (self.w - w) * 0.5
+  local y = self.h - 60
+  gui.set_position(self.frame, v3(x, y, 0))
+  gui.set_size(self.frame, v3(w, 18, 0))
+  gui.set_position(self.fill, v3(x+2, y+2, 0))
+  gui.set_size(self.fill, v3((w-4) * math.max(0, math.min(1, (self.hp or 0)/(self.hp_max or 1))), 14, 0))
+  gui.set_position(self.label, v3(self.w * 0.5, y + 28, 0))
+  gui.set_text(self.label, tostring(self.name or ""))
+end
+
+local function set_enabled(self, on)
+  self.enabled = on and true or false
+  if self.enabled then
+    msg.post(".", "enable")
+    gui.set_visible(self.root, true)
+    gui.set_visible(self.frame, true)
+    gui.set_visible(self.fill, true)
+    gui.set_visible(self.label, true)
+  else
+    msg.post(".", "disable")
+    gui.set_visible(self.root, false)
+    gui.set_visible(self.frame, false)
+    gui.set_visible(self.fill, false)
+    gui.set_visible(self.label, false)
+  end
+end
+
+function on_message(self, message_id, message, sender)
+  if message_id == hash("boss_open") then
+    self.name = message and message.name or "Boss"
+    self.hp = (message and message.hp) or 1
+    self.hp_max = (message and message.hp_max) or math.max(1, self.hp)
+    set_enabled(self, true)
+    layout(self)
+  elseif message_id == hash("boss_close") then
+    set_enabled(self, false)
+  elseif message_id == hash("boss_set_hp") then
+    if message and message.hp_max then self.hp_max = message.hp_max end
+    if message and message.hp then self.hp = message.hp end
+    if message and message.name then self.name = message.name end
+    if self.enabled then layout(self) end
+  end
+end
+
+function update(self, dt)
+  local w, h = Viewport.design_size()
+  if w ~= self.w or h ~= self.h then layout(self) end
+end
+

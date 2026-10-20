@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<template>
+ <object name="Boss Weak Point" type="boss_weak_point" width="64" height="64">
+  <properties>
+   <property name="boss_ref" type="object" value="0"/>
+   <property name="boss_type" type="string" value=""/>
+   <property name="point_id" type="string" value=""/>
+   <property name="boss_id" type="string" value=""/>
+   <property name="durability_and_damage" type="class" propertytype="boss_weak_point_durability_and_damage">
+    <properties>
+     <property name="health" type="float" value="0"/>
+     <property name="damage_mult" type="float" value="2"/>
+    </properties>
+   </property>
+   <property name="availability" type="class" propertytype="boss_weak_point_availability">
+    <properties>
+     <property name="active_phases" type="string" value=""/>
+     <property name="vulnerable" type="bool" value="true"/>
+     <property name="requires_flag" type="string" value=""/>
+     <property name="poll_interval" type="float" value="0.2"/>
+     <property name="attach_to_boss" type="bool" value="true"/>
+    </properties>
+   </property>
+   <property name="outcome" type="class" propertytype="boss_weak_point_outcome">
+    <properties>
+     <property name="destroy_flag" type="string" value=""/>
+    </properties>
+   </property>
+   <property name="visuals" type="class" propertytype="boss_weak_point_visuals">
+    <properties>
+     <property name="use_defold_sprite" type="bool" value="true"/>
+    </properties>
+   </property>
+   <property name="mvtk_template_version" type="string" value="2.8.0"/>
+  </properties>
+ </object>
+</template>

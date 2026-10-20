@@ -1,0 +1,36 @@
+-- editor/gdeveloper/ui/layout_editor.gui_script
+-- Layout Editor GUI vZ42 (refactored)
+-- Entry: defers all logic to controller
+
+local Controller = require "mvtk.editor.layout_editor.controller"
+
+function init(self)
+    local ok, err = pcall(Controller.init, self)
+    if not ok then
+        print("[LE.GUI] init failed:", err)
+    end
+    -- Proactively trigger a manifest rescan and sidebar rebuild
+    timer.delay(0.05, false, function()
+        pcall(msg.post, msg.url(nil, "manifest_loader", "manifest_loader"), "rescan")
+        pcall(msg.post, msg.url(nil, "ui", "gui"), "rescan_rooms")
+    end)
+end
+function update(self,dt)
+    local ok, err = pcall(Controller.update, self, dt)
+    if not ok then
+        print("[LE.GUI] update failed:", err)
+    end
+end
+function on_message(self, msg_id, message, sender)
+	local ok, err = pcall(Controller.on_message, self, msg_id, message, sender)
+	if not ok then
+		print("[LE.GUI] on_message failed:", err)
+	end
+end
+function on_input(self, action_id, action)
+	local ok, err = pcall(Controller.on_input, self, action_id, action)
+	if not ok then
+		print("[LE.GUI] on_input failed:", err)
+	end
+end
+

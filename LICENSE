@@ -1,0 +1,93 @@
+MICROVANIA TOOLKIT LICENSE
+
+Copyright (c) 2025-2026 Michael Swisher ("Licensor"). All rights reserved.
+
+The Toolkit is free for Personal Use. Commercial Use requires a paid
+Commercial License.
+
+1. DEFINITIONS
+"Toolkit" means the Microvania Toolkit and everything distributed with it,
+including source code, scripts, editor and Tiled extensions, templates,
+configuration files, tools and documentation.
+"Game" means a game or other interactive application made with the Toolkit.
+"Commercial Use" means any use for which you or anyone else receives money
+or other compensation, directly or indirectly. It includes:
+  (a) selling a Game, or charging for access, downloads, subscriptions,
+      downloadable content or in-game items;
+  (b) showing advertising in a Game, or receiving sponsorship for it;
+  (c) receiving donations, tips, pay-what-you-want payments, crowdfunding
+      or patronage connected to a Game;
+  (d) using the Toolkit for a client or employer, or inside a business;
+  (e) offering the Toolkit or a Game as part of a paid product, service,
+      course or bundle.
+"Personal Use" means any use that is not Commercial Use.
+"Demonstration Assets" means all art, music and sound included with the
+Toolkit or its sample worlds, unless a notice for a specific file says
+otherwise.
+
+2. FREE LICENSE FOR PERSONAL USE
+Subject to this License, the Licensor grants you a free, worldwide,
+non-exclusive, non-transferable license to:
+  (a) install, use, copy and modify the Toolkit for Personal Use; and
+  (b) make Games with the Toolkit and distribute them free of charge for
+      Personal Use, including the parts of the Toolkit built into a Game.
+
+3. COMMERCIAL USE
+Commercial Use requires a paid Commercial License from the Licensor,
+obtained before the Commercial Use begins. If a Game made under Section 2
+later becomes commercial, you need a Commercial License from that point on.
+A business may evaluate the Toolkit for up to 30 days before buying one.
+Contact: MVTK@swishermail.com.
+
+4. RESTRICTIONS
+You may not:
+  (a) sell, rent, sublicense or distribute the Toolkit or a modified
+      version of it, except as built into a Game, or inside a Game's
+      project files shared with people working on that Game, with this
+      License included;
+  (b) offer the Toolkit or any part of it as, or inside, another engine,
+      toolkit, template, starter kit, asset pack or development tool;
+  (c) remove or change copyright, license or attribution notices; or
+  (d) use the Licensor's names or logos to suggest endorsement. You may
+      say a Game was "Made with Microvania Toolkit".
+
+5. DEMONSTRATION ASSETS
+Demonstration Assets are provided only so you can try, learn and evaluate
+the Toolkit. They are not licensed for any other use. You may not:
+  (a) include a Demonstration Asset, or anything made from one, in a Game
+      or any other project you distribute, free or paid; or
+  (b) extract, share, sell or redistribute Demonstration Assets on their
+      own or as part of any other product.
+Replace every Demonstration Asset with art and audio you own or have
+licensed before you distribute a Game. A Commercial License grants no
+rights to Demonstration Assets.
+
+6. YOUR CONTENT
+You own the maps, art, audio, code and other content you create. This
+License gives the Licensor no rights to it.
+
+7. THIRD-PARTY SOFTWARE
+The Toolkit works with, and may download or include, software owned by
+others, including the Defold engine and its extensions, the optional Spine
+runtime and Tiled. Each is licensed by its owner under its own terms, which
+you must follow. Files that carry their own license notice, such as the
+Defold License headers in the renderer and the SIL Open Font License beside
+the bundled font, stay under that license. This License grants no rights to
+third-party software.
+
+8. NO WARRANTY
+THE TOOLKIT AND DEMONSTRATION ASSETS ARE PROVIDED "AS IS", WITHOUT WARRANTY
+OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
+
+9. LIMITATION OF LIABILITY
+TO THE MAXIMUM EXTENT PERMITTED BY LAW, THE LICENSOR IS NOT LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY ARISING FROM THE TOOLKIT OR ITS USE,
+WHETHER IN CONTRACT, TORT OR OTHERWISE.
+
+10. TERMINATION
+If you break this License, your rights under it end automatically.
+Sections 5, 8 and 9 continue to apply.
+
+11. GOVERNING LAW
+This License is governed by the laws of the United States of America.

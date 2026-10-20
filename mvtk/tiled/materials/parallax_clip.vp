@@ -1,0 +1,15 @@
+uniform mediump mat4 view_proj;
+
+attribute mediump vec4 position;
+attribute mediump vec2 texcoord0;
+
+varying mediump vec2 var_texcoord0;
+varying mediump vec3 var_world_pos;
+
+void main()
+{
+    // vertex_space is VERTEX_SPACE_WORLD so position is already in world space
+    gl_Position = view_proj * vec4(position.xyz, 1.0);
+    var_texcoord0 = texcoord0;
+    var_world_pos = position.xyz;
+}

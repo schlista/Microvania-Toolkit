@@ -1,0 +1,145 @@
+script: "/developer/ui/game/dialogue.gui_script"
+fonts {
+  name: "main"
+  font: "/builtins/fonts/default.font"
+}
+nodes {
+  position {
+    x: 640.0
+    y: 72.0
+  }
+  size {
+    x: 1040.0
+    y: 220.0
+  }
+  color {
+    x: 0.08
+    y: 0.08
+    z: 0.12
+  }
+  type: TYPE_BOX
+  id: "panel"
+  pivot: PIVOT_S
+  alpha: 0.9
+}
+nodes {
+  position {
+    x: -480.0
+    y: 170.0
+  }
+  size {
+    x: 980.0
+    y: 36.0
+  }
+  type: TYPE_TEXT
+  font: "main"
+  id: "speaker"
+  pivot: PIVOT_W
+  line_break: true
+}
+nodes {
+  position {
+    x: -480.0
+    y: 126.0
+  }
+  size {
+    x: 980.0
+    y: 120.0
+  }
+  type: TYPE_TEXT
+  font: "main"
+  id: "text"
+  pivot: PIVOT_W
+  line_break: true
+  outline_alpha: 0.0
+  shadow_alpha: 0.0
+}
+nodes {
+  position {
+    x: 480.0
+    y: 18.0
+  }
+  size {
+    x: 120.0
+    y: 32.0
+  }
+  type: TYPE_TEXT
+  text: "\342\226\266"
+  font: "main"
+  id: "continue"
+  pivot: PIVOT_E
+}
+nodes {
+  position {
+    x: -480.0
+    y: 90.0
+  }
+  size {
+    x: 900.0
+    y: 28.0
+  }
+  type: TYPE_TEXT
+  text: "> Choice 1"
+  font: "main"
+  id: "choice_1"
+  pivot: PIVOT_W
+  line_break: true
+  outline_alpha: 0.0
+  shadow_alpha: 0.0
+}
+nodes {
+  position {
+    x: -480.0
+    y: 62.0
+  }
+  size {
+    x: 900.0
+    y: 28.0
+  }
+  type: TYPE_TEXT
+  text: "> Choice 2"
+  font: "main"
+  id: "choice_2"
+  pivot: PIVOT_W
+  line_break: true
+  outline_alpha: 0.0
+  shadow_alpha: 0.0
+}
+nodes {
+  position {
+    x: -480.0
+    y: 34.0
+  }
+  size {
+    x: 900.0
+    y: 28.0
+  }
+  type: TYPE_TEXT
+  text: "> Choice 3"
+  font: "main"
+  id: "choice_3"
+  pivot: PIVOT_W
+  line_break: true
+  outline_alpha: 0.0
+  shadow_alpha: 0.0
+}
+nodes {
+  position {
+    x: -480.0
+    y: 6.0
+  }
+  size {
+    x: 900.0
+    y: 28.0
+  }
+  type: TYPE_TEXT
+  text: "> Choice 4"
+  font: "main"
+  id: "choice_4"
+  pivot: PIVOT_W
+  line_break: true
+  outline_alpha: 0.0
+  shadow_alpha: 0.0
+}
+material: "/builtins/materials/gui.material"
+adjust_reference: ADJUST_REFERENCE_PARENT

@@ -1,0 +1,128 @@
+-- mvtk/prefabs/arena_lock.script
+-- ============================================================================
+-- ARENA LOCK ZONE
+-- ============================================================================
+-- A lightweight trigger zone that locks the arena (preventing the player from
+-- leaving) when they enter, and unlocks it when the encounter is cleared.
+-- Unlike boss_arena.tx this does not manage boss phases — it only handles
+-- the entry lock / exit unlock lifecycle.
+--
+-- TILED PROPERTIES:
+--   arena_id       - Identifier for the arena (sent to ArenaManager)
+--   boss_id        - Optional boss ID linked to this arena
+--   boss_type      - Optional boss type string
+--   encounter_id   - Optional encounter/wave ID to start on entry
+--   lock_on_enter  - If true, lock the arena when player enters
+--   unlock_on_clear - If true, unlock when the encounter/boss is cleared
+--
+-- CONFIGURATION:
+--   All values come from Tiled properties. Do not hardcode here.
+-- ============================================================================
+
+local TP = require "mvtk.core.tiled_props"
+
+go.property("arena_id", "")
+go.property("boss_id", "")
+go.property("boss_type", "")
+go.property("encounter_id", "")
+go.property("lock_on_enter", true)
+go.property("unlock_on_clear", true)
+go.property("room_id", "") -- injected by object_spawner at spawn time
+
+local to_bool = TP.to_bool
+
+local function normalize_string(value)
+    return TP.normalize_hash_string(value) or ""
+end
+
+local function get_boss_arena()
+    local ok, mod = pcall(require, "mvtk.bosses.boss_arena")
+    if ok then return mod end
+    return nil
+end
+
+local function get_boss_manager()
+    local ok, mod = pcall(require, "mvtk.bosses.boss_manager")
+    if ok then return mod end
+    return nil
+end
+
+local function lock_arena(self)
+    if not self.lock_on_enter or self._locked then return end
+    self._locked = true
+
+    local arena_id = normalize_string(self.arena_id)
+    local boss_id = normalize_string(self.boss_id)
+    local encounter_id = normalize_string(self.encounter_id)
+
+    -- Notify arena system (canonical runtime API)
+    local ba = get_boss_arena()
+    if ba and ba.lock_arena then
+        ba.lock_arena(arena_id)
+    end
+
+    -- Notify boss manager if boss is linked
+    if boss_id ~= "" then
+        local bm = get_boss_manager()
+        if bm and bm.on_arena_entered then
+            bm.on_arena_entered(boss_id, arena_id)
+        end
+    end
+
+    print(string.format("[ARENA_LOCK] Locked arena_id=%s boss_id=%s encounter_id=%s",
+        arena_id, boss_id, encounter_id))
+end
+
+local function unlock_arena(self)
+    if not self._locked then return end
+    self._locked = false
+
+    local arena_id = normalize_string(self.arena_id)
+    local ba = get_boss_arena()
+    if ba and ba.unlock_arena then
+        ba.unlock_arena(arena_id)
+    end
+
+    print(string.format("[ARENA_LOCK] Unlocked arena_id=%s", arena_id))
+end
+
+local function apply_props(self, props)
+    props = props or {}
+    if props.arena_id ~= nil then self.arena_id = props.arena_id end
+    if props.boss_id ~= nil then self.boss_id = props.boss_id end
+    if props.boss_type ~= nil then self.boss_type = props.boss_type end
+    if props.encounter_id ~= nil then self.encounter_id = props.encounter_id end
+    if props.lock_on_enter ~= nil then self.lock_on_enter = to_bool(props.lock_on_enter, self.lock_on_enter) end
+    if props.unlock_on_clear ~= nil then self.unlock_on_clear = to_bool(props.unlock_on_clear, self.unlock_on_clear) end
+end
+
+function init(self)
+    self._locked = false
+    self._player_inside = false
+end
+
+function on_message(self, message_id, message, sender)
+    if message_id == hash("trigger_response") then
+        local other_group = message.other_group or message.group
+        if other_group ~= hash("player") then return end
+
+        if message.enter then
+            self._player_inside = true
+            lock_arena(self)
+        else
+            self._player_inside = false
+        end
+
+    elseif message_id == hash("encounter_cleared") or message_id == hash("boss_defeated") then
+        -- Received from BossManager / EncounterSystem when the fight ends
+        if self.unlock_on_clear then
+            unlock_arena(self)
+        end
+
+    elseif message_id == hash("force_unlock") then
+        unlock_arena(self)
+
+    elseif message_id == hash("apply_tiled_props") and message and message.properties then
+        apply_props(self, message.properties)
+    end
+end

@@ -1,0 +1,33 @@
+-- mvtk/fx/damage_number.script
+-- Displays a world-space floating damage number and fades out
+
+go.property("text", 1.0)
+go.property("color_r", 1.0)
+go.property("color_g", 1.0)
+go.property("color_b", 1.0)
+go.property("lifetime", 0.6)
+go.property("scale", 1.0)
+
+function init(self)
+  self.t = self.lifetime or 0.6
+  self.base = go.get_position()
+  self.label_url = msg.url(nil, go.get_id(), hash("label"))
+  pcall(label.set_text, self.label_url, tostring(self.text))
+  local c = vmath.vector4(self.color_r or 1, self.color_g or 1, self.color_b or 1, 1)
+  pcall(label.set_color, self.label_url, c)
+  local s = tonumber(self.scale) or 1.0
+  pcall(go.set_scale, vmath.vector3(s,s,1))
+end
+
+function update(self, dt)
+  self.t = self.t - dt
+  local k = math.max(0, self.t / (self.lifetime or 0.6))
+  local p = self.base + vmath.vector3(0, (1-k) * 24, 0)
+  go.set_position(p)
+  local c = pcall(label.get_color, self.label_url)
+  local col = vmath.vector4(1,1,1,1)
+  if type(c) == 'table' and c[2] then col = c[2] end
+  col.w = k
+  pcall(label.set_color, self.label_url, col)
+  if self.t <= 0 then go.delete('.') end
+end

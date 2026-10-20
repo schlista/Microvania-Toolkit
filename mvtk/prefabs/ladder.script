@@ -1,0 +1,80 @@
+-- Ladder/climb zone script
+-- Allows player to climb when inside.
+-- grab_extend_down/up expand the effective grab zone beyond the visual ladder
+-- so the player can grab the ladder from slightly below or above it.
+
+go.property("ladder_id", "")
+go.property("ladder_type", "ladder")
+go.property("climb_speed", 400)
+go.property("can_jump_off", true)
+go.property("snap_to_center", true)
+go.property("climb_offset_x", 0)  -- px nudge applied to the climbing player; -left / +right
+go.property("pass_through_top", true)
+go.property("grab_extend_down", 128)  -- pixels below ladder bottom where player can start climbing
+go.property("grab_extend_up", 128)    -- pixels above ladder top where player can start climbing
+go.property("width", 32)
+go.property("height", 128)
+go.property("room_id", "")     -- injected by object_spawner at spawn time
+
+function init(self)
+    self.climbers = {}
+end
+
+function on_message(self, message_id, message, sender)
+    if message_id == hash("trigger_response") then
+        local other_group = (message and (message.other_group or message.group)) or nil
+        if other_group and other_group ~= hash("player") then
+            return
+        end
+        local entity_id = message and message.other_id
+        if not entity_id then
+            return
+        end
+
+        local pos = go.get_world_position()
+        local w = self.width or 0
+        local h = self.height or 0
+        -- Generated ladder instances are placed at the authored rectangle center.
+        local center_x = pos.x
+        local center_y = pos.y
+
+        if message.enter then
+            self.climbers[entity_id] = true
+            msg.post(entity_id, hash("enter_climb_zone"), {
+                ladder_type       = self.ladder_type,
+                climb_speed       = self.climb_speed,
+                can_jump_off      = self.can_jump_off,
+                snap_to_center    = self.snap_to_center,
+                climb_offset_x    = tonumber(self.climb_offset_x) or 0,
+                ladder_id         = self.ladder_id,
+                center_x          = center_x,
+                center_y          = center_y,
+                width             = w,
+                height            = h,
+                pass_through_top  = self.pass_through_top,
+                grab_extend_down  = tonumber(self.grab_extend_down) or 0,
+                grab_extend_up    = tonumber(self.grab_extend_up) or 0,
+            })
+        else
+            self.climbers[entity_id] = nil
+            msg.post(entity_id, hash("exit_climb_zone"), {})
+        end
+    elseif message_id == hash("apply_tiled_props") and message and message.properties then
+        local props = message.properties
+        if props.ladder_id ~= nil then self.ladder_id = props.ladder_id end
+        if props.ladder_type ~= nil then self.ladder_type = props.ladder_type end
+        if props.climb_speed ~= nil then self.climb_speed = tonumber(props.climb_speed) or self.climb_speed end
+        if props.can_jump_off ~= nil then self.can_jump_off = props.can_jump_off ~= false end
+        if props.snap_to_center ~= nil then self.snap_to_center = props.snap_to_center ~= false end
+        if props.climb_offset_x ~= nil then self.climb_offset_x = tonumber(props.climb_offset_x) or self.climb_offset_x end
+        if props.pass_through_top ~= nil then self.pass_through_top = props.pass_through_top ~= false end
+        if props.grab_extend_down ~= nil then self.grab_extend_down = tonumber(props.grab_extend_down) or self.grab_extend_down end
+        if props.grab_extend_up ~= nil then self.grab_extend_up = tonumber(props.grab_extend_up) or self.grab_extend_up end
+    end
+end
+
+function final(self)
+    for entity_id, _ in pairs(self.climbers) do
+        pcall(msg.post, entity_id, hash("exit_climb_zone"), {})
+    end
+end

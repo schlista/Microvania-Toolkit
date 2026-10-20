@@ -1,0 +1,34 @@
+-- Editor-visible marker for camera zones.
+-- Keeps authored camera rectangles visible in generated room collections.
+-- At runtime the sprite is disabled by default to avoid shipping debug visuals.
+
+local Util = require "mvtk.core.util"
+
+go.property("zone_id", "")
+go.property("room_id", "")
+go.property("camera_mode", "follow")
+-- Retain all baked camera settings as editable marker properties. The room
+-- loader registers camera behavior from the Tiled export at runtime.
+go.property("zoom_level", 1.0)
+go.property("transition_speed", 1.0)
+go.property("bounds_padding", 0)
+go.property("lock_x", false)
+go.property("lock_y", false)
+go.property("focus_x", 0)
+go.property("focus_y", 0)
+go.property("parallax_override", "")
+go.property("smooth_follow", true)
+go.property("deadzone_width", 0)
+go.property("deadzone_height", 0)
+go.property("auto_fit", false)
+go.property("width", 128)
+go.property("height", 128)
+go.property("hide_in_game", true)
+
+function init(self)
+    if self.hide_in_game then
+        -- Probe first: baked markers usually have no sprite (the Tiled layer
+        -- owns the art), and a blind post logs "component could not be found".
+        Util.set_component_enabled("#sprite", false)
+    end
+end

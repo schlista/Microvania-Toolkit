@@ -1,0 +1,34 @@
+local Proxy = require "mvtk.prefabs.tiled_proxy_util"
+
+go.property("registration_id", "")
+go.property("spawn_name", "")
+go.property("spawn_type", "player")
+go.property("facing", 1)
+go.property("is_default", false)
+go.property("checkpoint_id", "")
+go.property("room_id", "")
+
+local function build_properties(self)
+    return {
+        spawn_name = Proxy.plain(self.spawn_name, "Spawn Point"),
+        spawn_type = Proxy.plain(self.spawn_type, "player"),
+        facing = Proxy.number(self.facing, 1),
+        is_default = Proxy.bool(self.is_default, false),
+        checkpoint_id = Proxy.plain(self.checkpoint_id, ""),
+    }
+end
+
+function init(self)
+    local props = build_properties(self)
+    Proxy.post_to_main("register_spawn_point", {
+        id = Proxy.registration_id(self, "spawn_point"),
+        position = Proxy.world_position(),
+        room_id = Proxy.room_id(self),
+        spawn_type = props.spawn_type,
+        name = props.spawn_name,
+        facing = props.facing,
+        is_default = props.is_default,
+        checkpoint_id = props.checkpoint_id,
+        properties = props,
+    })
+end

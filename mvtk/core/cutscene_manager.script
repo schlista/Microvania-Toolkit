@@ -1,0 +1,390 @@
+-- mvtk/core/cutscene_manager.script
+local C = require "mvtk.core.constants"
+local Pause = require "mvtk.core.pause"
+local Input = require "mvtk.rooms.input_controller"
+
+local Util = require "mvtk.core.util"
+local SafeRequire = require "mvtk.core.safe_require"
+local Debug = Util.require_config("developer.config.debug_config")
+
+local MSG_PLAY_CUTSCENE = hash("play_cutscene")
+local MSG_FADE_DONE = hash("fade_done")
+local MSG_VIDEO_DONE = hash("video_done")
+local MSG_DLG_CLOSED = hash("dlg_closed")
+local MSG_PLAY_TEST_CLIP = hash("play_test_clip")
+
+local CUTS = nil
+local VIDEOS = nil
+
+local next_step -- forward declaration
+
+local function cutscene_log(...)
+    if (Debug.global and Debug.global.enable) or (Debug.gameplay and Debug.gameplay.main) then
+        print(...)
+    end
+end
+
+local function load_cuts()
+    if not CUTS then
+        CUTS = {}
+
+        local function merge(src)
+            if type(src) ~= "table" then
+                return
+            end
+            for id, seq in pairs(src) do
+                if type(id) == "string" and type(seq) == "table" then
+                    CUTS[id] = seq
+                end
+            end
+        end
+
+        -- Both files are intentionally optional: projects without cutscenes
+        -- omit the base file, and the generated file only exists once Tiled
+        -- has exported cutscene objects. Use quiet() to avoid boot warnings.
+        local ok_base, base = SafeRequire.quiet("developer.config.narrative.cutscenes", "mvtk.core.cutscene_manager")
+        if ok_base then
+            merge(base)
+        end
+
+        local ok_generated, generated = SafeRequire.quiet("developer.config.narrative.cutscenes_generated", "mvtk.core.cutscene_manager")
+        if ok_generated then
+            merge(generated)
+        end
+    end
+    return CUTS
+end
+
+local function load_videos()
+    if VIDEOS == nil then
+        local ok, mod = SafeRequire.quiet("developer.config.narrative.videos", "mvtk.core.cutscene_manager")
+        VIDEOS = ok and mod or {}
+    end
+    return VIDEOS
+end
+
+local function post(url, id, data)
+    local ok = pcall(msg.post, url, id, data or {})
+    return ok
+end
+
+local function non_empty_string(value)
+    if value == nil then return nil end
+    local s = tostring(value)
+    if s == "" then return nil end
+    return s
+end
+
+local function is_editor_build()
+    return os.getenv("DM_SERVICE_PORT") ~= nil
+end
+
+local function cancel_video_timer(self)
+    if self.video_timeout_timer then
+        pcall(timer.cancel, self.video_timeout_timer)
+        self.video_timeout_timer = nil
+    end
+end
+
+local function clear_video_player(self)
+    cancel_video_timer(self)
+    self.video_waiting = false
+    self.video_uri = nil
+    self.video_clip_id = nil
+
+    local handle = self.video_handle
+    self.video_handle = nil
+    if handle and videoplayer then
+        pcall(videoplayer.stop, handle)
+        pcall(videoplayer.destroy, handle)
+    end
+end
+
+local function resolve_video_step(step)
+    local clip_id = non_empty_string(step.video_id) or non_empty_string(step.id) or "unnamed_clip"
+    local spec = load_videos()[clip_id]
+    if type(spec) ~= "table" then
+        spec = {}
+    end
+
+    local uri = non_empty_string(step.uri)
+        or (is_editor_build() and non_empty_string(step.editor_uri))
+        or (is_editor_build() and non_empty_string(spec.editor_uri))
+        or non_empty_string(spec.uri)
+
+    local play_sound = false
+    if step.play_sound ~= nil then
+        play_sound = step.play_sound and true or false
+    elseif spec.play_sound ~= nil then
+        play_sound = spec.play_sound and true or false
+    end
+
+    local timeout = tonumber(step.timeout or spec.timeout or 20.0) or 20.0
+    if timeout < 0 then timeout = 0 end
+
+    return {
+        clip_id = clip_id,
+        uri = uri,
+        play_sound = play_sound,
+        timeout = timeout,
+        spec = spec,
+    }
+end
+
+local function play_video_fallback(self, step)
+    local target = step.url or C.url("CUTSCENE_VIDEO") or msg.url("main:/cutscene_test_gui#cutscene_test")
+    local ok = post(target, MSG_PLAY_TEST_CLIP, {
+        id = step.id or step.video_id,
+        title = step.title,
+        subtitle = step.subtitle,
+        caption = step.caption,
+        duration = step.duration or step.t or 2.4,
+        done = msg.url(),
+    })
+
+    if ok then
+        cutscene_log(string.format("[CUTSCENE] video fallback target=%s clip=%s", tostring(target), tostring(step.id or step.video_id)))
+        return true
+    end
+
+    cutscene_log(string.format("[CUTSCENE] video fallback failed target=%s", tostring(target)))
+    return false
+end
+
+local function on_video_finished(self, reason)
+    if not self.video_waiting then
+        return
+    end
+
+    local clip = self.video_clip_id
+    local uri = self.video_uri
+    clear_video_player(self)
+
+    cutscene_log(string.format(
+        "[CUTSCENE] video_done cutscene=%s clip=%s uri=%s reason=%s",
+        tostring(self.active_id or ""),
+        tostring(clip or ""),
+        tostring(uri or ""),
+        tostring(reason or "finished")
+    ))
+
+    if self.active then
+        next_step(self)
+    end
+end
+
+local function video_event_callback(self, video, event, data)
+    if not self.video_waiting then
+        return
+    end
+    if self.video_handle and video ~= self.video_handle then
+        return
+    end
+
+    if event == videoplayer.VIDEO_EVENT_READY then
+        cutscene_log(string.format(
+            "[CUTSCENE] video_ready cutscene=%s clip=%s uri=%s",
+            tostring(self.active_id or ""),
+            tostring(self.video_clip_id or ""),
+            tostring(self.video_uri or "")
+        ))
+        local ok_start, err_start = pcall(videoplayer.start, video)
+        if not ok_start then
+            cutscene_log(string.format("[CUTSCENE] video_start_failed clip=%s err=%s", tostring(self.video_clip_id or ""), tostring(err_start)))
+            on_video_finished(self, "start_failed")
+        end
+    elseif event == videoplayer.VIDEO_EVENT_FINISHED then
+        on_video_finished(self, "finished")
+    elseif event == videoplayer.VIDEO_EVENT_FAILED then
+        cutscene_log(string.format("[CUTSCENE] video_failed clip=%s data=%s", tostring(self.video_clip_id or ""), tostring(data)))
+        on_video_finished(self, "failed")
+    end
+end
+
+local function play_native_video(self, step)
+    if not videoplayer then
+        cutscene_log("[CUTSCENE] videoplayer extension unavailable")
+        return false
+    end
+
+    local resolved = resolve_video_step(step)
+    if not resolved.uri then
+        cutscene_log(string.format(
+            "[CUTSCENE] video unresolved cutscene=%s clip=%s (no uri/editor_uri found)",
+            tostring(self.active_id or ""),
+            tostring(resolved.clip_id)
+        ))
+        return false
+    end
+
+    clear_video_player(self)
+
+    cutscene_log(string.format(
+        "[CUTSCENE] video_resolve cutscene=%s clip=%s uri=%s editor=%s play_sound=%s",
+        tostring(self.active_id or ""),
+        tostring(resolved.clip_id),
+        tostring(resolved.uri),
+        tostring(is_editor_build()),
+        tostring(resolved.play_sound)
+    ))
+
+    local ok_create, handle_or_err = pcall(videoplayer.create, resolved.uri, {
+        play_sound = resolved.play_sound
+    }, video_event_callback)
+    if not ok_create then
+        cutscene_log(string.format("[CUTSCENE] video_create_failed clip=%s err=%s", tostring(resolved.clip_id), tostring(handle_or_err)))
+        return false
+    end
+
+    if not handle_or_err then
+        cutscene_log(string.format("[CUTSCENE] video_create_failed clip=%s reason=nil_handle", tostring(resolved.clip_id)))
+        return false
+    end
+
+    self.video_handle = handle_or_err
+    self.video_waiting = true
+    self.video_uri = resolved.uri
+    self.video_clip_id = resolved.clip_id
+
+    pcall(videoplayer.set_visible, self.video_handle, true)
+
+    if resolved.timeout > 0 then
+        self.video_timeout_timer = timer.delay(resolved.timeout, false, function()
+            if self.video_waiting then
+                cutscene_log(string.format(
+                    "[CUTSCENE] video_timeout cutscene=%s clip=%s timeout=%.2f",
+                    tostring(self.active_id or ""),
+                    tostring(self.video_clip_id or ""),
+                    resolved.timeout
+                ))
+                on_video_finished(self, "timeout")
+            end
+        end)
+    end
+
+    return true
+end
+
+function init(self)
+    self.active = false
+    self.active_id = nil
+    self.queue = nil
+    self.step_i = 0
+    self.pending = {}
+
+    self.video_handle = nil
+    self.video_waiting = false
+    self.video_timeout_timer = nil
+    self.video_uri = nil
+    self.video_clip_id = nil
+end
+
+local function begin(self, id)
+    if self.active then
+        self.pending[#self.pending + 1] = tostring(id)
+        cutscene_log(string.format("[CUTSCENE] queued id=%s pending=%d", tostring(id), #self.pending))
+        return
+    end
+
+    local cfg = load_cuts()
+    local seq = cfg and cfg[id]
+    if not seq then
+        cutscene_log(string.format("[CUTSCENE] missing id=%s", tostring(id)))
+        return
+    end
+
+    cutscene_log(string.format("[CUTSCENE] begin id=%s steps=%d", tostring(id), #seq))
+    self.active = true
+    self.active_id = tostring(id)
+    self.queue = seq
+    self.step_i = 0
+
+    if Input and Input.clear_all then
+        Input.clear_all()
+    end
+    Pause.set(true)
+    Input.set_blocked(true)
+    msg.post(C.URL.FADE_GUI or msg.url("main:/ui#fade"), hash("enable"))
+    next_step(self)
+end
+
+next_step = function(self)
+    self.step_i = self.step_i + 1
+    local step = self.queue and self.queue[self.step_i]
+
+    if not step then
+        cutscene_log(string.format("[CUTSCENE] end id=%s", tostring(self.active_id or "")))
+        clear_video_player(self)
+
+        self.active = false
+        self.active_id = nil
+        self.queue = nil
+        Pause.set(false)
+        Input.set_blocked(false)
+        if Input and Input.clear_all then
+            Input.clear_all()
+        end
+
+        if self.pending and #self.pending > 0 then
+            local next_id = table.remove(self.pending, 1)
+            begin(self, next_id)
+        end
+        return
+    end
+
+    if step.type == "fade" then
+        local to = tostring(step.to or "in")
+        if to == "in" then
+            post(C.URL.FADE_GUI or msg.url("main:/ui#fade"), C.MSG.FADE_TO_BLACK, { done = msg.url() })
+        else
+            post(C.URL.FADE_GUI or msg.url("main:/ui#fade"), C.MSG.FADE_FROM_BLACK, {})
+            next_step(self)
+        end
+    elseif step.type == "wait" then
+        timer.delay(step.t or 0.2, false, function()
+            if self.active then
+                next_step(self)
+            end
+        end)
+    elseif step.type == "dialogue" then
+        cutscene_log(string.format("[CUTSCENE] step dialogue id=%s", tostring(step.id)))
+        post(C.url("DIALOGUE_GUI"), hash("open_dialogue"), { id = step.id, from_cutscene = true })
+    elseif step.type == "video" then
+        if not play_native_video(self, step) then
+            if not play_video_fallback(self, step) then
+                next_step(self)
+            end
+        end
+    elseif step.type == "message" then
+        if step.url and step.id then
+            post(step.url, step.id, step.data)
+        end
+        next_step(self)
+    else
+        next_step(self)
+    end
+end
+
+function on_message(self, message_id, message, sender)
+    if message_id == MSG_PLAY_CUTSCENE then
+        local cutscene_id = message and (message.id or message.cutscene_id)
+        if cutscene_id then
+            begin(self, tostring(cutscene_id))
+        end
+    elseif message_id == MSG_FADE_DONE then
+        if self.active then
+            next_step(self)
+        end
+    elseif message_id == MSG_VIDEO_DONE then
+        if self.active then
+            next_step(self)
+        end
+    elseif message_id == MSG_DLG_CLOSED then
+        if self.active then
+            next_step(self)
+        end
+    end
+end
+
+
+

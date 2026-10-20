@@ -1,0 +1,318 @@
+-- mvtk/debug/debug_overlay.gui_script
+-- In-game debug overlay showing FPS, player stats, and debug controls
+
+local DebugDraw = require "mvtk.debug.debug_draw"
+local SoundDebugOk, SoundDebug = pcall(require, "mvtk.audio.sound_debug")
+local LoggerOk, Logger = pcall(require, "mvtk.core.logger")
+
+-- Current log level names for display
+local LOG_LEVEL_NAMES = { "TRACE", "DEBUG", "INFO", "WARN", "ERROR" }
+local current_log_level_index = 3 -- Default to INFO
+
+-- FPS tracking
+local fps_update_rate = 0.5 -- Update FPS every 0.5 seconds
+local frame_count = 0
+local fps_timer = 0
+local current_fps = 60
+
+-- Player data (updated via messages)
+local player_data = {
+    position = vmath.vector3(0, 0, 0),
+    state = "unknown",
+    combat_attack = nil,
+    combat_attack_t = 0,
+    combat_attack_phase = nil,
+    combat_queued_attack = nil,
+    combat_counter_t = 0,
+    parry_window_t = 0,
+    parry_cooldown_t = 0,
+    parry_last_perfect = false,
+    health = 0,
+    max_health = 0,
+    energy = 0,
+    max_energy = 0,
+    stamina = 0,
+    max_stamina = 0,
+    velocity = vmath.vector3(0, 0, 0),
+    grounded = false,
+    room = "none",
+}
+
+-- Debug flags
+local debug_flags = {
+    overlay_visible = true,
+    collision_boxes = false,
+    hitboxes = false,
+    audio_tracing = SoundDebugOk and SoundDebug.is_installed and SoundDebug.is_installed() or false,
+}
+
+function init(self)
+    msg.post(".", "acquire_input_focus")
+
+    self.container = gui.get_node("container")
+    self.title = gui.get_node("title")
+    self.debug_text = gui.get_node("debug_text")
+    self.help_text = gui.get_node("help_text")
+
+    -- Start visible
+    gui.set_enabled(self.container, true)
+
+    -- Subscribe to player updates
+    msg.post("@system:", "toggle_profile")
+
+end
+
+function final(self)
+    msg.post(".", "release_input_focus")
+    msg.post("@system:", "toggle_profile")
+end
+
+-- Update FPS counter
+local function update_fps(dt)
+    frame_count = frame_count + 1
+    fps_timer = fps_timer + dt
+
+    if fps_timer >= fps_update_rate then
+        current_fps = math.floor(frame_count / fps_timer)
+        frame_count = 0
+        fps_timer = 0
+    end
+end
+
+-- Format player state for display
+local function get_state_display(state)
+    if type(state) == "userdata" then
+        return tostring(state)
+    end
+    return state or "unknown"
+end
+
+-- Update debug text display
+local function update_debug_text(self)
+    local lines = {}
+
+    -- FPS
+    table.insert(lines, string.format("FPS: %d", current_fps))
+
+    -- Player position
+    table.insert(lines, string.format("Position: %.0f, %.0f",
+        player_data.position.x, player_data.position.y))
+
+    -- Player velocity
+    table.insert(lines, string.format("Velocity: %.0f, %.0f",
+        player_data.velocity.x, player_data.velocity.y))
+
+    -- Player state
+    table.insert(lines, string.format("State: %s", get_state_display(player_data.state)))
+
+    -- Combat state
+    table.insert(lines, string.format("Attack: %s", player_data.combat_attack or "none"))
+    if player_data.combat_attack then
+        table.insert(lines, string.format("Attack Stage: %s @ %.2fs",
+            player_data.combat_attack_phase or "unknown",
+            player_data.combat_attack_t or 0))
+    end
+    if player_data.combat_queued_attack then
+        table.insert(lines, string.format("Queued Attack: %s", player_data.combat_queued_attack))
+    end
+    table.insert(lines, string.format("Counter Window: %.2fs", player_data.combat_counter_t or 0))
+    table.insert(lines, string.format("Parry Window: %.2fs", player_data.parry_window_t or 0))
+    table.insert(lines, string.format("Parry Cooldown: %.2fs", player_data.parry_cooldown_t or 0))
+    table.insert(lines, string.format("Last Parry Perfect: %s",
+        player_data.parry_last_perfect and "Yes" or "No"))
+
+    -- Grounded status
+    local grounded_str = player_data.grounded and "Yes" or "No"
+    table.insert(lines, string.format("Grounded: %s", grounded_str))
+
+    -- Health
+    table.insert(lines, string.format("Health: %.1f / %.1f",
+        player_data.health, player_data.max_health))
+
+    -- Energy
+    table.insert(lines, string.format("Energy: %.1f / %.1f",
+        player_data.energy, player_data.max_energy))
+
+    -- Stamina
+    table.insert(lines, string.format("Stamina: %.0f / %.0f",
+        player_data.stamina, player_data.max_stamina))
+
+    -- Current room
+    table.insert(lines, string.format("Room: %s", player_data.room or "none"))
+
+    -- Debug flags status
+    table.insert(lines, "")
+    table.insert(lines, string.format("Collision Boxes: %s",
+        debug_flags.collision_boxes and "ON" or "OFF"))
+    table.insert(lines, string.format("Hitboxes: %s",
+        debug_flags.hitboxes and "ON" or "OFF"))
+    table.insert(lines, string.format("Audio Tracing: %s",
+        debug_flags.audio_tracing and "ON" or "OFF"))
+    table.insert(lines, string.format("Log Level: %s",
+        LOG_LEVEL_NAMES[current_log_level_index] or "INFO"))
+
+    gui.set_text(self.debug_text, table.concat(lines, "\n"))
+end
+
+-- Toggle overlay visibility
+local function toggle_overlay(self)
+    debug_flags.overlay_visible = not debug_flags.overlay_visible
+    gui.set_enabled(self.container, debug_flags.overlay_visible)
+
+    if debug_flags.overlay_visible then
+        print("✅ Debug overlay: ON")
+    else
+        print("❌ Debug overlay: OFF")
+    end
+end
+
+-- Toggle collision box visualization
+local function toggle_collision_boxes()
+    debug_flags.collision_boxes = not debug_flags.collision_boxes
+    DebugDraw.set_draw_collision_boxes(debug_flags.collision_boxes)
+
+    if debug_flags.collision_boxes then
+        print("✅ Collision boxes: ON")
+    else
+        print("❌ Collision boxes: OFF")
+    end
+end
+
+-- Toggle hitbox visualization
+local function toggle_hitboxes()
+    debug_flags.hitboxes = not debug_flags.hitboxes
+    DebugDraw.set_draw_hitboxes(debug_flags.hitboxes)
+
+    if debug_flags.hitboxes then
+        print("✅ Hitboxes: ON")
+    else
+        print("❌ Hitboxes: OFF")
+    end
+end
+
+-- Show teleport menu
+local function show_teleport_menu()
+    print("🚀 Teleport menu (not yet implemented)")
+    print("Available rooms:")
+    print("  - room_00 (spawn)")
+    print("  - room_01")
+    print("  - room_02")
+    print("")
+    print("Use: msg.post('main:/room_manager#room_manager', 'load_room', {room_id='room_01'})")
+end
+
+-- Toggle audio tracing (SoundDebug wrappers)
+local function toggle_audio_tracing()
+    if not SoundDebugOk or not SoundDebug then
+        print("❌ SoundDebug module not available")
+        return
+    end
+    
+    debug_flags.audio_tracing = not debug_flags.audio_tracing
+    
+    if debug_flags.audio_tracing then
+        SoundDebug.install()
+        print("✅ Audio tracing: ON (sound.play/stop calls will be logged)")
+    else
+        SoundDebug.uninstall()
+        print("❌ Audio tracing: OFF (normal sound behavior)")
+    end
+end
+
+-- Cycle through log levels (INFO -> WARN -> DEBUG -> TRACE -> ERROR -> INFO)
+local function toggle_log_level()
+    if not LoggerOk or not Logger then
+        print("❌ Logger module not available")
+        return
+    end
+    
+    -- Cycle to next level
+    current_log_level_index = current_log_level_index + 1
+    if current_log_level_index > #LOG_LEVEL_NAMES then
+        current_log_level_index = 1
+    end
+    
+    local level_name = LOG_LEVEL_NAMES[current_log_level_index]
+    local level_value = Logger.LEVEL[level_name]
+    
+    if level_value then
+        Logger.set_level(level_value)
+        print(string.format("📊 Log level: %s", level_name))
+    end
+end
+
+function update(self, dt)
+    -- Update FPS counter
+    update_fps(dt)
+
+    -- Update debug text display
+    if debug_flags.overlay_visible then
+        update_debug_text(self)
+    end
+end
+
+function on_message(self, message_id, message, sender)
+    if message_id == hash("debug_player_data") then
+        -- Update player data from message
+        if message.position then player_data.position = message.position end
+        if message.state then player_data.state = message.state end
+        if message.combat_attack ~= nil then player_data.combat_attack = message.combat_attack end
+        if message.combat_attack_t ~= nil then player_data.combat_attack_t = message.combat_attack_t end
+        if message.combat_attack_phase ~= nil then player_data.combat_attack_phase = message.combat_attack_phase end
+        if message.combat_queued_attack ~= nil then player_data.combat_queued_attack = message.combat_queued_attack end
+        if message.combat_counter_t ~= nil then player_data.combat_counter_t = message.combat_counter_t end
+        if message.parry_window_t ~= nil then player_data.parry_window_t = message.parry_window_t end
+        if message.parry_cooldown_t ~= nil then player_data.parry_cooldown_t = message.parry_cooldown_t end
+        if message.parry_last_perfect ~= nil then player_data.parry_last_perfect = message.parry_last_perfect end
+        if message.health ~= nil then player_data.health = message.health end
+        if message.max_health ~= nil then player_data.max_health = message.max_health end
+        if message.energy ~= nil then player_data.energy = message.energy end
+        if message.max_energy ~= nil then player_data.max_energy = message.max_energy end
+        if message.stamina ~= nil then player_data.stamina = message.stamina end
+        if message.max_stamina ~= nil then player_data.max_stamina = message.max_stamina end
+        if message.velocity then player_data.velocity = message.velocity end
+        if message.grounded ~= nil then player_data.grounded = message.grounded end
+        if message.room then player_data.room = message.room end
+
+    elseif message_id == hash("profiler_updated") then
+        -- Defold profiler data (contains FPS info)
+        -- We calculate FPS manually above, but could use this too
+    end
+end
+
+function on_input(self, action_id, action)
+    if action_id == hash("key_f1") and action.pressed then
+        toggle_overlay(self)
+        return true
+    elseif action_id == hash("key_f2") and action.pressed then
+        toggle_collision_boxes()
+        return true
+    elseif action_id == hash("key_f3") and action.pressed then
+        toggle_hitboxes()
+        return true
+    elseif action_id == hash("key_f4") and action.pressed then
+        show_teleport_menu()
+        return true
+    elseif action_id == hash("key_f5") and action.pressed then
+        toggle_audio_tracing()
+        return true
+    elseif action_id == hash("key_f6") and action.pressed then
+        toggle_log_level()
+        return true
+    elseif action_id == hash("key_f7") and action.pressed then
+        -- Hot-reload the resolved combat config so edits to
+        -- developer/config/combat_config.lua take effect on the next swing
+        -- without a full project restart. Pair with Defold's "Project →
+        -- Reload Resources" so the underlying .lua is also re-read.
+        local ok, CombatConfig = pcall(require, "mvtk.combat.config")
+        if ok and CombatConfig and CombatConfig.reload then
+            CombatConfig.reload()
+            print("[combat] config reloaded")
+        else
+            print("[combat] reload failed: mvtk.combat.config not available")
+        end
+        return true
+    end
+
+    return false
+end

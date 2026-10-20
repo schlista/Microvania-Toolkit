@@ -1,0 +1,26 @@
+-- mvtk/hazards/hazard_force.script
+-- Applies a directional force to the player while inside (wind/water/conveyor)
+
+go.property("fx", 0.0)
+go.property("fy", 0.0)
+
+function init(self)
+  self.touching = {}
+end
+
+function update(self, dt)
+  if next(self.touching) then
+    for url,_ in pairs(self.touching) do
+      pcall(msg.post, url, hash('external_force'), { vx = self.fx, vy = self.fy })
+    end
+  end
+end
+
+function on_message(self, message_id, message, sender)
+  if message_id == hash('trigger_response') then
+    if message.group == hash('player') then
+      if message.enter then self.touching[message.other_id] = true else self.touching[message.other_id] = nil end
+    end
+  end
+end
+

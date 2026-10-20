@@ -1,0 +1,30 @@
+local Completion=require "mvtk.game.completion"
+local Screen=require "mvtk.ui.completion_screen"
+local Pause=require "mvtk.core.pause"
+local Audio=require "mvtk.audio.audio"
+function init(self)
+    gui.set_render_order(14)
+end
+local function release(self)
+    self.screen=nil; Pause.set(false); msg.post(".","release_input_focus")
+    msg.post("/host#script","completion_resume")
+end
+function update(self,dt)
+    if self.screen then return end
+    local event,err=Completion.update(dt)
+    if event then
+        local cfg=Completion.config()
+        msg.post(".","acquire_input_focus"); Pause.set(true)
+        msg.post("/host#script","completion_freeze")
+        if event=="show" and cfg.music~="" then Audio.music(cfg.music,{t=0}) end
+        self.screen=Screen.open(cfg,Completion.data(),{error=err,artwork=true,
+            close=function()
+                release(self)
+                if err then return end
+                msg.post("boot:/host#script","back_to_menu")
+            end,
+            retry=function() release(self); Completion.retry() end})
+    end
+end
+function on_input(self,id,action) if self.screen then return Screen.input(self.screen,id,action) end end
+function final(self) Pause.set(false) end

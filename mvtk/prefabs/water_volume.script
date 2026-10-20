@@ -1,0 +1,276 @@
+-- Water volume script
+-- Handles swimming, water currents, buoyancy, oxygen, and water damage
+-- Integrates with mvtk.player.swim_state for full swimming physics
+
+local Util = require "mvtk.core.util"
+
+go.property("water_id", "")
+go.property("water_type", "water")  -- "water", "shallow", "deep", "lava", "acid"
+go.property("width", 128)
+go.property("height", 128)
+go.property("swim_enabled", true)
+go.property("swim_speed_mult", 0.7)  -- Swimming speed multiplier
+go.property("damage", 0)
+go.property("damage_interval", 1.0)  -- Seconds between damage ticks
+go.property("current_direction", "none")
+go.property("current_strength", 0)
+go.property("room_id", "")
+-- Buoyancy/physics
+go.property("buoyancy", 0.5)  -- Buoyancy factor (0-1)
+go.property("water_drag", 0.85)  -- Movement slowdown (0-1)
+-- Oxygen
+go.property("oxygen_drain", true)  -- Does this water drain oxygen?
+go.property("oxygen_drain_rate", 1.0)  -- Oxygen per second
+-- Visual/FX
+go.property("surface_y_offset", 0)  -- Offset for surface detection
+go.property("splash_effect", true)  -- Spawn splash particles on entry
+go.property("tint_color", "")  -- Water color tint
+go.property("enable_distortion", true)
+go.property("distortion_strength", 0.005)
+go.property("distortion_frequency", 0.04)
+go.property("distortion_alpha", 0.45)
+go.property("show_sprite", true) -- false when the Tiled layer owns the visible art
+
+local C = require "mvtk.core.constants"
+
+-- Try to load hazard types for water damage configuration
+local HazardTypes = nil
+local ok_hazard, hazard_data = pcall(require, "developer.config.hazard_types")
+if ok_hazard then HazardTypes = hazard_data end
+
+-----------------------------------------------------------
+-- Local Helper Functions
+-----------------------------------------------------------
+
+local function load_hazard_config(self)
+    -- Map water_type to hazard config if applicable
+    local type_str = nil
+    if self.water_type == "lava" then type_str = "lava"
+    elseif self.water_type == "acid" then type_str = "acid"
+    elseif self.water_type == "cold" or self.water_type == "freezing" then type_str = "cold"
+    end
+
+    if type_str and HazardTypes and HazardTypes[type_str] then
+        local config = HazardTypes[type_str]
+        -- Override damage settings from hazard config if not explicitly set
+        if self.damage == 0 then
+            self.damage = config.damage or 0
+            self.damage_interval = config.damage_interval or 0.5
+        end
+        self.slow_multiplier = config.slow_multiplier or 1.0
+        print(string.format("[WATER] Loaded hazard config for '%s': damage=%d, interval=%.1f",
+            type_str, self.damage, self.damage_interval))
+    end
+end
+
+local function apply_distortion(self)
+    -- Tiled-owned artwork can omit the prefab distortion sprite. msg.post
+    -- is queued, so pcall cannot catch a missing component at dispatch time.
+    if not self._has_distortion then return end
+    if not self.enable_distortion then
+        Util.set_component_enabled("#distortion", false)
+        return
+    end
+
+    Util.set_component_enabled("#distortion", true)
+    pcall(go.set, "#distortion", "tint", vmath.vector4(0.48, 0.78, 1.0, math.max(0, math.min(1, self.distortion_alpha or 0.45))))
+    pcall(go.set, "#distortion", "distortion_params", vmath.vector4(
+        self.distortion_strength or 0.005,
+        self.distortion_frequency or 0.04,
+        self._distortion_phase or 0,
+        self.distortion_alpha or 0.45
+    ))
+end
+
+-----------------------------------------------------------
+-- Lifecycle Functions
+-----------------------------------------------------------
+
+function init(self)
+    go.update_world_transform()
+    if not self.show_sprite then
+        Util.set_component_enabled("#sprite", false)
+    end
+    self.entities_in_water = {}  -- url -> { is_player, entry_y, submerged }
+    self.damage_timer = 0
+    self.damage_interval_value = self.damage_interval or 1.0
+
+    -- Get water surface Y position (top of volume)
+    local pos = go.get_world_position()
+    self.surface_y = pos.y + (self.height / 2) + (self.surface_y_offset or 0)
+    require("mvtk.player.safe_ground").register_blocker(go.get_id(), self, pos, self.width, self.height, true)
+    self._current_post_timer = 0
+
+    -- Check if this water type has special hazard properties
+    load_hazard_config(self)
+    self._has_distortion = Util.component_exists("#distortion")
+    self._distortion_phase = 0
+    apply_distortion(self)
+
+    print(string.format("[WATER] Initialized: type=%s, swim=%s, damage=%d, buoyancy=%.1f",
+        tostring(self.water_type), tostring(self.swim_enabled), self.damage, (self.buoyancy or 0) * 200))
+end
+
+function update(self, dt)
+    if self.enable_distortion and self._has_distortion then
+        self._distortion_phase = (self._distortion_phase or 0) + dt * 2.2
+        apply_distortion(self)
+    end
+
+    self._current_post_timer = math.max(0, (self._current_post_timer or 0) - dt)
+    local post_current = self.current_strength > 0
+        and self.current_direction ~= "none"
+        and self._current_post_timer <= 0
+    if post_current then self._current_post_timer = 0.1 end
+
+    -- Process each entity in water. Buoyancy and drag are entry parameters,
+    -- not per-frame messages, so this loop only tracks state and throttles
+    -- authored current impulses.
+    for url, data in pairs(self.entities_in_water) do
+        if not go.exists(url) then
+            self.entities_in_water[url] = nil
+        else
+            local entity_pos = go.get_world_position(url)
+
+            -- Check if fully submerged (below surface)
+            local is_submerged = entity_pos.y < (self.surface_y - 20)
+            data.submerged = is_submerged
+
+            -- Current is a px/s vector. It is throttled to avoid per-frame
+            -- message churn; SwimState owns the continuous buoyancy/drag work.
+            if post_current then
+                local force = vmath.vector3(0, 0, 0)
+                if self.current_direction == "left" then
+                    force.x = -self.current_strength
+                elseif self.current_direction == "right" then
+                    force.x = self.current_strength
+                elseif self.current_direction == "up" then
+                    force.y = self.current_strength
+                elseif self.current_direction == "down" then
+                    force.y = -self.current_strength
+                end
+                msg.post(url, hash("apply_external_force"), { force = force })
+            end
+        end
+    end
+
+    -- Apply damage over time
+    if self.damage > 0 then
+        self.damage_timer = self.damage_timer + dt
+        if self.damage_timer >= self.damage_interval_value then
+            self.damage_timer = 0
+            for url, data in pairs(self.entities_in_water) do
+                if go.exists(url) then
+                    local damage_msg = {
+                        damage = self.damage,
+                        source = "water",
+                    }
+                    msg.post(url, C.MSG and C.MSG.TAKE_DAMAGE or hash("mvtk_take_damage"), damage_msg)
+                end
+            end
+        end
+    end
+end
+
+function on_message(self, message_id, message, sender)
+    if message_id == hash("trigger_response") then
+        local entity_url = message.other_url or message.other_id or sender
+        local is_player = message.other_group == hash("player") or message.group == hash("player")
+        local is_enemy = message.other_group == hash("enemy") or message.group == hash("enemy")
+
+        if message.enter then
+            -- Track entity
+            local entry_pos = nil
+            if go.exists(entity_url) then
+                entry_pos = go.get_world_position(entity_url)
+            end
+
+            self.entities_in_water[entity_url] = {
+                is_player = is_player,
+                is_enemy = is_enemy,
+                entry_y = entry_pos and entry_pos.y or self.surface_y,
+                submerged = false
+            }
+
+            -- Spawn splash effect on entry
+            if self.splash_effect and entry_pos then
+                local splash_pos = vmath.vector3(entry_pos.x, self.surface_y, entry_pos.z or 0)
+                pcall(msg.post, "main:/fx_manager#fx_manager", hash("spawn_effect"), {
+                    effect_type = "water_splash",
+                    position = splash_pos
+                })
+            end
+
+            -- Notify entity they're entering water
+            msg.post(entity_url, hash("enter_water"), {
+                swim_enabled = self.swim_enabled,
+                water_type = self.water_type,
+                surface_y = self.surface_y,
+                -- Parameters player.script expects
+                oxygen_enabled = self.oxygen_drain,
+                swim_params = {
+                    swim_speed_mult = self.swim_speed_mult or 0.7,
+                    water_drag = self.water_drag,
+                    -- Tiled's 0-1 buoyancy factor maps to an upward px/s cap.
+                    buoyancy_speed = (self.buoyancy or 0) * 200,
+                    oxygen_drain_rate = self.oxygen_drain_rate,
+                    slow_multiplier = self.slow_multiplier or 1.0
+                }
+            })
+
+            print(string.format("[WATER] Entity entered water: %s (player=%s, swim=%s)",
+                tostring(entity_url), tostring(is_player), tostring(self.swim_enabled)))
+        else
+            -- Notify before removing from tracking
+            local data = self.entities_in_water[entity_url]
+
+            -- Spawn splash effect on exit
+            if self.splash_effect and go.exists(entity_url) then
+                local exit_pos = go.get_world_position(entity_url)
+                local splash_pos = vmath.vector3(exit_pos.x, self.surface_y, exit_pos.z or 0)
+                pcall(msg.post, "main:/fx_manager#fx_manager", hash("spawn_effect"), {
+                    effect_type = "water_splash",
+                    position = splash_pos
+                })
+            end
+
+            -- Remove water drag modifier
+            msg.post(entity_url, hash("remove_movement_modifier"), { id = "water_drag" })
+
+            msg.post(entity_url, hash("exit_water"), {
+                water_type = self.water_type,
+                was_submerged = data and data.submerged or false
+            })
+
+            self.entities_in_water[entity_url] = nil
+            print(string.format("[WATER] Entity exited water: %s", tostring(entity_url)))
+        end
+    elseif message_id == hash("set_tint") and message and message.color then
+        if Util.component_exists("#sprite") then
+            go.set("#sprite", "tint", message.color)
+        end
+        if self._has_distortion then
+            go.set("#distortion", "tint", message.color)
+        end
+    elseif message_id == hash("set_distortion") and message then
+        if message.enabled ~= nil then self.enable_distortion = message.enabled == true end
+        if message.strength ~= nil then self.distortion_strength = tonumber(message.strength) or self.distortion_strength end
+        if message.frequency ~= nil then self.distortion_frequency = tonumber(message.frequency) or self.distortion_frequency end
+        if message.alpha ~= nil then self.distortion_alpha = tonumber(message.alpha) or self.distortion_alpha end
+        apply_distortion(self)
+    end
+end
+
+function final(self)
+    require("mvtk.player.safe_ground").unregister_blocker(go.get_id())
+    -- Notify any remaining entities they're leaving water
+    for url, data in pairs(self.entities_in_water) do
+        if go.exists(url) then
+            msg.post(url, hash("remove_movement_modifier"), { id = "water_drag" })
+            msg.post(url, hash("exit_water"), {
+                water_type = self.water_type,
+                was_submerged = data.submerged
+            })
+        end
+    end
+end

@@ -1,0 +1,378 @@
+-- mvtk/prefabs/lore_item.script
+-- Interactable lore entry with popup display and persistent collection flags.
+
+local DEFAULT_PROMPT = "Read"
+local DEFAULT_CATEGORY = "notes"
+local DEFAULT_TITLE = "Lore"
+local DEFAULT_BODY = "The inscription is too faded to read."
+
+local MSG_TRIGGER_RESPONSE = hash("trigger_response")
+local MSG_INTERACT = hash("mvtk_interact")
+local MSG_INTERACT_LEGACY = hash("interact")
+local MSG_APPLY_TILED_PROPS = hash("apply_tiled_props")
+local MSG_OPEN_LORE_POPUP = hash("open_lore_popup")
+
+local PLAYER_GROUP = hash("player")
+
+go.property("room_id", "") -- Room ownership emitted by Create Rooms.
+go.property("lore_id", "")
+go.property("prompt_text", "")
+go.property("title", "")
+go.property("text", "")
+go.property("category", "notes")
+go.property("auto_pickup", false)
+go.property("destroyable", false)
+go.property("trigger_once", false)
+go.property("range", 96)
+go.property("requires_flag", "")
+go.property("unlock_flag", "")
+go.property("sound_id", "paper_pickup")
+go.property("particle_id", "")
+
+local PU = require "mvtk.prefabs.prefab_utils"
+
+local function optional_text(value)
+    return PU.optional_id(value) or ""
+end
+
+local Flags = nil
+
+local function get_flags()
+    if Flags ~= nil then return Flags end
+    local ok, mod = pcall(require, "mvtk.core.flags")
+    Flags = ok and mod or false
+    return Flags
+end
+
+local function to_bool(value, default)
+    if value == nil then return default and true or false end
+    if type(value) == "boolean" then return value end
+    if type(value) == "number" then return value ~= 0 end
+    if type(value) == "string" then
+        local s = value:lower():gsub("^%s+", ""):gsub("%s+$", "")
+        if s == "true" or s == "1" or s == "yes" or s == "on" then return true end
+        if s == "false" or s == "0" or s == "no" or s == "off" then return false end
+    end
+    return default and true or false
+end
+
+local function has_required_flag(self)
+    if not self.requires_flag_str then return true end
+    local F = get_flags()
+    if F and F.has then
+        return F.has(self.requires_flag_str)
+    end
+    return false
+end
+
+local function is_collected(self)
+    if not self.lore_id_str or self.lore_id_str == "" then
+        return false
+    end
+    local F = get_flags()
+    if F and F.has then
+        return F.has("collected_lore_" .. self.lore_id_str)
+    end
+    return false
+end
+
+
+local function resolve_lore_popup_url()
+    local candidates = {
+        "main:/lore_popup_gui#lore_popup",
+        "game:/lore_popup_gui#lore_popup",
+        "game_cp:/lore_popup_gui#lore_popup",
+    }
+    for _, target in ipairs(candidates) do
+        local ok_url, url = pcall(msg.url, target)
+        if ok_url and url then
+            local go_url = msg.url(url.socket, url.path, nil)
+            local ok_exists, exists = pcall(go.exists, go_url)
+            if ok_exists and exists then
+                return url
+            end
+        end
+    end
+    return nil
+end
+
+local function show_fallback_toast(title, body)
+    local text = body or ""
+    if title and title ~= "" then
+        text = title .. "\n" .. text
+    end
+    pcall(msg.post, msg.url("main:/toast_gui#toast"), hash("toast"), {
+        text = text,
+        duration = 3.0,
+    })
+end
+
+local function show_lore_popup(self, title_text, body_text)
+    local popup_url = resolve_lore_popup_url()
+    if not popup_url then
+        show_fallback_toast(title_text, body_text)
+        return false
+    end
+
+    local ok = pcall(msg.post, popup_url, MSG_OPEN_LORE_POPUP, {
+        lore_id = self.lore_id_str or "",
+        category = self.category_str or DEFAULT_CATEGORY,
+        title = title_text or "",
+        text = body_text or "",
+    })
+
+    if not ok then
+        show_fallback_toast(title_text, body_text)
+        return false
+    end
+
+    return true
+end
+
+local function resolve_content(self)
+    local title_text = self.title_str or ""
+    local body_text = self.text_str or ""
+
+    local ok_l10n, L10n = pcall(require, "mvtk.core.localization")
+    if ok_l10n and L10n and L10n.t then
+        if title_text ~= "" then
+            local translated = L10n.t(title_text)
+            if translated and translated ~= "" then
+                title_text = translated
+            end
+        end
+        if body_text ~= "" then
+            local translated = L10n.t(body_text)
+            if translated and translated ~= "" then
+                body_text = translated
+            end
+        end
+    end
+
+    if title_text == "" then
+        title_text = DEFAULT_TITLE
+    end
+    if body_text == "" then
+        body_text = DEFAULT_BODY
+    end
+
+    return title_text, body_text
+end
+
+local function mark_collected(self, title_text, body_text)
+    if not self.lore_id_str or self.lore_id_str == "" then
+        return
+    end
+    local F = get_flags()
+    if not (F and F.set) then
+        return
+    end
+
+    local key = self.lore_id_str
+    F.set("collected_lore_" .. key, true)
+    F.set("lore_title_" .. key, title_text or "")
+    F.set("lore_text_" .. key, body_text or "")
+    F.set("lore_category_" .. key, self.category_str or DEFAULT_CATEGORY)
+end
+
+local function resolve_label(self)
+    local label = self.prompt_text_str or DEFAULT_PROMPT
+    if label == "" then label = DEFAULT_PROMPT end
+    return label
+end
+
+local function sync_interaction(self)
+    local im = PU.get_interaction()
+    if not im then return end
+
+    local should_register = (not self.auto_pickup)
+        and (not self.prompt_disabled)
+        and (not (self.destroyable and self.collected))
+        and has_required_flag(self)
+
+    if should_register then
+        if im.register then
+            im.register(msg.url(), {
+                label = resolve_label(self),
+                range = tonumber(self.range) or 96,
+                priority = 5,
+                position_fn = function(url)
+                    return go.get_world_position(url)
+                end,
+            })
+        end
+    elseif im.unregister then
+        im.unregister(msg.url())
+    end
+end
+
+local function collect(self)
+    if not has_required_flag(self) then
+        return
+    end
+
+    PU.play_sound(optional_text(self.sound_id))
+
+    local title_text, body_text = resolve_content(self)
+    show_lore_popup(self, title_text, body_text)
+
+    if not self.collected then
+        self.collected = true
+        mark_collected(self, title_text, body_text)
+        if self.unlock_flag_str then
+            local F = get_flags()
+            if F and F.set then
+                F.set(self.unlock_flag_str, true)
+            end
+        end
+        if self.destroyable then
+            require("mvtk.tiled.object_presentation").emit("collected", nil, true)
+            go.delete()
+            return
+        end
+    end
+
+    if self.trigger_once then
+        self.prompt_disabled = true
+    end
+    require("mvtk.tiled.object_presentation").emit("interacted")
+
+    sync_interaction(self)
+end
+
+local function apply_props(self, props)
+    props = props or {}
+
+    if props.lore_id ~= nil then
+        self.lore_id_str = PU.normalize_hash_string(props.lore_id) or ""
+        self.lore_id = self.lore_id_str
+    end
+
+    if props.prompt_text ~= nil then
+        self.prompt_text_str = tostring(props.prompt_text)
+    elseif props.label ~= nil then
+        self.prompt_text_str = tostring(props.label)
+    end
+
+    if props.title ~= nil then
+        self.title_str = tostring(props.title)
+        self.title = self.title_str
+    end
+
+    local text_value = props.text
+    if text_value == nil then text_value = props.content end
+    if text_value ~= nil then
+        self.text_str = tostring(text_value)
+        self.text = self.text_str
+    end
+
+    if props.category ~= nil then
+        self.category_str = tostring(props.category)
+        self.category = self.category_str
+    elseif props.lore_type ~= nil then
+        self.category_str = tostring(props.lore_type)
+        self.category = self.category_str
+    end
+
+    if props.auto_pickup ~= nil then self.auto_pickup = to_bool(props.auto_pickup, self.auto_pickup) end
+    if props.destroyable ~= nil then self.destroyable = to_bool(props.destroyable, self.destroyable) end
+    if props.trigger_once ~= nil then self.trigger_once = to_bool(props.trigger_once, self.trigger_once) end
+    if props.range ~= nil then self.range = tonumber(props.range) or self.range end
+
+    if props.requires_flag ~= nil then
+        self.requires_flag_str = PU.normalize_hash_string(props.requires_flag)
+        self.requires_flag = self.requires_flag_str or ""
+    end
+    if props.unlock_flag ~= nil then
+        self.unlock_flag_str = PU.normalize_hash_string(props.unlock_flag)
+        self.unlock_flag = self.unlock_flag_str or ""
+    end
+    if props.sound_id ~= nil then
+        self.sound_id = optional_text(props.sound_id)
+    end
+    if props.particle_id ~= nil then
+        self.particle_id = optional_text(props.particle_id)
+    end
+
+    self.collected = is_collected(self)
+    if self.collected and self.destroyable then
+        require("mvtk.tiled.object_presentation").restore(nil, true)
+        go.delete()
+        return
+    end
+    if self.trigger_once and self.collected then
+        self.prompt_disabled = true
+    end
+
+    sync_interaction(self)
+end
+
+function init(self)
+    self.sound_id = optional_text(self.sound_id)
+    self.particle_id = optional_text(self.particle_id)
+    self.lore_id_str = PU.normalize_hash_string(self.lore_id) or ""
+    self.prompt_text_str = PU.normalize_hash_string(self.prompt_text) or DEFAULT_PROMPT
+    self.title_str = PU.normalize_hash_string(self.title) or ""
+    self.text_str = PU.normalize_hash_string(self.text) or ""
+    self.category_str = PU.normalize_hash_string(self.category) or DEFAULT_CATEGORY
+    self.requires_flag_str = PU.normalize_hash_string(self.requires_flag)
+    self.unlock_flag_str = PU.normalize_hash_string(self.unlock_flag)
+
+    self.player_in_range = false
+    self.prompt_disabled = false
+    self.collected = is_collected(self)
+
+    if self.collected and self.destroyable then
+        require("mvtk.tiled.object_presentation").restore(nil, true)
+        go.delete()
+        return
+    end
+    if self.trigger_once and self.collected then
+        self.prompt_disabled = true
+    end
+
+    sync_interaction(self)
+end
+
+function on_message(self, message_id, message, sender)
+    if message_id == MSG_TRIGGER_RESPONSE then
+        if message.group ~= PLAYER_GROUP then
+            return
+        end
+        if message.enter then
+            self.player_in_range = true
+            if self.auto_pickup and not self.prompt_disabled and (not self.collected or not self.destroyable) then
+                collect(self)
+            end
+        else
+            self.player_in_range = false
+        end
+        return
+    end
+
+    if message_id == MSG_INTERACT then
+        if not self.auto_pickup and not self.prompt_disabled and (not self.collected or not self.destroyable) then
+            collect(self)
+        end
+        return
+    end
+
+    if message_id == MSG_INTERACT_LEGACY then
+        if self.player_in_range and not self.prompt_disabled and (not self.collected or not self.destroyable) then
+            collect(self)
+        end
+        return
+    end
+
+    if message_id == MSG_APPLY_TILED_PROPS then
+        apply_props(self, message and message.properties)
+        return
+    end
+end
+
+function final(self)
+    local im = PU.get_interaction()
+    if im and im.unregister then
+        im.unregister(msg.url())
+    end
+end

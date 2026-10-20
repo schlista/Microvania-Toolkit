@@ -1,0 +1,106 @@
+-- mvtk/core/parallax_controller.script
+-- Simple multi-layer parallax/skybox controller using starter sprites.
+--
+-- Layers reposition from the camera's CameraState publish hook, which runs
+-- inside the camera's late_update with the exact view the render projection
+-- uses this frame, so the skybox never lags the world by a frame.
+
+local C = require "mvtk.core.constants"
+local Config = require "developer.config.resolved_config"
+local Colors = require "mvtk.core.colors"
+local CameraState = require "mvtk.camera.camera_state"
+
+go.property("layer1_factor", 0.15)
+go.property("layer2_factor", 0.35)
+go.property("layer3_factor", 0.65)
+
+go.property("layer1_id", msg.url("#layer1"))
+go.property("layer2_id", msg.url("#layer2"))
+go.property("layer3_id", msg.url("#layer3"))
+
+local PUBLISH_HOOK_KEY = "parallax_controller"
+
+local layers
+local anchor = vmath.vector3(0,0,0)
+local bounds = nil
+local biome  = "default"
+local parallax_enabled = false
+
+local function center_of(b)
+  if not b then return vmath.vector3(0,0,0) end
+  return vmath.vector3((b.min_x + b.max_x) * 0.5, (b.min_y + b.max_y) * 0.5, 0)
+end
+
+local function set_color(id, rgba)
+  if not rgba then return end
+  pcall(go.set, id, hash("tint"), Colors.to_v4(rgba))
+end
+
+-- Drive parallax from the camera view; anchor by last bounds center if available.
+local function apply_view(cam_x, cam_y)
+  if not parallax_enabled then return end
+  local a = anchor
+  for _, L in ipairs(layers or {}) do
+    local p = vmath.vector3(0,0,0)
+    p.x = a.x + (cam_x - a.x) * L.k
+    p.y = a.y + (cam_y - a.y) * L.k
+    p.z = 0
+    pcall(go.set_position, p, L.id)
+  end
+end
+
+function init(self)
+  C.URL.PARALLAX = msg.url()
+  layers = {
+    { id = self.layer1_id or msg.url("#layer1"), k = self.layer1_factor or 0.15, tint = vmath.vector4(1,1,1,0.9) },
+    { id = self.layer2_id or msg.url("#layer2"), k = self.layer2_factor or 0.35, tint = vmath.vector4(1,1,1,0.9) },
+    { id = self.layer3_id or msg.url("#layer3"), k = self.layer3_factor or 0.65, tint = vmath.vector4(1,1,1,0.9) },
+  }
+
+  local visual = Config and Config.visual or nil
+  self.active = visual and visual.parallax_enabled or false
+  parallax_enabled = self.active
+
+  if not parallax_enabled then
+    for _, L in ipairs(layers) do
+      pcall(msg.post, L.id, hash("disable"))
+    end
+    return
+  end
+
+  for _, L in ipairs(layers) do
+    set_color(L.id, L.tint)
+  end
+
+  CameraState.on_publish(PUBLISH_HOOK_KEY, apply_view)
+
+  -- Position once from the last published view (or the camera object before
+  -- its first publish) so the first frame is already correct.
+  local has_camera_state, cam_x, cam_y = CameraState.get()
+  if has_camera_state then
+    apply_view(cam_x, cam_y)
+  elseif C.URL.CAMERA and go.exists(C.URL.CAMERA) then
+    local cam = go.get_position(C.URL.CAMERA)
+    apply_view(cam.x, cam.y)
+  end
+end
+
+function final(self)
+  CameraState.off_publish(PUBLISH_HOOK_KEY)
+end
+
+local function apply_biome_tint(biome_id, cfg)
+  biome = biome_id or biome
+  if not parallax_enabled then return end
+  local tint = cfg and cfg.color or vmath.vector4(1,1,1,1)
+  for _, L in ipairs(layers or {}) do set_color(L.id, tint) end
+end
+
+function on_message(self, message_id, message, sender)
+  if message_id == hash("set_bounds") and message then
+    bounds = message
+    anchor = center_of(bounds)
+  elseif message_id == hash("set_biome") then
+    apply_biome_tint(message and message.id, message and message.config)
+  end
+end

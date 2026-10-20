@@ -1,0 +1,377 @@
+-- Persistent, world-owned elevator cabin.
+--
+-- Generated resources provide the copied cabin tilemap on this root and a
+-- parented collision child using platform_collision_forwarder.script.  The
+-- cabin remains outside streamed room collections; only its controller/node
+-- markers are room-owned.
+
+local C = require "mvtk.core.constants"
+local Pause = require "mvtk.core.pause"
+local FrameClock = require "mvtk.core.frame_clock"
+local TriggerBus = require "mvtk.world.trigger_bus"
+local ElevatorManager = require "mvtk.elevators.elevator_manager"
+local ElevatorContacts = require "mvtk.elevators.elevator_contacts"
+local PassengerCarrier = require "mvtk.prefabs.passenger_carrier"
+local PU = require "mvtk.prefabs.prefab_utils"
+
+go.property("elevator_id", "")
+go.property("trigger_id", "")
+go.property("cabin_resource_key", "")
+go.property("home_stop", "bottom")
+go.property("bottom_room_id", "")
+go.property("top_room_id", "")
+go.property("bottom_x", 0)
+go.property("bottom_y", 0)
+go.property("bottom_z", 0)
+go.property("top_x", 0)
+go.property("top_y", 1)
+go.property("top_z", 0)
+go.property("seam_y", 0)
+go.property("seam_y_authored", false)
+
+go.property("speed", 96)
+go.property("acceleration", 384)
+go.property("deceleration", 384)
+go.property("endpoint_wait", 0.35)
+go.property("start_delay", 0)
+go.property("close_time", 0.25)
+go.property("open_time", 0.25)
+go.property("ready_timeout", 5)
+go.property("activation_mode", "on_board")
+go.property("require_interact", false)
+go.property("require_rider", true)
+
+go.property("width", 128)
+go.property("height", 32)
+go.property("carry_player", true)
+go.property("carry_enemies", false)
+go.property("carry_pushables", true)
+go.property("enabled", true)
+
+go.property("camera_follow", true)
+go.property("camera_lock_x", true)
+go.property("camera_look_ahead", 96)
+go.property("camera_blend_time", 0.2)
+go.property("camera_priority", 50)
+go.property("camera_url", msg.url())
+go.property("player_url", msg.url())
+go.property("spawn_generation", 0)
+
+local function object_url(component_url)
+    local ok, parsed = pcall(msg.url, component_url)
+    if not ok or not parsed then return component_url end
+    local ok_object, result = pcall(msg.url, parsed.socket, parsed.path, nil)
+    return ok_object and result or component_url
+end
+
+local function usable_url(value)
+    if value == nil then return nil end
+    local ok, parsed = pcall(msg.url, value)
+    if not ok or not parsed then return nil end
+    if parsed.path == nil or parsed.path == hash("") then return nil end
+    return parsed
+end
+
+local function engine_position(position)
+    position = position or {}
+    -- State snapshots intentionally use plain Lua tables. Defold's vector
+    -- constructor requires scalar components instead of a table value.
+    return vmath.vector3(position.x or 0, position.y or 0, position.z or 0)
+end
+
+local function activation_is(self, name)
+    return self.activation_mode == name
+end
+
+local function cabin_definition(self)
+    return {
+        elevator_id = self.elevator_id_key,
+        trigger_id = self.trigger_id_key,
+        cabin_resource_key = PU.resolve_id(self.cabin_resource_key),
+        home_stop = self.home_stop,
+        speed = self.speed,
+        acceleration = self.acceleration,
+        deceleration = self.deceleration,
+        endpoint_wait = self.endpoint_wait,
+        start_delay = self.start_delay,
+        close_time = self.close_time,
+        open_time = self.open_time,
+        ready_timeout = self.ready_timeout,
+        seam_y = self.seam_y,
+        seam_y_authored = self.seam_y_authored,
+        activation_mode = self.activation_mode,
+        require_interact = self.require_interact,
+        require_rider = self.require_rider,
+        width = self.width,
+        height = self.height,
+        carry_player = self.carry_player,
+        carry_enemies = self.carry_enemies,
+        carry_pushables = self.carry_pushables,
+        camera_follow = self.camera_follow,
+        camera_lock_x = self.camera_lock_x,
+        camera_look_ahead = self.camera_look_ahead,
+        camera_blend_time = self.camera_blend_time,
+        camera_priority = self.camera_priority,
+        camera_url = usable_url(self.camera_url),
+        player_url = self.resolved_player_url,
+        enabled = self.enabled,
+        spawn_generation = (tonumber(self.spawn_generation) or 0) > 0
+            and self.spawn_generation or nil,
+        url = msg.url(),
+        owner_url = object_url(msg.url()),
+        bottom = {
+            room_id = PU.resolve_id(self.bottom_room_id),
+            stop = "bottom",
+            position = { x = self.bottom_x, y = self.bottom_y, z = self.bottom_z },
+        },
+        top = {
+            room_id = PU.resolve_id(self.top_room_id),
+            stop = "top",
+            position = { x = self.top_x, y = self.top_y, z = self.top_z },
+        },
+    }
+end
+
+local function register_trigger(self, id)
+    if not id or self.trigger_keys[id] then return end
+    if TriggerBus.register(id, msg.url()) then self.trigger_keys[id] = true end
+end
+
+local function unregister_triggers(self)
+    for id in pairs(self.trigger_keys or {}) do TriggerBus.unregister(id, msg.url()) end
+    self.trigger_keys = {}
+end
+
+local function remember_manager_generation(self)
+    local record = ElevatorManager.get(self.elevator_id_key)
+    if record and record.snapshot then self.manager_generation = record.snapshot.generation end
+end
+
+local function request_trip(self, stop)
+    local ok, reason, generation = ElevatorManager.request(self.elevator_id_key, stop)
+    if generation then self.manager_generation = generation else remember_manager_generation(self) end
+    return ok, reason
+end
+
+local function automatic_rider_gate_open(self)
+    return activation_is(self, "automatic")
+        and (not self.require_rider or not self.player_contacts:is_empty())
+end
+
+local function continue_automatic_shuttle(self, result)
+    if not automatic_rider_gate_open(self) then return end
+    for _, event in ipairs(result and result.events or {}) do
+        if event.type == "trip_completed" then
+            request_trip(self)
+            return
+        end
+    end
+end
+
+local function apply_result(self, result, options)
+    if not result or not result.position then return end
+    options = options or {}
+    if result.snapshot and self.manager_generation
+        and result.snapshot.generation ~= self.manager_generation
+        and #(result.events or {}) == 0 then
+        -- A death/restart/world coordinator reset occurred outside this script.
+        -- Drop riders before snapping to the canonical landing.
+        self.passenger_carrier:clear()
+        self.player_contacts:clear()
+        self.player_inside = false
+        self.player_entity = nil
+    end
+
+    local current = go.get_position()
+    local target = engine_position(result.position)
+    local delta = target - current
+    go.set_position(target)
+
+    if options.carry ~= false and (math.abs(delta.x) > 0.0001 or math.abs(delta.y) > 0.0001) then
+        self.passenger_carrier:apply_delta(delta.x, delta.y, {
+            carry_player = self.carry_player,
+            carry_enemies = self.carry_enemies,
+        })
+    end
+    if result.snapshot then self.manager_generation = result.snapshot.generation end
+end
+
+local function cancel_and_apply(self, reason, reset_home)
+    self.passenger_carrier:clear()
+    self.player_contacts:clear()
+    self.player_inside = false
+    self.player_entity = nil
+    local result = ElevatorManager.cancel(self.elevator_id_key, reason, {
+        reset_home = reset_home == true,
+    })
+    if type(result) == "table" then apply_result(self, result, { carry = false }) end
+    remember_manager_generation(self)
+end
+
+local function player_entered(self, entity)
+    local added, count = self.player_contacts:add(entity)
+    self.player_inside = not self.player_contacts:is_empty()
+    self.player_entity = self.player_contacts:first()
+    if not added then return end
+    if self.carry_player then self.passenger_carrier:add(entity, C.GROUPS.PLAYER) end
+    if count == 1 then
+        if activation_is(self, "on_board") and not self.require_interact then
+            request_trip(self)
+        elseif activation_is(self, "automatic") and self.require_rider then
+            request_trip(self)
+        end
+    end
+end
+
+local function player_exited(self, entity)
+    local removed = self.player_contacts:remove(entity)
+    self.player_inside = not self.player_contacts:is_empty()
+    self.player_entity = self.player_contacts:first()
+    if not removed then return end
+    self.passenger_carrier:remove(entity)
+    if self.require_rider and self.player_contacts:is_empty() then
+        local record = ElevatorManager.get(self.elevator_id_key)
+        local state = record and record.snapshot and record.snapshot.state
+        if state == "waiting_ready" or state == "starting" or state == "closing" then
+            local result = ElevatorManager.cancel(self.elevator_id_key, "rider_left", {})
+            if type(result) == "table" then apply_result(self, result) end
+            remember_manager_generation(self)
+        end
+    end
+end
+
+function init(self)
+    self.elevator_id_key = PU.resolve_id(self.elevator_id)
+    if not self.elevator_id_key then
+        print("[ELEVATOR] persistent cabin is missing elevator_id")
+        self.runtime_enabled = false
+        return
+    end
+    self.trigger_id_key = PU.resolve_id(self.trigger_id) or self.elevator_id_key
+    self.resolved_player_url = usable_url(self.player_url) or (C.URL and C.URL.PLAYER)
+    self.passenger_carrier = PassengerCarrier.new()
+    self.player_contacts = ElevatorContacts.new()
+    self.trigger_keys = {}
+    self.player_inside = false
+    self.blocked = false
+
+    local existing = ElevatorManager.get(self.elevator_id_key)
+    if not existing or not existing.snapshot then
+        local ok, err = ElevatorManager.register_definition(cabin_definition(self))
+        if not ok then
+            local line = string.format("'%s' has no valid global definition: %s",
+                tostring(self.elevator_id_key), tostring(err))
+            print("[ELEVATOR] " .. line)
+            require("mvtk.elevators.elevator_report").show_dev_error({ line })
+            self.runtime_enabled = false
+            return
+        end
+    end
+
+    local token, snapshot_or_error = ElevatorManager.attach_cabin(cabin_definition(self))
+    if not token then
+        local line = string.format("'%s' cabin attach failed: %s",
+            tostring(self.elevator_id_key), tostring(snapshot_or_error))
+        print("[ELEVATOR] " .. line)
+        require("mvtk.elevators.elevator_report").show_dev_error({ line })
+        self.runtime_enabled = false
+        return
+    end
+
+    self.attachment_token = token
+    self.runtime_enabled = self.enabled ~= false
+    self.manager_generation = snapshot_or_error.generation
+    go.set_position(engine_position(snapshot_or_error.position))
+    register_trigger(self, self.elevator_id_key)
+    register_trigger(self, self.trigger_id_key)
+
+    if self.require_interact then PU.register_interaction("Ride elevator", 96, 6) end
+    if automatic_rider_gate_open(self) then request_trip(self) end
+end
+
+function final(self)
+    unregister_triggers(self)
+    if self.require_interact then PU.unregister_interaction() end
+    if self.elevator_id_key and self.attachment_token then
+        ElevatorManager.detach_cabin(self.elevator_id_key, self.attachment_token)
+    end
+end
+
+function update(self, dt)
+    if not self.runtime_enabled then return end
+    local scale = (Pause and (Pause.dt_scale or Pause.scale) and (Pause.dt_scale or Pause.scale)()) or 1
+    if scale <= 0 then return end
+    local result, err = ElevatorManager.update(self.elevator_id_key, FrameClock.snap(dt) * scale, {
+        blocked = self.blocked,
+        block_reason = self.block_reason,
+    }, self.attachment_token)
+    self.blocked = false
+    self.block_reason = nil
+    if result then
+        apply_result(self, result)
+        continue_automatic_shuttle(self, result)
+    elseif err == "stale_cabin_attachment" then
+        self.runtime_enabled = false
+    end
+end
+
+function on_message(self, message_id, message, sender)
+    message = message or {}
+    if message_id == hash("trigger_response") then
+        local entity = message.other_id or sender
+        local group = message.other_group or message.group
+        if group == C.GROUPS.PLAYER then
+            if message.enter then player_entered(self, entity) else player_exited(self, entity) end
+        elseif group == C.GROUPS.ENEMY and self.carry_enemies then
+            if message.enter then self.passenger_carrier:add(entity, group)
+            else self.passenger_carrier:remove(entity) end
+        elseif group == C.GROUPS.PUSHABLE and self.carry_pushables then
+            if message.enter then self.passenger_carrier:add(entity, group)
+            else self.passenger_carrier:remove(entity) end
+        end
+        return
+    end
+
+    if message_id == hash("mvtk_interact") then
+        if self.require_interact and self.player_inside then request_trip(self, message.stop) end
+        return
+    end
+
+    if message_id == hash("elevator_obstruction") then
+        self.blocked = message.blocked ~= false
+        self.block_reason = message.reason or "shaft_obstructed"
+        return
+    end
+
+    if message_id == hash("elevator_world_reset") then
+        self.passenger_carrier:clear()
+        self.player_contacts:clear()
+        self.player_inside = false
+        self.player_entity = nil
+        unregister_triggers(self)
+        self.runtime_enabled = false
+        return
+    end
+
+    if message_id == hash("mvtk_player_died") or message_id == hash("player_died")
+        or message_id == hash("restart_game") then
+        cancel_and_apply(self, tostring(message.reason or "player_died"), true)
+        return
+    end
+
+    if message_id == hash("elevator_replaced") then
+        self.passenger_carrier:clear()
+        self.player_contacts:clear()
+        self.player_inside = false
+        self.player_entity = nil
+        self.runtime_enabled = false
+        return
+    end
+
+    local handled, _, generation = ElevatorManager.handle_trigger(
+        self.elevator_id_key, message_id, message, sender, {
+            empty = self.player_contacts:is_empty(),
+        })
+    if generation then self.manager_generation = generation
+    elseif handled then remember_manager_generation(self) end
+end

@@ -1,0 +1,100 @@
+-- editor/rooms_manifest_item.script
+-- manifest root in small messages (so large rooms never overflow a msg table).
+
+local Tile = require "developer.config.tile_settings"
+local Util = require "mvtk.core.util"
+
+local LAYER_NAME = "bounds"
+local TILE_PX    = Tile.width or 128     -- from tile_settings (wizard-configurable)
+-- Slopes seen in your log for room_4:
+-- local SLOPE = { [171] =  1,  [299] = -1 } -- 1 => "\"  ;  -1 => "/"
+local SLOPE   = { [171] = true }         -- add more if you truly have other slope ids
+
+
+-- id like "/room_4"
+local function derive_room_id()
+	local inside = Util.go_id_text(msg.url().path)
+	if not inside then return nil end
+	return inside:match("([^/#]+)$") or inside
+end
+
+-- url of the manifest root inside this proxy
+local function manifest_root_url()
+	local here = msg.url()
+	return msg.url(here.socket, "/rooms_manifest", "rooms_manifest")
+end
+
+-- tilemap url: prefer '#bounds', fallback '#tilemap'
+local function resolve_tilemap_url()
+	local u_bounds = msg.url(nil, go.get_id(), "bounds")
+	if pcall(tilemap.get_bounds, u_bounds) then return u_bounds end
+
+	local u_tilemap = msg.url(nil, go.get_id(), "tilemap")
+	assert(pcall(tilemap.get_bounds, u_tilemap),
+		"No tilemap bounds found on GO "..tostring(go.get_id()))
+	return u_tilemap
+end
+
+local function post_begin(rm_url, id, w_px, h_px)
+	msg.post(rm_url, "register_room_begin", { id=id, tile=TILE_PX, w=w_px, h=h_px })
+end
+local function post_rect(rm_url, id, x,y,w,h)
+	msg.post(rm_url, "register_rect", { id=id, x=x, y=y, w=w, h=h })
+end
+local function post_diag(rm_url, id, x,y,dir)
+	msg.post(rm_url, "register_diag", { id=id, x=x, y=y, dir=dir })
+end
+local function post_end(rm_url, id)
+	msg.post(rm_url, "register_room_end", { id=id })
+end
+
+function init(self)
+	local id = derive_room_id()
+	if not id then
+		print("[MANIFEST_ITEM] Cannot resolve room id from game object path; registration skipped.")
+		return
+	end
+	local rm    = manifest_root_url()
+	local tmap  = resolve_tilemap_url()
+
+	local x0, y0, w, h = tilemap.get_bounds(tmap)
+	local Wpx, Hpx     = w * TILE_PX, h * TILE_PX
+
+	print(string.format("[MANIFEST_ITEM] %s  layer=%s  bounds(cells)=(%d,%d,%d,%d)  -> size(px)=%dx%d",
+	id, LAYER_NAME, x0, y0, w, h, Wpx, Hpx))
+
+	post_begin(rm, id, Wpx, Hpx)
+
+	-- Horizontal runs for solid tiles; individual posts for slope triangles
+	for cy = y0, y0 + h - 1 do
+		local cx = x0
+		while cx <= x0 + w - 1 do
+			local tid = tilemap.get_tile(tmap, LAYER_NAME, cx, cy)
+			if tid ~= 0 then
+				local slope_dir = SLOPE[tid]
+				if slope_dir then
+					local x = (cx - x0) * TILE_PX
+					local y = (cy - y0) * TILE_PX
+					post_diag(rm, id, x, y, slope_dir)
+					cx = cx + 1
+				else
+					local start = cx
+					while cx <= x0 + w - 1 do
+						tid = tilemap.get_tile(tmap, LAYER_NAME, cx, cy)
+						if tid == 0 or SLOPE[tid] then break end
+						cx = cx + 1
+					end
+					local run_w = (cx - start) * TILE_PX
+					local x = (start - x0) * TILE_PX
+					local y = (cy    - y0) * TILE_PX
+					post_rect(rm, id, x, y, run_w, TILE_PX)
+				end
+			else
+				cx = cx + 1
+			end
+		end
+	end
+
+	post_end(rm, id)
+end
+

@@ -1,0 +1,27 @@
+#version 140
+
+in highp vec4 position;
+in mediump vec2 texcoord0;
+out mediump vec2 var_texcoord0;
+
+uniform vs_uniforms
+{
+    highp mat4 view_proj;
+    // World start XY, rendering Z, and width in pixels.
+    highp vec4 rope_start;
+    // World anchor XY; W is 1 when attached, 0 when hidden.
+    highp vec4 rope_end;
+};
+
+void main()
+{
+    vec2 segment = (rope_end.xy - rope_start.xy) * rope_end.w;
+    vec2 direction = segment / max(length(segment), 0.001);
+    vec2 side = vec2(-direction.y, direction.x);
+    // The atlas is a single 2x2 white square with no padding, so its UVs
+    // describe the four corners directly. Stretch it into the rope segment.
+    vec2 point = rope_start.xy + segment * texcoord0.x
+        + side * (texcoord0.y - 0.5) * rope_start.w * rope_end.w;
+    gl_Position = view_proj * vec4(point, rope_start.z, 1.0);
+    var_texcoord0 = texcoord0;
+}

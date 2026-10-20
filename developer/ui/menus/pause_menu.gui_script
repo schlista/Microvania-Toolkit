@@ -1,0 +1,444 @@
+-- developer/ui/menus/pause_menu.gui_script
+-- Pause menu using nodes defined in .gui file for IDE customization
+
+local MenuManager = require "mvtk.ui.menu_manager"
+local Transitions = require "mvtk.ui.menu_transitions"
+local Pause = require "mvtk.core.pause"
+local InputCtl = require "mvtk.rooms.input_controller"
+local Settings = require "mvtk.core.settings"
+local FastTravel = require "mvtk.core.fast_travel"
+
+local v3 = vmath.vector3
+local v4 = vmath.vector4
+
+local function local_socket_url(path, fragment)
+  local here = msg.url()
+  return msg.url(here.socket, path, fragment)
+end
+
+local function post_any(urls, message_id, payload)
+  for _, target in ipairs(urls) do
+    local ok = pcall(msg.post, target, message_id, payload or {})
+    if ok then return true end
+  end
+  return false
+end
+
+
+
+local function play_ui(id)
+  local ok, Audio = pcall(require, "mvtk.audio.audio")
+  if ok and Audio and Audio.sfx then
+    pcall(Audio.sfx, id)
+  end
+end
+
+local function current_icon_ids()
+  local theme = Settings.get_icon_theme()
+  if theme == "playstation" then
+    return {
+      confirm = "ps_cross",
+      back = "ps_circle",
+      start = "ps_options",
+    }
+  elseif theme == "switch" then
+    return {
+      -- The toolkit keeps the south face button as confirm across controller themes.
+      confirm = "switch_b",
+      back = "switch_a",
+      start = "switch_plus",
+    }
+  end
+  return {
+    confirm = "xbox_a",
+    back = "xbox_b",
+    start = "xbox_menu",
+  }
+end
+
+-- Menu button definitions (id matches node names in .gui file)
+local MENU_BUTTONS = {
+  { id = "resume", action = "resume" },
+  { id = "inventory", action = "open_inventory" },
+  { id = "map", action = "open_map" },
+  { id = "fast_travel", action = "open_fast_travel" },
+  { id = "settings", action = "open_settings" },
+  { id = "quit", action = "quit_to_menu" },
+}
+
+function init(self)
+  self._enabled = false
+  self._selected = 1
+  self._in_transition = false
+  self._highlight_bg_color = v4(1, 1, 0, 0.9)
+  self._highlight_text_color = v4(0, 0, 0, 1)
+
+  -- Get nodes from .gui file
+  self.overlay = gui.get_node("overlay")
+  self.menu_root = gui.get_node("menu_root")
+  self.title = gui.get_node("title")
+  self.hint = gui.get_node("hint")
+  self.icon_confirm = gui.get_node("icon_confirm")
+  self.icon_back = gui.get_node("icon_back")
+  self.icon_start = gui.get_node("icon_start")
+  self.highlight_bg = gui.get_node("highlight_bg")
+  self.highlight_text = gui.get_node("highlight_text")
+  if self.highlight_bg then
+    self._highlight_bg_color = gui.get_color(self.highlight_bg)
+  end
+  if self.highlight_text then
+    self._highlight_text_color = gui.get_color(self.highlight_text)
+  end
+
+  self._world_map_url = local_socket_url("/world_map_gui", "world_map")
+  self._fast_travel_url = local_socket_url("/fast_travel_gui", "fast_travel")
+  self._settings_url = local_socket_url("/ui", "settings")
+  self._world_map_urls = {
+    self._world_map_url,
+    "main:/world_map_gui#world_map",
+    "game:/world_map_gui#world_map",
+    "game_cp:/world_map_gui#world_map",
+  }
+  self._fast_travel_urls = {
+    self._fast_travel_url,
+    "main:/fast_travel_gui#fast_travel",
+    "game:/fast_travel_gui#fast_travel",
+    "game_cp:/fast_travel_gui#fast_travel",
+  }
+  self._settings_urls = {
+    self._settings_url,
+    "main:/ui#settings",
+    "game:/ui#settings",
+    "game_cp:/ui#settings",
+  }
+  self._inventory_urls = {
+    local_socket_url("/inventory_gui", "inventory"),
+    "main:/inventory_gui#inventory",
+    "game:/inventory_gui#inventory",
+    "game_cp:/inventory_gui#inventory",
+  }
+  self._host_urls = {
+    "boot:/host#script",
+    "main:/host#script",
+  }
+
+  -- Build button list from .gui nodes
+  self.buttons = {}
+  local allow_fast_travel = FastTravel and FastTravel.can_menu_travel and FastTravel.can_menu_travel()
+
+  for _, btn_def in ipairs(MENU_BUTTONS) do
+    -- Skip fast travel if not allowed
+    if btn_def.id ~= "fast_travel" or allow_fast_travel then
+      local bg_node = gui.get_node("btn_" .. btn_def.id .. "_bg")
+      local text_node = gui.get_node("btn_" .. btn_def.id .. "_text")
+
+      if bg_node and text_node then
+        local normal_bg = gui.get_color(bg_node)
+        local normal_text = gui.get_color(text_node)
+        table.insert(self.buttons, {
+          id = btn_def.id,
+          action = btn_def.action,
+          bg = bg_node,
+          text = text_node,
+          normal_bg = normal_bg,
+          normal_text = normal_text,
+        })
+      end
+    end
+  end
+
+  -- Initially release input focus
+  msg.post(".", "release_input_focus")
+
+  -- Pointer interaction state
+  self._pointer_down = false
+  self._pointer_index = nil
+end
+
+local function update_selection(self, silent)
+  for i, btn in ipairs(self.buttons) do
+    if i == self._selected then
+      -- Highlighted state
+      gui.set_color(btn.bg, self._highlight_bg_color)
+      gui.set_color(btn.text, self._highlight_text_color)
+      gui.set_scale(btn.bg, v3(1.05, 1.05, 1))
+      gui.set_scale(btn.text, v3(1.05, 1.05, 1))
+      if not silent then play_ui("ui_move") end
+    else
+      -- Normal state
+      if btn.normal_bg then gui.set_color(btn.bg, btn.normal_bg) end
+      if btn.normal_text then gui.set_color(btn.text, btn.normal_text) end
+      gui.set_scale(btn.bg, v3(1, 1, 1))
+      gui.set_scale(btn.text, v3(1, 1, 1))
+    end
+  end
+end
+
+local function refresh_icon_theme(self)
+  local icons = current_icon_ids()
+  if self.icon_confirm then
+    gui.play_flipbook(self.icon_confirm, hash(icons.confirm))
+  end
+  if self.icon_back then
+    gui.play_flipbook(self.icon_back, hash(icons.back))
+  end
+  if self.icon_start then
+    gui.play_flipbook(self.icon_start, hash(icons.start))
+  end
+end
+
+local function show_all_nodes(self, show)
+  gui.set_enabled(self.overlay, show)
+  gui.set_enabled(self.title, show)
+  gui.set_enabled(self.hint, show)
+  gui.set_enabled(self.icon_confirm, show)
+  gui.set_enabled(self.icon_back, show)
+  gui.set_enabled(self.icon_start, show)
+
+  for _, btn in ipairs(self.buttons) do
+    gui.set_enabled(btn.bg, show)
+    gui.set_enabled(btn.text, show)
+  end
+end
+
+local function open_menu(self)
+  if self._enabled then return end
+
+  self._enabled = true
+  self._selected = 1
+  self._in_transition = true
+  self._pointer_down = false
+  self._pointer_index = nil
+  refresh_icon_theme(self)
+
+  -- Acquire input focus for controller navigation
+  msg.post(".", "acquire_input_focus")
+
+  -- Pause the game
+  if Pause and Pause.set then Pause.set(true) end
+  if InputCtl and InputCtl.set_blocked then InputCtl.set_blocked(true) end
+
+  -- Apply correct highlight/normal colors before showing anything
+  update_selection(self, true)
+
+  -- Set all buttons to alpha 0 before showing so they don't flash
+  for _, btn in ipairs(self.buttons) do
+    local c = gui.get_color(btn.bg)
+    gui.set_color(btn.bg, v4(c.x, c.y, c.z, 0))
+    c = gui.get_color(btn.text)
+    gui.set_color(btn.text, v4(c.x, c.y, c.z, 0))
+  end
+
+  -- Show all nodes
+  show_all_nodes(self, true)
+
+  -- Fade in animations
+  Transitions.fade_in(self.overlay, 0.2, 1.0)
+  Transitions.fade_in(self.title, 0.25)
+  Transitions.fade_in(self.hint, 0.25)
+  Transitions.fade_in(self.icon_confirm, 0.2)
+  Transitions.fade_in(self.icon_back, 0.2)
+  Transitions.fade_in(self.icon_start, 0.2)
+
+  -- Fade in all buttons together (no stagger)
+  for _, btn in ipairs(self.buttons) do
+    Transitions.fade_in(btn.bg, 0.25)
+    Transitions.fade_in(btn.text, 0.25)
+  end
+
+  -- Mark transition complete after fade finishes
+  timer.delay(0.3, false, function()
+    self._in_transition = false
+  end)
+end
+
+local function close_menu(self)
+  if not self._enabled then return end
+
+  self._in_transition = true
+
+  -- Unpause the game
+  if Pause and Pause.set then Pause.set(false) end
+  if InputCtl and InputCtl.set_blocked then InputCtl.set_blocked(false) end
+
+  -- Fade out all elements
+  Transitions.fade_out(self.overlay, 0.15)
+  Transitions.fade_out(self.title, 0.15)
+  Transitions.fade_out(self.hint, 0.15)
+
+  for _, btn in ipairs(self.buttons) do
+    Transitions.fade_out(btn.bg, 0.15)
+    Transitions.fade_out(btn.text, 0.15)
+  end
+
+  -- Hide after fade completes
+  timer.delay(0.2, false, function()
+    self._enabled = false
+    self._in_transition = false
+    msg.post(".", "release_input_focus")
+    show_all_nodes(self, false)
+  end)
+end
+
+local function execute_action(self, action)
+  if action == "resume" then
+    close_menu(self)
+
+  elseif action == "open_inventory" then
+    if MenuManager.get_menu_url("inventory") then
+      MenuManager.open_menu("inventory")
+      close_menu(self)
+    elseif post_any(self._inventory_urls, hash("open_inventory"), {}) then
+      close_menu(self)
+    else
+      print("[PAUSE_MENU] Inventory menu not registered")
+    end
+
+  elseif action == "open_map" then
+    if post_any(self._world_map_urls, hash("open_world_map"), { source = "pause_menu" }) then
+      close_menu(self)
+    else
+      print("[PAUSE_MENU] World map GUI not found")
+    end
+
+  elseif action == "open_fast_travel" then
+    if post_any(self._world_map_urls, hash("open_world_map"), {
+      source = "pause_menu",
+      mode = "fast_travel",
+      show_title = true,
+      show_legend = true,
+    }) then
+      close_menu(self)
+    elseif post_any(self._fast_travel_urls, hash("open_fast_travel"), {}) then
+      close_menu(self)
+    else
+      print("[PAUSE_MENU] Fast travel UI not found")
+    end
+
+  elseif action == "open_settings" then
+    if post_any(self._settings_urls, hash("show_settings"), {}) then
+      close_menu(self)
+    else
+      print("[PAUSE_MENU] Settings GUI not found")
+    end
+
+  elseif action == "quit_to_menu" then
+    print("[PAUSE_MENU] Quit to menu triggered")
+    close_menu(self)
+    local ok = post_any(self._host_urls, hash("back_to_menu"), {})
+    if not ok then
+      print("[PAUSE_MENU] No menu host found; rebooting")
+      pcall(sys.reboot)
+    end
+  end
+end
+
+function on_input(self, action_id, action)
+  if not self._enabled or self._in_transition then return false end
+
+  if action and action.pressed then
+    -- Navigate up
+    if action_id == hash("key_up") or action_id == hash("key_w")
+        or action_id == hash("gamepad_lpad_up")
+        or action_id == hash("gamepad_lstick_up") then
+      self._selected = math.max(1, self._selected - 1)
+      update_selection(self)
+      return true
+
+    -- Navigate down
+    elseif action_id == hash("key_down") or action_id == hash("key_s")
+        or action_id == hash("gamepad_lpad_down")
+        or action_id == hash("gamepad_lstick_down") then
+      self._selected = math.min(#self.buttons, self._selected + 1)
+      update_selection(self)
+      return true
+
+    -- Select option
+    elseif action_id == hash("gamepad_rpad_down") or action_id == hash("gamepad_rpad_left")
+        or action_id == hash("key_enter") then
+      local btn = self.buttons[self._selected]
+      if btn then
+        Transitions.pulse(btn.bg, 1.15, 0.2)
+        execute_action(self, btn.action)
+        play_ui("ui_confirm")
+      end
+      return true
+
+    -- Resume (back button or pause)
+    elseif action_id == hash("gamepad_rpad_right") or action_id == hash("gamepad_back")
+        or action_id == hash("gamepad_start") or action_id == hash("key_escape")
+        or action_id == hash("key_m") or action_id == hash("key_p") then
+      close_menu(self)
+      play_ui("ui_back")
+      return true
+    end
+  end
+
+  -- Mouse/touch interactions
+  if action_id == hash("touch") or action_id == hash("click") or action_id == hash("mouse_button_1") then
+    if action.pressed then
+      for i, btn in ipairs(self.buttons) do
+        if gui.pick_node(btn.bg, action.x, action.y) or gui.pick_node(btn.text, action.x, action.y) then
+          self._selected = i
+          self._pointer_down = true
+          self._pointer_index = i
+          update_selection(self)
+          play_ui("ui_move")
+          return true
+        end
+      end
+      if gui.pick_node(self.overlay, action.x, action.y) then
+        self._pointer_down = "overlay"
+        self._pointer_index = nil
+        return true
+      end
+    elseif action.released then
+      if self._pointer_down == true and self._pointer_index then
+        local btn = self.buttons[self._pointer_index]
+        if btn and (gui.pick_node(btn.bg, action.x, action.y) or gui.pick_node(btn.text, action.x, action.y)) then
+          Transitions.pulse(btn.bg, 1.15, 0.2)
+          execute_action(self, btn.action)
+          play_ui("ui_confirm")
+        end
+      elseif self._pointer_down == "overlay" then
+        close_menu(self)
+        play_ui("ui_back")
+      end
+      self._pointer_down = false
+      self._pointer_index = nil
+      return true
+    else
+      -- Update highlight while dragging
+      if self._pointer_down == true then
+        for i, btn in ipairs(self.buttons) do
+          if gui.pick_node(btn.bg, action.x, action.y) or gui.pick_node(btn.text, action.x, action.y) then
+            if self._selected ~= i then
+              self._selected = i
+              self._pointer_index = i
+              update_selection(self)
+            end
+            break
+          end
+        end
+      end
+    end
+  end
+
+  return false
+end
+
+function on_message(self, message_id, _message, _sender)
+  if message_id == hash("toggle_pause") then
+    if self._enabled then
+      close_menu(self)
+    else
+      open_menu(self)
+    end
+
+  elseif message_id == hash("menu_open") then
+    open_menu(self)
+
+  elseif message_id == hash("menu_close") then
+    close_menu(self)
+  end
+end

@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<template>
+ <object name="Teleporter" type="teleporter" width="64" height="64">
+  <properties>
+   <property name="target_ref" type="object" value="0"/>
+   <property name="teleporter_id" type="string" value="teleporter_a"/>
+   <property name="pair_id" type="string" value="pair_1"/>
+   <property name="target_id" type="string" value=""/>
+   <property name="access" type="class" propertytype="teleporter_access">
+    <properties>
+     <property name="requires_flag" type="string" value=""/>
+     <property name="hide_when_locked" type="bool" value="false"/>
+     <property name="require_interact" type="bool" value="false"/>
+     <property name="one_way" type="bool" value="false"/>
+    </properties>
+   </property>
+   <property name="transport" type="class" propertytype="teleporter_transport">
+    <properties>
+     <property name="cooldown" type="float" value="0.5"/>
+     <property name="transition_time" type="float" value="0.0"/>
+     <property name="preserve_velocity" type="bool" value="false"/>
+     <property name="facing" type="int" value="0"/>
+    </properties>
+   </property>
+   <property name="presentation" type="class" propertytype="teleporter_presentation">
+    <properties>
+     <property name="label" type="string" value="Teleport"/>
+     <property name="fade_out" type="float" value="0.5"/>
+     <property name="fade_in" type="float" value="0.5"/>
+     <property name="active_effect_id" propertytype="particle_effects" value="collectible_sparkle"/>
+     <property name="unlock_effect_id" propertytype="particle_effects" value="none"/>
+    </properties>
+   </property>
+   <property name="art_item" type="string" value=""/>
+   <property name="art_feedback" type="class" propertytype="teleporter_art_feedback">
+    <properties>
+     <property name="consume_effect" type="string" propertytype="particle_effects" value="none"/>
+     <property name="interact_effect" type="string" propertytype="particle_effects" value="none"/>
+     <property name="effect_offset_x" type="float" value="0"/>
+     <property name="effect_offset_y" type="float" value="0"/>
+     <property name="effect_scale" type="float" value="1"/>
+     <property name="effect_cooldown" type="float" value="0"/>
+    </properties>
+   </property>
+   <property name="mvtk_template_version" type="string" value="2.7.0"/>
+  </properties>
+ </object>
+</template>

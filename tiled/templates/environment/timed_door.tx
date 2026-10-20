@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<template>
+ <object name="Timed Door" type="timed_door" width="64" height="128">
+  <properties>
+   <property name="door_id" value="door_1"/>
+   <property name="behavior_and_timing" type="class" propertytype="timed_door_behavior_and_timing">
+    <properties>
+     <property name="auto_close" type="bool" value="false"/>
+     <property name="close_on_release" type="bool" value="false"/>
+     <property name="open_duration" type="float" value="2.5"/>
+     <property name="starts_open" type="bool" value="false"/>
+    </properties>
+   </property>
+   <property name="presentation" type="class" propertytype="timed_door_presentation">
+    <properties>
+     <property name="hide_when_open" type="bool" value="true"/>
+    </properties>
+   </property>
+   <property name="feedback" type="class" propertytype="timed_door_feedback">
+    <properties>
+     <property name="message_off" value="deactivate"/>
+     <property name="message_on" value="activate"/>
+     <property name="sound_close" propertytype="sound_effects" value="door_close"/>
+     <property name="sound_open" propertytype="sound_effects" value="door_open"/>
+    </properties>
+   </property>
+   <property name="art_item" type="string" value=""/>
+   <property name="art_feedback" type="class" propertytype="timed_door_art_feedback">
+    <properties>
+     <property name="consume_effect" type="string" propertytype="particle_effects" value="none"/>
+     <property name="interact_effect" type="string" propertytype="particle_effects" value="none"/>
+     <property name="effect_offset_x" type="float" value="0"/>
+     <property name="effect_offset_y" type="float" value="0"/>
+     <property name="effect_scale" type="float" value="1"/>
+     <property name="effect_cooldown" type="float" value="0"/>
+    </properties>
+   </property>
+   <property name="mvtk_template_version" type="string" value="2.7.0"/>
+  </properties>
+ </object>
+</template>

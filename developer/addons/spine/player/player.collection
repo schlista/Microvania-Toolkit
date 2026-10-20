@@ -1,0 +1,64 @@
+name: "player"
+instances {
+  id: "player"
+  prototype: "/developer/game/player/player_main.go"
+  children: "spine_visual"
+}
+instances {
+  id: "spine_visual"
+  prototype: "/developer/addons/spine/player/player_spine_visual.go"
+  scale3 {
+    x: 1.0
+    y: 1.0
+    z: 1.0
+  }
+}
+instances {
+  id: "body_hurtbox"
+  prototype: "/developer/game/player/bone_colliders/body_hurtbox.go"
+  component_properties {
+    id: "bone_collider"
+    properties {
+      id: "part_id"
+      value: "body"
+      type: PROPERTY_TYPE_TEXT
+    }
+  }
+}
+instances {
+  id: "foot_l"
+  prototype: "/developer/game/player/bone_colliders/foot_probe.go"
+  component_properties {
+    id: "bone_collider"
+    properties {
+      id: "part_id"
+      value: "foot_l"
+      type: PROPERTY_TYPE_TEXT
+    }
+  }
+}
+instances {
+  id: "foot_r"
+  prototype: "/developer/game/player/bone_colliders/foot_probe.go"
+  component_properties {
+    id: "bone_collider"
+    properties {
+      id: "part_id"
+      value: "foot_r"
+      type: PROPERTY_TYPE_TEXT
+    }
+  }
+}
+instances {
+  id: "head"
+  prototype: "/developer/game/player/bone_colliders/head_probe.go"
+  component_properties {
+    id: "bone_collider"
+    properties {
+      id: "part_id"
+      value: "head"
+      type: PROPERTY_TYPE_TEXT
+    }
+  }
+}
+scale_along_z: 0

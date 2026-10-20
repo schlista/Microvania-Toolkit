@@ -1,0 +1,5 @@
+script: "/developer/ui/game/completion.gui_script"
+fonts { name: "default" font: "/builtins/fonts/default.font" }
+textures { name: "artwork" texture: "/developer/ui/game/completion.atlas" }
+material: "/builtins/materials/gui.material"
+adjust_reference: ADJUST_REFERENCE_PARENT

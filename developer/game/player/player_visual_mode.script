@@ -1,0 +1,162 @@
+-- developer/game/player/player_visual_mode.script
+-- Selects sprite vs Spine visuals AND, when spine-bone physics is enabled,
+-- swaps the legacy `#co` collider for the bone-anchored sibling colliders.
+--
+-- Read once at init; mid-session toggling is not supported in v1.
+
+local Config = require "developer.config.resolved_config"
+local RuntimeSettings = require "developer.config.runtime_settings"
+local SpineVisual = require "mvtk.player.spine_visual"
+
+local MSG_ENABLE = hash("enable")
+local MSG_DISABLE = hash("disable")
+local MSG_SET_BONE_NAME = hash("set_bone_name")
+local MSG_CONFIGURE_VISUAL = hash("anim.configure_visual")
+
+-- player_spine.go has no sprite component, so it sets this false: messaging an
+-- absent component logs an engine error.
+go.property("has_sprite", true)
+
+-- Sibling bone-collider instance ids (must match player_spine.collection /
+-- player.collection instance ids). Each holds a `#collisionobject` plus a
+-- `#bone_collider` script.
+local BONE_PARTS = {
+    { instance = "body_hurtbox", part = "body" },
+    { instance = "foot_l",       part = "foot_l" },
+    { instance = "foot_r",       part = "foot_r" },
+    { instance = "head",         part = "head" },
+}
+
+local function set_self_component_enabled(component_id, enabled)
+    pcall(msg.post, msg.url(nil, go.get_id(), component_id), enabled and MSG_ENABLE or MSG_DISABLE)
+end
+
+local function set_component_enabled(instance_id, component_id, enabled)
+    if not instance_id then return end
+    local url = msg.url(nil, instance_id, component_id)
+    pcall(msg.post, url, enabled and MSG_ENABLE or MSG_DISABLE)
+end
+
+-- Resolve a sibling instance id within the *current* collection. When this
+-- prefab is spawned via collectionfactory, every spawned instance receives
+-- a unique path prefix (see https://defold.com/ref/collectionfactory-lua/),
+-- so absolute paths like "/body_hurtbox" do NOT match the spawned sibling.
+-- `go.get_id(local_id)` looks up the local id within the current collection
+-- scope and returns the prefix-resolved hash that addressing requires.
+local function resolve_sibling(instance_id)
+    local ok, target = pcall(go.get_id, instance_id)
+    if not ok or not target then return nil end
+    return target
+end
+
+local function set_sibling_component_enabled(instance_id, component_id, enabled)
+    local target = resolve_sibling(instance_id)
+    if not target then return end
+    local url = msg.url(nil, target, component_id)
+    pcall(msg.post, url, enabled and MSG_ENABLE or MSG_DISABLE)
+end
+
+local function send_bone_name(instance_id, bone_name, max_retries, player_id, spine_url)
+    if not bone_name or bone_name == "" then return end
+    local target = resolve_sibling(instance_id)
+    if not target then return end
+    local url = msg.url(nil, target, "bone_collider")
+    -- We pass the resolved player id and spine URL too so the bone_collider
+    -- script doesn't have to guess at absolute paths in a spawned scope.
+    pcall(msg.post, url, MSG_SET_BONE_NAME, {
+        bone_name = bone_name,
+        max_retries = max_retries,
+        player_id = player_id,
+        spine_url = spine_url,
+    })
+end
+
+function init(self)
+    local player_cfg = Config.player or {}
+    local player_type = tostring(player_cfg.player_type or "sprite"):lower()
+    local use_spine = player_type ~= "sprite"
+    local player_id = go.get_id()
+    local spine_url, spine_visual_id = SpineVisual.resolve()
+
+    -- The bundled Spine model lives on a scaled child GO. Custom legacy
+    -- prefabs without that sibling still fall back to a same-GO #spine.
+    if spine_visual_id then
+        set_component_enabled(spine_visual_id, "spine", use_spine)
+    else
+        set_self_component_enabled(hash("spine"), use_spine)
+    end
+    if self.has_sprite then
+        set_self_component_enabled(hash("sprite"), not use_spine)
+    end
+    -- Component init order is unspecified. animation_controller deliberately
+    -- defers its first player animation until this prefix-safe URL arrives.
+    pcall(msg.post, "#anim", MSG_CONFIGURE_VISUAL, {
+        use_spine = use_spine and 1 or 0,
+        spine_id = spine_url,
+    })
+
+    -- Spine-bone physics swap.
+    local spine_physics_active = false
+    if Config.is_spine_physics_active then
+        spine_physics_active = Config.is_spine_physics_active() == true
+    end
+
+    if spine_physics_active then
+        local sp = player_cfg.spine_physics or {}
+        local enable_parts = sp.enable_parts or {}
+        local bone_map = {}
+        for key, value in pairs(sp.bone_map or {}) do
+            bone_map[key] = value
+        end
+        local player_settings = RuntimeSettings.get_player_settings_base()
+        local settings_bones = player_settings
+            and player_settings.spine_physics
+            and player_settings.spine_physics.bone_map
+            or {}
+        for key, value in pairs(settings_bones) do
+            bone_map[key] = value
+        end
+        local max_retries = tonumber(sp.bone_resolve_max_retries) or 30
+
+        -- Resolve the player root id and spine component URL within the
+        -- current (possibly spawned) collection scope, so the bone_collider
+        -- relays target the correct instance.
+        -- Disable the legacy single-box collider on the player root.
+        set_self_component_enabled(hash("co"), false)
+
+        -- For each part: send activation message FIRST (which carries the
+        -- bone name + resolved URLs). The bone_collider script keeps its
+        -- collisionobject disabled until it resolves the bone and copies
+        -- the first position, eliminating the unconfigured-contact window.
+        -- Disabled parts get an explicit disable to be safe.
+        for _, p in ipairs(BONE_PARTS) do
+            local part_enabled = enable_parts[p.part]
+            if part_enabled == nil then part_enabled = true end
+            if part_enabled then
+                local bone_name = bone_map[p.part]
+                if bone_name and bone_name ~= "" then
+                    send_bone_name(p.instance, bone_name, max_retries, player_id, spine_url)
+                end
+            else
+                set_sibling_component_enabled(p.instance, "collisionobject", false)
+            end
+            -- For inactive parts we deliberately do NOT send set_bone_name.
+            -- The bone_collider script stays dormant so it never emits
+            -- "did not resolve" warnings for unused parts.
+        end
+
+        print("[PLAYER_VISUAL] physics mode = spine_bone_colliders")
+    else
+        -- Spine-with-bone-physics-disabled OR sprite mode: legacy collider
+        -- on, all sibling bone colliders off (defensive — they may not even
+        -- exist in player_sprite.collection).
+        set_self_component_enabled(hash("co"), true)
+        for _, p in ipairs(BONE_PARTS) do
+            set_sibling_component_enabled(p.instance, "collisionobject", false)
+        end
+        local mode = (player_type == "sprite") and "sprite" or "spine_legacy_collider"
+        print(string.format("[PLAYER_VISUAL] physics mode = %s", mode))
+    end
+
+    print(string.format("[PLAYER_VISUAL] Player prefab using %s visuals", player_type))
+end

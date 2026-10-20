@@ -1,0 +1,191 @@
+-- Map marker script
+-- Registers map markers so minimap/world-map UIs can render them from MINIMAP_MODULE snapshots.
+
+go.property("marker_id", "")
+go.property("marker_type", "poi")
+go.property("marker_icon", "marker_default")
+go.property("marker_label", "")
+go.property("facing", 1)
+go.property("show_on_minimap", true)
+go.property("show_on_world_map", true)
+go.property("visible_from_start", false)
+go.property("discovery_radius", 0)
+go.property("room_id", "")
+
+local PU = require "mvtk.prefabs.prefab_utils"
+local Util = require "mvtk.core.util"
+
+local UPDATE_INTERVAL = 0.25
+
+local RoomManagerOk, RoomManager = pcall(require, "mvtk.map.streaming.room_manager")
+
+local function to_bool(value, default)
+    if value == nil then
+        return default == true
+    end
+    if type(value) == "boolean" then
+        return value
+    end
+    if type(value) == "number" then
+        return value ~= 0
+    end
+    if type(value) == "string" then
+        local lower = value:lower()
+        if lower == "true" or lower == "1" or lower == "yes" or lower == "on" then
+            return true
+        end
+        if lower == "false" or lower == "0" or lower == "no" or lower == "off" then
+            return false
+        end
+    end
+    return default == true
+end
+
+local function infer_room_id_from_instance()
+    local raw = Util.go_id_text(go.get_id())
+    local tail = raw and (raw:match("/([^/]+)$") or raw)
+    local room = tail and tail:match("^(.-)_map_marker_%d+$")
+    if room and room ~= "" then
+        return room
+    end
+
+    if RoomManagerOk and RoomManager and RoomManager.get_current_room then
+        return PU.resolve_id(RoomManager.get_current_room())
+    end
+
+    return nil
+end
+
+local function get_player_pos()
+    local p = rawget(_G, "PLAYER_WORLD_POS")
+    if p then return p end
+    local ok, C = pcall(require, "mvtk.core.constants")
+    if ok and C and C.URL and C.URL.PLAYER then
+        local ok2, pos = pcall(go.get_world_position, C.URL.PLAYER)
+        if ok2 then return pos end
+    end
+    return nil
+end
+
+local function build_payload(self)
+    local marker_id = self.marker_id_str
+    if not marker_id or marker_id == "" then
+        marker_id = tostring(go.get_id())
+        self.marker_id_str = marker_id
+    end
+
+    local payload = {
+        id = marker_id,
+        marker_id = marker_id,
+        marker_type = self.marker_type_str or "poi",
+        marker_icon = self.marker_icon_str or "marker_default",
+        marker_label = self.marker_label_str or "",
+        position = go.get_world_position(),
+        room_id = self.room_id_str,
+        show_on_minimap = self.show_on_minimap ~= false,
+        show_on_world_map = self.show_on_world_map ~= false,
+        visible_from_start = self.visible_from_start == true,
+        discovery_radius = tonumber(self.discovery_radius) or 0,
+        discovered = self._discovered == true,
+        source = "map_marker",
+    }
+
+    return payload
+end
+
+local function register_with_maps(self)
+    local payload = build_payload(self)
+
+    -- Main script forwards/queues marker registration for map systems.
+    pcall(msg.post, "main:/main_go#script", hash("register_map_marker"), payload)
+end
+
+local function set_sprite_facing(self)
+    local sx = (tonumber(self.facing) or 1) < 0 and -1 or 1
+    local s = go.get_scale()
+    go.set_scale(vmath.vector3(math.abs(s.x) * sx, s.y, s.z))
+end
+
+function init(self)
+    self._poll_t = 0
+    self._discovered = self.visible_from_start == true
+
+    self.marker_id_str = PU.resolve_id(self.marker_id)
+    self.marker_type_str = PU.resolve_id(self.marker_type) or "poi"
+    self.marker_icon_str = PU.resolve_id(self.marker_icon) or "marker_default"
+    self.marker_label_str = PU.resolve_id(self.marker_label) or ""
+    self.room_id_str = PU.resolve_id(self.room_id) or infer_room_id_from_instance()
+
+    set_sprite_facing(self)
+    register_with_maps(self)
+end
+
+function update(self, dt)
+    if self._discovered then return end
+
+    local radius = tonumber(self.discovery_radius) or 0
+    if radius <= 0 then return end
+
+    self._poll_t = self._poll_t - dt
+    if self._poll_t > 0 then return end
+    self._poll_t = UPDATE_INTERVAL
+
+    local player_pos = get_player_pos()
+    if not player_pos then return end
+
+    local my_pos = go.get_world_position()
+    local dx = player_pos.x - my_pos.x
+    local dy = player_pos.y - my_pos.y
+    if (dx * dx + dy * dy) <= (radius * radius) then
+        self._discovered = true
+        register_with_maps(self)
+    end
+end
+
+function final(self)
+    local marker_id = self.marker_id_str or PU.resolve_id(self.marker_id)
+    if not marker_id or marker_id == "" then
+        return
+    end
+
+    local mini = rawget(_G, "MINIMAP_MODULE")
+    if type(mini) == "table" and type(mini.unregister_marker) == "function" then
+        pcall(mini.unregister_marker, marker_id)
+    end
+end
+
+function on_message(self, message_id, message)
+    if message_id == hash("apply_tiled_props") and message and message.properties then
+        local props = message.properties
+
+        if props.marker_id ~= nil then self.marker_id_str = PU.resolve_id(props.marker_id) or self.marker_id_str end
+        if props.marker_type ~= nil then self.marker_type_str = PU.resolve_id(props.marker_type) or self.marker_type_str end
+        if props.marker_icon ~= nil then self.marker_icon_str = PU.resolve_id(props.marker_icon) or self.marker_icon_str end
+        if props.marker_label ~= nil then self.marker_label_str = PU.resolve_id(props.marker_label) or self.marker_label_str end
+        if props.room_id ~= nil then self.room_id_str = PU.resolve_id(props.room_id) or self.room_id_str end
+
+        if props.facing ~= nil then
+            self.facing = tonumber(props.facing) or self.facing
+            set_sprite_facing(self)
+        end
+        if props.show_on_minimap ~= nil then self.show_on_minimap = to_bool(props.show_on_minimap, true) end
+        if props.show_on_world_map ~= nil then self.show_on_world_map = to_bool(props.show_on_world_map, true) end
+        if props.visible_from_start ~= nil then
+            self.visible_from_start = to_bool(props.visible_from_start, false)
+            if self.visible_from_start then
+                self._discovered = true
+            end
+        end
+        if props.discovery_radius ~= nil then
+            self.discovery_radius = tonumber(props.discovery_radius) or self.discovery_radius
+        end
+
+        register_with_maps(self)
+        return
+    end
+
+    if message_id == hash("reveal") and not self._discovered then
+        self._discovered = true
+        register_with_maps(self)
+    end
+end

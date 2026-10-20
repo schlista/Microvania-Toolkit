@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<template>
+ <object name="Chest" type="chest" width="32" height="32">
+  <properties>
+   <property name="chest_type" propertytype="chest_types" value="wooden"/>
+   <property name="chest_id" type="string" value=""/>
+   <property name="rewards" type="class" propertytype="chest_rewards">
+    <properties>
+     <property name="contents" type="string" value="currency:25"/>
+    </properties>
+   </property>
+   <property name="access" type="class" propertytype="chest_access">
+    <properties>
+     <property name="locked" type="bool" value="false"/>
+     <property name="requires_key" propertytype="keys" value="none"/>
+    </properties>
+   </property>
+   <property name="lifecycle" type="class" propertytype="chest_lifecycle">
+    <properties>
+     <property name="single_use" type="bool" value="true"/>
+    </properties>
+   </property>
+   <property name="art_item" type="string" value=""/>
+   <property name="art_feedback" type="class" propertytype="chest_art_feedback">
+    <properties>
+     <property name="consume_effect" type="string" propertytype="particle_effects" value="none"/>
+     <property name="interact_effect" type="string" propertytype="particle_effects" value="none"/>
+     <property name="effect_offset_x" type="float" value="0"/>
+     <property name="effect_offset_y" type="float" value="0"/>
+     <property name="effect_scale" type="float" value="1"/>
+     <property name="effect_cooldown" type="float" value="0"/>
+    </properties>
+   </property>
+   <property name="mvtk_template_version" type="string" value="2.7.0"/>
+  </properties>
+ </object>
+</template>

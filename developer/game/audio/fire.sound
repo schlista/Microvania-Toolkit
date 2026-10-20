@@ -1,0 +1,3 @@
+sound: "/developer/assets/generated_audio/ambience/fire.wav"
+looping: 1
+group: "ambient"

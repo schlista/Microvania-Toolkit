@@ -1,0 +1,48 @@
+-- mvtk/hazards/laser.script
+local HazardRegistry = require "mvtk.hazards.hazard_registry"
+
+go.property("damage", 15)
+go.property("damage_rate", 0.5)
+go.property("movement_type", "horizontal")
+go.property("movement_speed", 50)
+go.property("movement_distance", 200)
+
+function init(self)
+    self.start_pos = go.get_position()
+    self.move_dir = 1
+    self.damage_cooldown = {}
+end
+
+function update(self, dt)
+    local pos = go.get_position()
+    if self.movement_type == "horizontal" then
+        pos.x = pos.x + self.movement_speed * self.move_dir * dt
+        if math.abs(pos.x - self.start_pos.x) > self.movement_distance then
+            self.move_dir = -self.move_dir
+        end
+    elseif self.movement_type == "vertical" then
+        pos.y = pos.y + self.movement_speed * self.move_dir * dt
+        if math.abs(pos.y - self.start_pos.y) > self.movement_distance then
+            self.move_dir = -self.move_dir
+        end
+    end
+    go.set_position(pos)
+    HazardRegistry.tick_cooldowns(self.damage_cooldown, dt)
+end
+
+function on_message(self, message_id, message, sender)
+    if message_id == hash("collision_response") then
+        local entity_id = message.other_id
+        if message.other_group == hash("player") or message.other_group == hash("enemy") then
+            if HazardRegistry.cooldown_ready(self.damage_cooldown, entity_id) then
+                HazardRegistry.post_damage(entity_id, {
+                    amount = self.damage,
+                    source_actor = go.get_id(),
+                    source_attack = "laser",
+                    parryable = false,
+                })
+                HazardRegistry.mark_cooldown(self.damage_cooldown, entity_id, self.damage_rate)
+            end
+        end
+    end
+end

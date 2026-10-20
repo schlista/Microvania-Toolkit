@@ -1,0 +1,20 @@
+type: COLLISION_OBJECT_TYPE_TRIGGER
+mass: 0.0
+friction: 0.0
+restitution: 0.0
+group: "attack"
+mask: "player"
+mask: "world"
+embedded_collision_shape {
+  shapes {
+    shape_type: TYPE_BOX
+    position { }
+    rotation { }
+    index: 0
+    count: 3
+  }
+  data: 6.0
+  data: 6.0
+  data: 10.0
+}
+locked_rotation: true

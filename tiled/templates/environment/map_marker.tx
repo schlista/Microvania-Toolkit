@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<template>
+ <object name="Map Marker" type="map_marker">
+  <point/>
+  <properties>
+   <property name="marker_type" propertytype="marker_types" value="poi"/>
+   <property name="marker_id" type="string" value=""/>
+   <property name="presentation" type="class" propertytype="map_marker_presentation">
+    <properties>
+     <property name="marker_label" type="string" value=""/>
+     <property name="marker_icon" type="string" value="marker_default"/>
+     <property name="facing" type="int" value="1"/>
+    </properties>
+   </property>
+   <property name="visibility" type="class" propertytype="map_marker_visibility">
+    <properties>
+     <property name="show_on_minimap" type="bool" value="true"/>
+     <property name="show_on_world_map" type="bool" value="true"/>
+     <property name="visible_from_start" type="bool" value="false"/>
+     <property name="discovery_radius" type="int" value="0"/>
+    </properties>
+   </property>
+   <property name="mvtk_template_version" type="string" value="2.7.0"/>
+  </properties>
+ </object>
+</template>

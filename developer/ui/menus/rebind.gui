@@ -1,0 +1,205 @@
+script: "/developer/ui/menus/rebind.gui_script"
+fonts {
+  name: "main"
+  font: "/builtins/fonts/default.font"
+}
+nodes {
+  position {
+    x: 960.0
+    y: 540.0
+  }
+  size {
+    x: 1920.0
+    y: 1080.0
+  }
+  color {
+    x: 0.0
+    y: 0.0
+    z: 0.0
+  }
+  type: TYPE_BOX
+  id: "backdrop"
+  adjust_mode: ADJUST_MODE_FIT
+  alpha: 0.85
+}
+nodes {
+  position {
+    x: 960.0
+    y: 540.0
+  }
+  size {
+    x: 800.0
+    y: 700.0
+  }
+  color {
+    x: 0.08
+    y: 0.08
+    z: 0.12
+  }
+  type: TYPE_BOX
+  id: "root"
+  inherit_alpha: true
+  alpha: 0.94
+}
+nodes {
+  position {
+    x: -330.0
+    y: 315.0
+  }
+  size {
+    x: 400.0
+    y: 40.0
+  }
+  color {
+    x: 0.50
+    y: 0.75
+    z: 1.0
+  }
+  type: TYPE_TEXT
+  text: "Controls"
+  font: "main"
+  id: "title"
+  pivot: PIVOT_W
+  parent: "root"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    y: 280.0
+  }
+  size {
+    x: 740.0
+    y: 2.0
+  }
+  color {
+    x: 0.50
+    y: 0.75
+    z: 1.0
+  }
+  type: TYPE_BOX
+  id: "separator"
+  parent: "root"
+  inherit_alpha: true
+  alpha: 0.4
+}
+nodes {
+  position {
+    y: -220.0
+  }
+  size {
+    x: 600.0
+    y: 25.0
+  }
+  color {
+    x: 1.0
+    y: 0.92
+    z: 0.45
+  }
+  type: TYPE_TEXT
+  text: ""
+  font: "main"
+  id: "capture_text"
+  parent: "root"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    y: -310.0
+  }
+  size {
+    x: 700.0
+    y: 25.0
+  }
+  color {
+    x: 0.55
+    y: 0.55
+    z: 0.62
+  }
+  type: TYPE_TEXT
+  text: "A: Rebind  |  B: Close"
+  font: "main"
+  id: "hint"
+  parent: "root"
+  inherit_alpha: true
+  alpha: 0.85
+}
+nodes {
+  position {
+    y: -280.0
+  }
+  size {
+    x: 700.0
+    y: 20.0
+  }
+  color {
+    x: 0.55
+    y: 0.55
+    z: 0.62
+  }
+  type: TYPE_TEXT
+  text: ""
+  font: "main"
+  id: "status"
+  parent: "root"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    y: 20.0
+  }
+  size {
+    x: 740.0
+    y: 540.0
+  }
+  type: TYPE_BOX
+  id: "content_area"
+  parent: "root"
+  inherit_alpha: true
+  alpha: 0.0
+}
+nodes {
+  position {
+    x: -200.0
+  }
+  size {
+    x: 300.0
+    y: 28.0
+  }
+  color {
+    x: 0.88
+    y: 0.88
+    z: 0.90
+  }
+  type: TYPE_TEXT
+  text: "Item"
+  font: "main"
+  id: "row_label"
+  pivot: PIVOT_W
+  parent: "content_area"
+  inherit_alpha: true
+  enabled: false
+}
+nodes {
+  position {
+    x: 200.0
+  }
+  size {
+    x: 200.0
+    y: 28.0
+  }
+  color {
+    x: 0.88
+    y: 0.88
+    z: 0.90
+  }
+  type: TYPE_TEXT
+  text: "Value"
+  font: "main"
+  id: "row_val"
+  pivot: PIVOT_E
+  parent: "content_area"
+  inherit_alpha: true
+  enabled: false
+}
+material: "/builtins/materials/gui.material"
+adjust_reference: ADJUST_REFERENCE_PARENT

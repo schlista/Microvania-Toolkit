@@ -1,0 +1,48 @@
+-- mvtk/hazards/spikes.script
+--
+-- Spike trap. Sends a normalized damage payload (mvtk.hazards.hazard_registry)
+-- on contact so the player handler always sees consistent fields, and so
+-- gameplay configs can reason about source_attack='spikes' uniformly.
+
+local HazardRegistry = require "mvtk.hazards.hazard_registry"
+
+go.property("damage", 30)
+go.property("stun_t", -1) -- Recovery seconds; -1 inherits player hurt config, 0 disables.
+go.property("instant_kill", false)
+go.property("retractable", false)
+go.property("cycle_time", 3.0)
+
+function init(self)
+    self.extended = true
+    self.cycle_timer = 0
+end
+
+function update(self, dt)
+    if self.retractable then
+        self.cycle_timer = self.cycle_timer + dt
+        if self.cycle_timer >= self.cycle_time then
+            self.extended = not self.extended
+            self.cycle_timer = 0
+            if self.extended then
+                go.animate(".", "position.y", go.PLAYBACK_ONCE_FORWARD, 0, go.EASING_OUTQUAD, 0.3)
+            else
+                go.animate(".", "position.y", go.PLAYBACK_ONCE_FORWARD, -20, go.EASING_INQUAD, 0.3)
+            end
+        end
+    end
+end
+
+function on_message(self, message_id, message, sender)
+    if message_id == hash("collision_response") and self.extended then
+        if message.other_group == hash("player") then
+            HazardRegistry.post_damage(message.other_id, {
+                amount = self.damage,
+                stun_t = self.stun_t,
+                instant_kill = self.instant_kill,
+                source_actor = go.get_id(),
+                source_attack = "spikes",
+                parryable = false,
+            })
+        end
+    end
+end

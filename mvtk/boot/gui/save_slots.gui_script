@@ -1,0 +1,144 @@
+-- boot/gdeveloper/ui/save_slots.gui_script
+local Checkpoint = require "mvtk.core.checkpoint"
+local SaveManager = require "mvtk.game.save_system.save_manager"
+local CFG = require "developer.config.resolved_config"
+local ok_cm, CollectibleManager = pcall(require, "mvtk.collectibles.collectible_manager")
+
+local v3 = vmath.vector3
+
+local function n(id) local ok, node = pcall(gui.get_node, id); return ok and node or nil end
+
+local function fmt_playtime(s)
+  s = tonumber(s or 0) or 0
+  local h = math.floor(s/3600)
+  local m = math.floor((s%3600)/60)
+  return string.format("%dh %dm", h, m)
+end
+
+local function list_slots()
+  return Checkpoint.list_slots((CFG.progression and CFG.progression.saves and CFG.progression.saves.max_slots) or 3)
+end
+
+local function set_enabled(self, on)
+  self.enabled = on and true or false
+  msg.post(".", on and "enable" or "disable")
+  if self.root then gui.set_enabled(self.root, self.enabled) end
+end
+
+function init(self)
+  msg.post(".", "acquire_input_focus")
+  self.enabled = false
+  msg.post(".", "disable")
+
+  self.root = n("root")
+  -- Create nodes parented to the root so we can hide/show the whole overlay
+  self.title = gui.new_text_node(v3(80, 520, 0), "Save Slots")
+  self.hint  = gui.new_text_node(v3(80, 80, 0), "A: Select   X: Delete   B: Back")
+  gui.set_pivot(self.title, gui.PIVOT_SW)
+  gui.set_pivot(self.hint, gui.PIVOT_SW)
+  if self.root then
+    gui.set_parent(self.title, self.root)
+    gui.set_parent(self.hint, self.root)
+    gui.set_enabled(self.root, false)
+  end
+
+  self.rows = {}
+  self.sel = 1
+end
+
+local function rebuild(self)
+  for _,r in ipairs(self.rows) do for _,n in pairs(r) do pcall(gui.delete_node, n) end end
+  self.rows = {}
+  self.items = list_slots()
+  local y0 = 460
+  for i,slot in ipairs(self.items) do
+    local bg = gui.new_box_node(v3(60, y0 - (i-1)*60 - 8, 0), v3(820, 46, 0))
+    gui.set_pivot(bg, gui.PIVOT_SW)
+    gui.set_color(bg, vmath.vector4(0,0,0,0.6))
+    local lbl = gui.new_text_node(v3(72, y0 - (i-1)*60, 0), string.format("Slot %d", slot.slot))
+    local meta = slot.meta
+    local stat = gui.new_text_node(v3(320, y0 - (i-1)*60, 0), slot.exists and ("Playtime: " .. fmt_playtime(meta and meta.playtime_s)) or "Empty")
+    gui.set_pivot(lbl, gui.PIVOT_SW)
+    gui.set_pivot(stat, gui.PIVOT_SW)
+    if self.root then
+      gui.set_parent(bg, self.root)
+      gui.set_parent(lbl, self.root)
+      gui.set_parent(stat, self.root)
+    end
+    self.rows[i] = { bg = bg, lbl = lbl, stat = stat }
+  end
+  for i,row in ipairs(self.rows) do
+    local sel = (i == (self.sel or 1))
+    gui.set_color(row.bg, sel and vmath.vector4(1,1,1,0.2) or vmath.vector4(0,0,0,0.6))
+  end
+end
+
+local function open(self)
+  set_enabled(self, true)
+  rebuild(self)
+end
+
+local function close(self)
+  set_enabled(self, false)
+end
+
+function on_message(self, message_id, message, sender)
+  if message_id == hash("open_slots") then open(self)
+  elseif message_id == hash("close_slots") then close(self) end
+end
+
+function on_input(self, action_id, action)
+  if not self.enabled or not (action and action.pressed) then return end
+  if action_id == hash("key_down") or action_id == hash("key_s")
+      or action_id == hash("gamepad_lpad_down")
+      or action_id == hash("gamepad_lstick_down") then
+    self.sel = math.min(#(self.items or {}), (self.sel or 1) + 1); rebuild(self)
+  elseif action_id == hash("key_up") or action_id == hash("key_w")
+      or action_id == hash("gamepad_lpad_up")
+      or action_id == hash("gamepad_lstick_up") then
+    self.sel = math.max(1, (self.sel or 1) - 1); rebuild(self)
+  elseif action_id == hash("gamepad_rpad_left") or action_id == hash("key_x")
+      or action_id == hash("key_delete") then
+    -- delete selected slot
+    local s = self.items[self.sel or 1]
+    if s then
+      local ok, deleted = pcall(SaveManager.delete_save, s.slot)
+      if not ok then
+        print("[SAVE_SLOTS] Failed to delete save: " .. tostring(deleted))
+      elseif not deleted then
+        print("[SAVE_SLOTS] Failed to delete save slot " .. tostring(s.slot))
+      else
+        print("[SAVE_SLOTS] Deleted save slot " .. tostring(s.slot))
+        -- Reset ALL in-memory state so nothing bleeds into a new game started
+        -- in the same session. reset_to_defaults calls every provider's
+        -- defaults() (flags, inventory, abilities, bank, doors, fast travel, etc.)
+        Checkpoint.reset_to_defaults(s.slot)
+        -- Collectible manager tracks collected items outside the provider system;
+        -- reset it separately so picked-up relics/items don't carry over.
+        if ok_cm and CollectibleManager then CollectibleManager.reset() end
+      end
+    end
+    rebuild(self)
+  elseif action_id == hash("gamepad_rpad_right") or action_id == hash("gamepad_back")
+      or action_id == hash("key_escape") or action_id == hash("key_m") then
+    close(self)
+  elseif action_id == hash("gamepad_rpad_down") or action_id == hash("key_enter") then
+    local s = self.items[self.sel or 1]
+    if not s then return end
+    Checkpoint.set_slot(s.slot)
+    if s.exists then
+      -- Load existing save
+      if not Checkpoint.load(s.slot) then
+        print("[SAVE_SLOTS] Warning: Failed to load slot " .. tostring(s.slot))
+      end
+    else
+      -- Create new save with provider defaults so no runtime state leaks across sessions
+      if ok_cm and CollectibleManager then CollectibleManager.reset() end
+      local ok, created = pcall(SaveManager.create_new_save, s.slot)
+      if not ok or not created then
+        print("[SAVE_SLOTS] Warning: Failed to save new slot " .. tostring(s.slot))
+      end
+    end
+    close(self)
+  end
+end

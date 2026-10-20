@@ -1,0 +1,3 @@
+sound: "/developer/assets/generated_audio/ambience/door_close.wav"
+looping: 1
+group: "ambient"

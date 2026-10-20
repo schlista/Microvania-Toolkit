@@ -1,0 +1,282 @@
+-- developer/game/player/bone_colliders/bone_collider.script
+-- Position-only bone follower with Spine bone resolve retry + contact relay.
+--
+-- This script lives on a sibling GO inside the player collection. Each frame
+-- (after activation) it copies its assigned Spine bone's world position to
+-- the host GO so the attached `#collisionobject` tracks the bone. When
+-- Defold delivers a collision message to this GO, the script re-posts it to
+-- the player root with `source_part` injected so the player script can
+-- route it.
+--
+-- Activation contract: the script starts DORMANT. It only begins resolving
+-- a bone (and following it) once it receives a `set_bone_name` message
+-- from `player_visual_mode.script`. This guarantees:
+--   * The string form of the bone name (required by spine.get_go) is
+--     supplied by the active visual mode along with the resolved sibling URLs.
+--   * In sprite mode / spine-with-bone-physics-disabled, where
+--     `player_visual_mode.script` never sends `set_bone_name`, the script
+--     stays silent — no spurious "missing bone" warnings.
+--
+-- Bone resolution uses spine.get_go() via mvtk.animation.bone_collision.
+-- If the bone fails to resolve within `max_resolve_retries` frames, the
+-- script logs ONE warning and disables its collisionobject (fail-loud,
+-- no silent infinite retry).
+
+local BoneCollision = require "mvtk.animation.bone_collision"
+
+-- Properties wired in the .collection file --------------------------------
+-- These property defaults work only for the editor preview / top-level
+-- spawn case. When this prefab is created via collectionfactory the spawned
+-- instances receive a unique path prefix and absolute paths like "/player"
+-- no longer resolve. To handle that, `player_visual_mode.script` resolves
+-- the correct instance ids inside the spawned collection and passes them
+-- to us via the `set_bone_name` message (`player_id` + `spine_url` fields).
+-- No absolute/default player path: collectionfactory adds a runtime prefix.
+-- player_visual_mode always supplies the resolved sibling URL on activation.
+go.property("spine_url", msg.url())
+go.property("player_url", msg.url("/player"))       -- Fallback only; overridden by set_bone_name
+go.property("part_id", "")                    -- Logical part name (body / foot_l / foot_r / head)
+-- The active visual mode delivers bone_name via `set_bone_name` at init,
+-- together with the URLs for this particular spawned player collection.
+
+-- Messages we relay to the player root.
+--
+-- Two distinct relay tables:
+--   * PHYSICS_RELAY -- raw Defold collision callbacks. Forwarded from any
+--     part (body / foot / head) so the player script can key behaviour on
+--     `source_part` (e.g. ground confirm from foot, ceiling bonk from head,
+--     damage gate from body).
+--   * PLAYER_DIRECT_MESSAGES -- gameplay messages that external systems
+--     (hazards, ladders, water volumes, projectiles, etc.) post directly
+--     to whichever GO their trigger reported in `message.other_id`. With
+--     bone-physics active that GO is the body_hurtbox, NOT the player
+--     root, so we have to forward these to the root. Forwarded ONLY from
+--     the `body` part — foot/head probes are terrain-only by mask but we
+--     gate here defensively to guarantee no double-fire if a mask leaks.
+local PHYSICS_RELAY = {
+    [hash("contact_point_response")] = true,
+    [hash("collision_response")]     = true,
+    [hash("trigger_response")]       = true,
+}
+
+-- Player-directed gameplay messages. Keep these lists narrow: anything not
+-- listed here is dropped on the bone collider, which is correct for noise
+-- like animation events. Add new entries deliberately.
+--
+-- Body-only messages are authored around the torso hurtbox contract: damage,
+-- broad gameplay sensors, water, and ladders should not fire from feet/head.
+local BODY_DIRECT_MESSAGES = {
+    [hash("mvtk_apply_damage")]          = true,
+    [hash("take_damage")]                = true,
+    [hash("mvtk_take_damage")]           = true,
+    [hash("enter_water")]                = true,
+    [hash("exit_water")]                 = true,
+    [hash("enter_climb_zone")]           = true,
+    [hash("exit_climb_zone")]            = true,
+    [hash("apply_external_force")]       = true,
+    [hash("apply_movement_modifier")]    = true,
+    [hash("remove_movement_modifier")]   = true,
+    -- Moving-platform sensors can retain the torso hurtbox as their passenger.
+    -- Solid-contact platforms retain a foot probe instead, so platform_delta
+    -- is deliberately accepted by both routing tables and de-duped at root.
+    [hash("platform_delta")]             = true,
+}
+
+-- Terrain/surface messages should come from the feet, not the torso hurtbox.
+-- The player script de-dupes same-frame relays by original sender so two feet
+-- on one platform/conveyor do not multiply the effect.
+local FOOT_DIRECT_MESSAGES = {
+    [hash("one_way_contact")]            = true,
+    [hash("apply_force")]                = true,
+    [hash("platform_delta")]             = true,
+    [hash("on_conveyor")]                = true,
+    [hash("off_conveyor")]               = true,
+}
+
+-- Damage-bearing messages get extra attribution preservation (see proxy).
+local DAMAGE_MESSAGES = {
+    [hash("mvtk_apply_damage")] = true,
+    [hash("take_damage")]       = true,
+    [hash("mvtk_take_damage")]  = true,
+}
+
+local BODY_PART_ID = "body"
+local FOOT_L_PART_ID = "foot_l"
+local FOOT_R_PART_ID = "foot_r"
+
+local DEFAULT_MAX_RETRIES = 30
+
+local function is_foot_part(part_id)
+    return part_id == FOOT_L_PART_ID or part_id == FOOT_R_PART_ID
+end
+
+local function should_forward_direct(self, message_id, message)
+    -- A message may be whitelisted in BOTH tables (platform_delta): it must
+    -- forward when EITHER gate matches, so neither lookup may early-return
+    -- false before the other table has been consulted.
+    if BODY_DIRECT_MESSAGES[message_id] and self.part_id == BODY_PART_ID then
+        return true
+    end
+    if FOOT_DIRECT_MESSAGES[message_id] and is_foot_part(self.part_id) then
+        return true
+    end
+    if message_id == hash("external_force") then
+        if message and message.conveyor then
+            return is_foot_part(self.part_id)
+        end
+        return self.part_id == BODY_PART_ID
+    end
+    return false
+end
+
+local function try_resolve(self)
+    if not self._bone_name_string or self._bone_name_string == "" then
+        return false
+    end
+    local pos = BoneCollision.get_bone_position(self.spine_url, self._bone_name_string)
+    if pos then
+        self._resolved = true
+        return true
+    end
+    return false
+end
+
+local function disable_self_warn(self)
+    if self._warned then return end
+    self._warned = true
+    local part = tostring(self.part_id)
+    local bone = self._bone_name_string or "<unset>"
+    print(string.format(
+        "[BONE_COLLIDER] bone '%s' for part '%s' did not resolve after %d frames; disabling",
+        bone, part, self._max_retries or DEFAULT_MAX_RETRIES
+    ))
+    pcall(msg.post, "#collisionobject", "disable")
+    self._disabled = true
+end
+
+function init(self)
+    -- Dormant until `set_bone_name` arrives. update() returns early when
+    -- _activated is false so we never warn / never call physics.
+    self._activated = false
+    self._resolved = false
+    self._warned = false
+    self._disabled = false
+    self._collider_enabled = false
+    self._retry_count = 0
+    self._bone_name_string = nil
+    self._max_retries = DEFAULT_MAX_RETRIES
+    -- Defensive: keep our `#collisionobject` disabled until the bone has
+    -- been resolved. Avoids a one-frame window where the collider sits at
+    -- the un-positioned origin and can register false contacts before
+    -- `set_bone_name` arrives + the first bone position copy lands.
+    pcall(msg.post, "#collisionobject", "disable")
+end
+
+local function enable_self_collider(self)
+    if self._collider_enabled then return end
+    self._collider_enabled = true
+    pcall(msg.post, "#collisionobject", "enable")
+end
+
+function update(self, dt)
+    if not self._activated or self._disabled then return end
+
+    if not self._resolved then
+        self._retry_count = (self._retry_count or 0) + 1
+        if try_resolve(self) then
+            -- success on this frame; copy position then enable collider.
+        else
+            if self._retry_count >= (self._max_retries or DEFAULT_MAX_RETRIES) then
+                disable_self_warn(self)
+            end
+            return
+        end
+    end
+
+    if not self._bone_name_string then return end
+    local pos = BoneCollision.get_bone_position(self.spine_url, self._bone_name_string)
+    if pos then
+        go.set_position(pos)
+        -- Enable the collider only after the GO is at the correct
+        -- bone-driven position. Prevents a stray frame at origin.
+        enable_self_collider(self)
+    end
+end
+
+function on_message(self, message_id, message, sender)
+    if message_id == hash("set_bone_name") then
+        -- Activation message from player_visual_mode.script. Carries the
+        -- bone name string AND optionally the configured retry cap and the
+        -- collection-resolved player_id / spine_url (required when this
+        -- prefab is spawned via collectionfactory).
+        local name = tostring(message.bone_name or "")
+        if name == "" then
+            -- Empty name means "deactivate" — go back to dormant.
+            self._activated = false
+            self._bone_name_string = nil
+            return
+        end
+        self._bone_name_string = name
+        if type(message.max_retries) == "number" and message.max_retries > 0 then
+            self._max_retries = math.floor(message.max_retries)
+        end
+        if message.spine_url then
+            self.spine_url = message.spine_url
+        end
+        if message.player_id then
+            -- Resolve to a URL of the player root within this collection.
+            self.player_url = msg.url(nil, message.player_id, nil)
+        end
+        self._activated = true
+        self._resolved = false
+        self._retry_count = 0
+        self._warned = false
+        self._disabled = false
+        return
+    end
+
+    if PHYSICS_RELAY[message_id] then
+        if not self._activated then return end
+        -- Forward to player root, attaching which body part received it.
+        local relayed = {}
+        for k, v in pairs(message) do relayed[k] = v end
+        relayed.source_part = self.part_id
+        relayed.source_url = msg.url()
+        pcall(msg.post, self.player_url, message_id, relayed)
+        return
+    end
+
+    if BODY_DIRECT_MESSAGES[message_id]
+        or FOOT_DIRECT_MESSAGES[message_id]
+        or message_id == hash("external_force")
+    then
+        -- Gameplay messages are forwarded to the player root. Damage and
+        -- broad sensor/volume messages are body-only; terrain/surface
+        -- messages come from foot probes and are de-duped by the player script.
+        if not self._activated then return end
+        if not should_forward_direct(self, message_id, message) then return end
+
+        local payload = {}
+        if type(message) == "table" then
+            for k, v in pairs(message) do payload[k] = v end
+        end
+        payload.source_part = self.part_id
+        payload.source_url  = msg.url()
+        payload.original_sender = sender
+
+        -- For damage messages, preserve attribution so the player damage
+        -- handler can credit the correct attacker. We only fill
+        -- `source_actor` when the original payload didn't already specify
+        -- an attacker via any of the conventional fields.
+        if DAMAGE_MESSAGES[message_id]
+            and payload.source_actor == nil
+            and payload.source        == nil
+            and payload.owner         == nil
+        then
+            payload.source_actor = sender
+        end
+
+        pcall(msg.post, self.player_url, message_id, payload)
+        return
+    end
+end

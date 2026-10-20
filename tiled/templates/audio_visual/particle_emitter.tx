@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<template>
+ <object name="Particle Emitter" type="particle_emitter" width="32" height="32">
+  <properties>
+   <property name="effect_id" propertytype="particle_effects" value="ambient_sparkle"/>
+   <property name="emitter_id" type="string" value=""/>
+   <property name="playback" type="class" propertytype="particle_emitter_playback">
+    <properties>
+     <property name="auto_play" type="bool" value="true"/>
+     <property name="loop" type="bool" value="true"/>
+     <property name="loop_interval" type="float" value="0.5"/>
+     <property name="start_delay" type="float" value="0"/>
+     <property name="run_duration" type="float" value="0"/>
+    </properties>
+   </property>
+   <property name="diagnostics" type="class" propertytype="particle_emitter_diagnostics">
+    <properties>
+     <property name="debug_marker" type="bool" value="false"/>
+     <property name="debug_follow_player" type="bool" value="false"/>
+    </properties>
+   </property>
+   <property name="mvtk_template_version" type="string" value="2.7.0"/>
+  </properties>
+ </object>
+</template>

@@ -1,0 +1,137 @@
+-- Runtime title screen selected only by Export Game. The authored GUI stays
+-- editable; standalone players never load the toolkit's authoring panels.
+local Settings = require "mvtk.core.settings"
+local Theme = require "developer.config.ui_theme"
+
+local function node(id)
+    local ok, value = pcall(gui.get_node, id)
+    return ok and value or nil
+end
+
+local function set_color(target, color)
+    if target and color then
+        gui.set_color(target, vmath.vector4(color[1], color[2], color[3], color[4]))
+    end
+end
+
+local function update_selection(self)
+    for index, button in ipairs(self.buttons) do
+        local selected = self.selected == index
+        set_color(button.node, selected and Theme.colors.btn_selected_bg or Theme.colors.btn_normal_bg)
+        set_color(button.label, selected and Theme.colors.btn_selected_text or Theme.colors.btn_normal_text)
+    end
+end
+
+local function cancel_arm_timer(self)
+    if self.input_arm_timer then
+        timer.cancel(self.input_arm_timer)
+        self.input_arm_timer = nil
+    end
+    self.input_armed = false
+end
+
+local function hide_screen(self)
+    cancel_arm_timer(self)
+    if not self.visible then return end
+    self.visible = false
+    gui.set_enabled(self.root, false)
+    msg.post(".", "release_input_focus")
+end
+
+local function show_screen(self)
+    if self.visible then return end
+    self.visible = true
+    self.selected = 1
+    gui.set_enabled(self.root, true)
+    update_selection(self)
+    msg.post(".", "acquire_input_focus")
+    -- A press which closed save slots must not immediately reopen them.
+    cancel_arm_timer(self)
+    self.input_arm_timer = timer.delay(Theme.animations.menu_fade_in, false, function()
+        self.input_arm_timer = nil
+        self.input_armed = self.visible
+    end)
+end
+
+local function select_button(self, index)
+    local button = self.buttons[index]
+    if not button then return end
+    hide_screen(self)
+    if button.exit then
+        sys.exit(0)
+    else
+        -- The existing boot host owns save-slot selection and game loading.
+        msg.post("/host#script", "start_game")
+    end
+end
+
+function init(self)
+    self.root = gui.get_node("root")
+    self.buttons = {{node = gui.get_node("btn_play"), label = node("btn_play_label")}}
+    -- Custom title GUIs can retain their own Exit button. The shipped GUI has
+    -- Play only; Escape / controller Back provide its exit action.
+    local exit = node("btn_exit")
+    if exit then
+        self.buttons[#self.buttons + 1] = {node = exit, label = node("btn_exit_label"), exit = true}
+    end
+    for _, id in ipairs({"btn_editor", "btn_editor_label", "btn_wizard", "btn_wizard_label",
+        "subtitle", "hint", "hints", "status", "version", "toolkit_version"}) do
+        local target = node(id)
+        if target then gui.set_enabled(target, false) end
+    end
+    local title = node("title")
+    if title then gui.set_text(title, sys.get_config_string("project.title", "")) end
+    self.visible = false
+    self.selected = 1
+    self.input_armed = false
+    self.input_arm_timer = nil
+    gui.set_enabled(self.root, false)
+    Settings.load()
+    Settings.apply_all()
+end
+
+function on_input(self, action_id, action)
+    if not self.visible or not action then return false end
+    if not self.input_armed then return action.pressed == true or action.released == true end
+    if not action.pressed then return false end
+
+    if action_id == hash("key_up") or action_id == hash("key_w")
+        or action_id == hash("gamepad_lpad_up") or action_id == hash("gamepad_lstick_up") then
+        self.selected = self.selected > 1 and self.selected - 1 or #self.buttons
+        update_selection(self)
+        return true
+    elseif action_id == hash("key_down") or action_id == hash("key_s")
+        or action_id == hash("gamepad_lpad_down") or action_id == hash("gamepad_lstick_down") then
+        self.selected = self.selected < #self.buttons and self.selected + 1 or 1
+        update_selection(self)
+        return true
+    elseif action_id == hash("key_enter") or action_id == hash("gamepad_rpad_down") then
+        select_button(self, self.selected)
+        return true
+    elseif action_id == hash("key_escape") or action_id == hash("gamepad_back") then
+        hide_screen(self)
+        sys.exit(0)
+        return true
+    elseif action_id == hash("touch") or action_id == hash("click") or action_id == hash("mouse_button_1") then
+        if type(action.x) ~= "number" or type(action.y) ~= "number" then return false end
+        for index, button in ipairs(self.buttons) do
+            if gui.pick_node(button.node, action.x, action.y) then
+                select_button(self, index)
+                return true
+            end
+        end
+    end
+    return false
+end
+
+function on_message(self, message_id, message, sender)
+    if message_id == hash("show_start_screen") then
+        show_screen(self)
+    elseif message_id == hash("hide_start_screen") then
+        hide_screen(self)
+    end
+end
+
+function final(self)
+    hide_screen(self)
+end

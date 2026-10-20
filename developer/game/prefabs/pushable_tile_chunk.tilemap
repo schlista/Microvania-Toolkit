@@ -1,0 +1,39 @@
+tile_set: "/developer/assets/tilesheets/defold_sample.tilesource"
+layers {
+  id: "bounds"
+  z: 1.5E-4
+  is_visible: 0
+}
+layers {
+  id: "destructible"
+  z: 2.5E-4
+}
+layers {
+  id: "solid"
+  z: 4.5E-4
+  cell {
+    x: 8
+    y: -8
+    tile: 1
+  }
+  cell {
+    x: -8
+    y: -8
+    tile: 1
+  }
+  cell {
+    x: 8
+    y: 8
+    tile: 1
+  }
+  cell {
+    x: -8
+    y: 8
+    tile: 1
+  }
+}
+layers {
+  id: "scenery"
+  z: 0.00125
+}
+material: "/builtins/materials/tile_map.material"

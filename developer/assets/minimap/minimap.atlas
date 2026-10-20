@@ -1,0 +1,2 @@
+animations { id: "layout_map" images { image: "/developer/assets/minimap/layout_map.png" } playback: PLAYBACK_NONE fps: 1 }
+margin: 0

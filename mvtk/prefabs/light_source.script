@@ -1,0 +1,96 @@
+-- mvtk/prefabs/light_source.script
+-- Registers a light source with the LightManager.
+
+local PU = require "mvtk.prefabs.prefab_utils"
+local Util = require "mvtk.core.util"
+local ToggleMessages = require "mvtk.prefabs.toggle_messages"
+
+local LIGHT_URL = msg.url("main:/light_manager#script")
+
+go.property("light_id", "")
+go.property("radius", 200)
+go.property("intensity", 1.0)
+go.property("enabled", true)
+go.property("track_position", false)
+go.property("room_id", "")
+go.property("glow_visible", true)
+
+local function clamp01(value)
+    value = tonumber(value) or 0
+    return math.max(0, math.min(1, value))
+end
+
+local function apply_glow(self)
+    if not self.glow_visible then
+        Util.set_component_enabled("#sprite", false)
+        return
+    end
+
+    if self.enabled then
+        Util.set_component_enabled("#sprite", true)
+        local alpha = clamp01(self.intensity)
+        pcall(go.set, "#sprite", "tint", vmath.vector4(1.0, 0.86, 0.52, alpha))
+    else
+        pcall(go.set, "#sprite", "tint", vmath.vector4(1.0, 0.86, 0.52, 0))
+        Util.set_component_enabled("#sprite", false)
+    end
+end
+
+local function post_register(self)
+    local pos = go.get_world_position()
+    pcall(msg.post, LIGHT_URL, hash("register_light_source"), {
+        id = self.light_id_key,
+        position = pos,
+        radius = self.radius,
+        intensity = self.intensity,
+        enabled = self.enabled,
+        room_id = self.room_id_key,
+    })
+end
+
+local function post_update(self)
+    local pos = go.get_world_position()
+    pcall(msg.post, LIGHT_URL, hash("update_light_source"), {
+        id = self.light_id_key,
+        position = pos,
+        radius = self.radius,
+        intensity = self.intensity,
+        enabled = self.enabled,
+    })
+end
+
+local function apply_enabled(self, enabled)
+    self.enabled = enabled
+    apply_glow(self)
+    post_update(self)
+end
+
+function init(self)
+    self.light_id_key = PU.resolve_id(self.light_id) or tostring(go.get_id())
+    self.room_id_key = PU.normalize_hash_string(self.room_id)
+    apply_glow(self)
+    post_register(self)
+end
+
+function final(self)
+    pcall(msg.post, LIGHT_URL, hash("unregister_light_source"), { id = self.light_id_key })
+end
+
+function update(self, dt)
+    if self.track_position then
+        post_update(self)
+    end
+end
+
+function on_message(self, message_id, message, sender)
+    if ToggleMessages.handle(self, message_id, message, apply_enabled, { truthy = true }) then
+    elseif message_id == hash("update_light") then
+        if message then
+            if message.radius ~= nil then self.radius = message.radius end
+            if message.intensity ~= nil then self.intensity = message.intensity end
+            if message.glow_visible ~= nil then self.glow_visible = message.glow_visible == true end
+        end
+        apply_glow(self)
+        post_update(self)
+    end
+end

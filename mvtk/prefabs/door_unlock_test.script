@@ -1,0 +1,33 @@
+-- mvtk/prefabs/door_unlock_test.script
+local DoorState = require("mvtk.rooms.door_state")
+
+local PLAYER_GROUP = hash("player")
+
+go.property("door_id", "")
+go.property("trigger_once", true)
+
+local function unlock_room(self)
+    DoorState.open_edge(self.door_id)
+    return true
+end
+
+function init(self)
+    if self.door_id == "" then
+        print("[door_unlock_test] Missing door_id; deleting.")
+        go.delete()
+        return
+    end
+    self.unlocked = false
+end
+
+function on_message(self, message_id, message, sender)
+    if message_id == hash("trigger_response") and message and message.enter and message.other_group == PLAYER_GROUP then
+        if self.unlocked then return end
+        if unlock_room(self) then
+            self.unlocked = true
+            if self.trigger_once ~= false then
+                go.delete()
+            end
+        end
+    end
+end

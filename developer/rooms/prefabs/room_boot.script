@@ -1,0 +1,69 @@
+-- developer/rooms/prefabs/room_boot.script
+local C = require("mvtk.core.constants")
+local Config = require("developer.config.resolved_config")
+
+go.property("spawn_marker",     "spawn_a")
+go.property("auto_spawn",       false)
+go.property("grapple_anchor_a", vmath.vector3())
+go.property("grapple_anchor_b", vmath.vector3())
+
+local function player_collectionfactory_id()
+    local player_type = tostring(Config.player.player_type):lower()
+    if player_type == "sprite" then
+        return hash("player_sprite_factory")
+    end
+    return hash("player_spine_factory")
+end
+
+local function player_url_from_collection(created)
+    local root = type(created) == "table"
+        and (created[hash("/player")] or created[hash("player")])
+        or created
+    assert(root, "[ROOM_BOOT] spawned player collection has no /player root")
+    return msg.url(nil, root, hash("script"))
+end
+
+local function marker_position(marker_id)
+    local u = msg.url(nil, marker_id, nil)
+    assert(go.exists(u),
+        string.format("[ROOM_BOOT] Spawn marker '%s' missing in this room", tostring(marker_id)))
+    return go.get_position(u)
+end
+
+local function spawn_grapple_anchors(self)
+    local factory_url = msg.url(nil, go.get_id(), hash("grapple_anchor_factory"))
+    -- Rooms without grapple gameplay legitimately omit the factory component.
+    if not go.exists(factory_url) then
+        return
+    end
+    for _, a in ipairs({ self.grapple_anchor_a, self.grapple_anchor_b }) do
+        if a and (a.x ~= 0 or a.y ~= 0 or a.z ~= 0) then
+            factory.create(factory_url, vmath.vector3(a.x, a.y, a.z or 0), nil, {}, 1)
+        end
+    end
+end
+
+local function spawn_player(marker_id)
+    local pos = marker_position(marker_id)
+    local cf_url = msg.url(nil, go.get_id(), player_collectionfactory_id())
+    local created = collectionfactory.create(cf_url, pos, nil, {}, 1)
+    local player_url = player_url_from_collection(created)
+
+    if C.URL.ROOM_MANAGER then
+        msg.post(C.URL.ROOM_MANAGER, hash("player_spawned"), { url = player_url })
+        msg.post(C.URL.ROOM_MANAGER, hash("spawn_position"), { pos = pos })
+    end
+end
+
+function init(self)
+    if self.auto_spawn then
+        timer.delay(0, false, function() spawn_player(self.spawn_marker) end)
+    end
+    spawn_grapple_anchors(self)
+end
+
+function on_message(self, message_id, message, sender)
+    if message_id == hash("spawn_player") then
+        spawn_player((message and message.marker) or self.spawn_marker)
+    end
+end

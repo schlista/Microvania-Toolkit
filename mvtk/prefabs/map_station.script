@@ -1,0 +1,384 @@
+-- mvtk/prefabs/map_station.script
+-- ============================================================================
+-- MAP STATION (Cartographer / Map Reveal)
+-- ============================================================================
+-- Interactable station that reveals world map progress.
+-- Common in Metroidvanias for progressive map discovery.
+--
+-- TILED PROPERTIES:
+--   reveal_area     - Area ID to reveal (or "current" for current biome)
+--   reveal_full_biome - If true, reveal all rooms in target biome
+--   reveal_radius   - World radius fallback reveal (legacy behavior)
+--   cost            - Currency cost to use (0 = free)
+--   trigger_once        - If true, only works once per save file
+--   station_id      - Unique identifier for save tracking
+--   sound_id        - Sound to play when used
+--   particle_id     - Particle effect when used
+--
+-- CONFIGURATION:
+--   All values come from Tiled properties.
+--   DO NOT hardcode values here.
+-- ============================================================================
+
+go.property("reveal_area", "current")
+go.property("prompt_text", "")
+go.property("reveal_radius", 320)
+go.property("reveal_full_biome", true)
+go.property("cost", 0)
+go.property("trigger_once", true)
+go.property("station_id", "")
+go.property("sound_id", "map_reveal")
+go.property("particle_id", "map_sparkle")
+go.property("range", 96)
+
+local PLAYER_GROUP = hash("player")
+local WORLD_MAP_URL = msg.url("main:/world_map_gui#world_map")
+local AREA_FLAG_PREFIX = "map_revealed_"
+local STATION_USED_PREFIX = "map_station_used_"
+
+local PU = require "mvtk.prefabs.prefab_utils"
+local Util = require "mvtk.core.util"
+
+local function play_sprite_animation(animation)
+    local states = { depleted="depleted", used="used", health_station_idle="default", energy_station_idle="default" }
+    if states[animation] then require("mvtk.tiled.object_presentation").restore(states[animation]) end
+    if Util.component_exists("#sprite") then
+        msg.post("#sprite", hash("play_animation"), { id = hash(animation) })
+    end
+end
+
+local Flags = nil
+local RoomManager = nil
+local TiledRoomRegistry = nil
+
+--- Wrapper: PU.resolve_id returns nil for empty; this file expects "".
+local function resolve_id(value)
+    return PU.resolve_id(value) or ""
+end
+
+local function normalize_room_id(room_id)
+    local id = resolve_id(room_id)
+    id = id:gsub("^/", ""):gsub("%.collection$", ""):gsub("^developer/rooms/", "")
+    return id
+end
+
+local function to_bool(value, default)
+    if value == nil then return default end
+    if type(value) == "boolean" then return value end
+    if type(value) == "number" then return value ~= 0 end
+    if type(value) == "string" then
+        local lower = value:lower()
+        if lower == "true" or lower == "1" or lower == "yes" then return true end
+        if lower == "false" or lower == "0" or lower == "no" then return false end
+    end
+    return default
+end
+
+local function get_flags()
+    if Flags == nil then
+        local ok, mod = pcall(require, "mvtk.core.flags")
+        Flags = ok and mod or false
+    end
+    if Flags == false then return nil end
+    return Flags
+end
+
+local function get_room_manager()
+    if RoomManager == nil then
+        local ok, mod = pcall(require, "mvtk.map.streaming.room_manager")
+        RoomManager = ok and mod or false
+    end
+    if RoomManager == false then return nil end
+    return RoomManager
+end
+
+local function get_tiled_registry()
+    if TiledRoomRegistry == nil then
+        local ok, mod = pcall(require, "mvtk.tiled.tiled_room_registry")
+        TiledRoomRegistry = ok and mod or false
+    end
+    if TiledRoomRegistry == false then return nil end
+    return TiledRoomRegistry
+end
+
+local function resolve_label(self)
+    -- prompt_text is a hash property; normalise so the prompt never reads "hash: [...]".
+    local label = PU.normalize_hash_string(self.prompt_text) or "Reveal Map"
+    if label == "" then label = "Reveal Map" end
+    if self.cost > 0 then
+        label = string.format("%s (%d)", label, self.cost)
+    end
+    return label
+end
+
+local function sync_interaction(self)
+    local im = PU.get_interaction()
+    if not im then return end
+    if not self.used then
+        if im.register then
+            im.register(msg.url(), {
+                label = resolve_label(self),
+                range = tonumber(self.range) or 96,
+                priority = 5,
+                position_fn = function(url)
+                    return go.get_world_position(url)
+                end,
+            })
+        end
+    elseif im.unregister then
+        im.unregister(msg.url())
+    end
+end
+
+local function used_flag_key(self)
+    local station_id = resolve_id(self.station_id)
+    if station_id == "" then return nil end
+    return STATION_USED_PREFIX .. station_id
+end
+
+local function resolve_current_room()
+    local rm = get_room_manager()
+    if rm and rm.get_current_room then
+        return normalize_room_id(rm.get_current_room())
+    end
+    return ""
+end
+
+local function resolve_room_biome(room_id)
+    local rid = normalize_room_id(room_id)
+    if rid == "" then return nil end
+
+    local mini = rawget(_G, "MINIMAP_MODULE")
+    if mini and mini.get_room_biome then
+        local biome = resolve_id(mini.get_room_biome(rid))
+        if biome ~= "" then
+            return biome
+        end
+    end
+
+    local registry = get_tiled_registry()
+    if registry and registry.get_room_metadata then
+        local meta = registry.get_room_metadata(rid) or {}
+        local biome = resolve_id(meta.biome or meta.area or meta.region)
+        if biome ~= "" then
+            return biome
+        end
+    end
+
+    local rm = get_room_manager()
+    if rm and rm.get_room_data then
+        local room_data = rm.get_room_data(rid)
+        if room_data and type(room_data.tags) == "table" then
+            local biome = resolve_id(room_data.tags.biome or room_data.tags.area or room_data.tags.region)
+            if biome ~= "" then
+                return biome
+            end
+        end
+    end
+
+    return nil
+end
+
+local function resolve_target_area(self)
+    local requested = resolve_id(self.reveal_area)
+    if requested == "" or requested:lower() == "current" then
+        local current_room = resolve_current_room()
+        local biome = resolve_room_biome(current_room)
+        return biome or "", current_room
+    end
+    return requested, ""
+end
+
+local function reveal_map(self)
+    local mini = rawget(_G, "MINIMAP_MODULE")
+    local area_id, current_room = resolve_target_area(self)
+    local revealed = 0
+    local mode = "none"
+
+    if not mini then
+        print("[MAP_STATION] MINIMAP_MODULE unavailable; reveal calls will be skipped")
+    end
+    if self.reveal_full_biome ~= false and area_id == "" then
+        print(string.format("[MAP_STATION] Could not resolve biome for station=%s room=%s",
+            resolve_id(self.station_id), current_room ~= "" and current_room or "(unknown)"))
+    end
+
+    if mini then
+        if self.reveal_full_biome ~= false and area_id ~= "" and mini.reveal_rooms_by_biome then
+            revealed = tonumber(mini.reveal_rooms_by_biome(area_id)) or 0
+            mode = "biome"
+        end
+
+        if revealed == 0 and mini.reveal_rooms_near then
+            local radius = tonumber(self.reveal_radius) or 0
+            if radius > 0 then
+                revealed = tonumber(mini.reveal_rooms_near(go.get_world_position(), radius)) or 0
+                if mode == "none" then
+                    mode = "radius"
+                end
+            end
+        end
+    end
+
+    if area_id ~= "" then
+        local flags = get_flags()
+        if flags and flags.set then
+            flags.set(AREA_FLAG_PREFIX .. area_id, true)
+        end
+        pcall(msg.post, WORLD_MAP_URL, hash("reveal_area"), { area_id = area_id })
+    end
+
+    return area_id, current_room, revealed, mode
+end
+
+local function load_used_state(self)
+    self.used = false
+    if self.trigger_once ~= true then return end
+    local key = used_flag_key(self)
+    if not key then return end
+    local flags = get_flags()
+    if flags and flags.has then
+        self.used = flags.has(key) and true or false
+    end
+end
+
+local function apply_used_visual(self)
+    if self.used then
+        play_sprite_animation("used")
+    end
+end
+
+-----------------------------------------------------------
+-- Local Helper Functions
+-----------------------------------------------------------
+
+local function activate(self)
+    -- Check currency cost
+    if self.cost > 0 then
+        local ok, Currency = pcall(require, "mvtk.game.currency")
+        if ok and Currency then
+            if not Currency.can_afford(self.cost) then
+                PU.play_sound(hash("insufficient_funds"))
+                return
+            end
+            Currency.spend(self.cost)
+        end
+    end
+
+    -- Play sound
+    PU.play_sound(self.sound_id)
+
+    -- Play particle effect
+    require("mvtk.tiled.object_presentation").emit("interacted")
+
+    -- Visual feedback
+    play_sprite_animation("activate")
+
+    local area_id, room_id, revealed, mode = reveal_map(self)
+
+    -- Tell the player what happened; revealing already-mapped rooms changes
+    -- nothing visible, which looked like the station did nothing.
+    if revealed > 0 then
+        PU.toast(string.format("Map updated: %d room%s revealed", revealed, revealed == 1 and "" or "s"), 2.5)
+    else
+        PU.toast("Map updated: this area was already on your map", 2.5)
+    end
+
+    if self.trigger_once then
+        self.used = true
+        local key = used_flag_key(self)
+        local flags = get_flags()
+        if key and flags and flags.set then
+            flags.set(key, true)
+        end
+        play_sprite_animation("used")
+    end
+
+    sync_interaction(self)
+
+    print(string.format(
+        "[MAP_STATION] activated station=%s area=%s room=%s mode=%s revealed=%d trigger_once=%s",
+        resolve_id(self.station_id),
+        area_id ~= "" and area_id or "(none)",
+        room_id ~= "" and room_id or "(unknown)",
+        mode,
+        revealed,
+        tostring(self.trigger_once)
+    ))
+end
+
+-----------------------------------------------------------
+-- Lifecycle Functions
+-----------------------------------------------------------
+
+function init(self)
+    -- Used stations with only default art dim (object_art.lua).
+    require("mvtk.tiled.object_presentation").set_state_fallbacks(
+        (Util.require_module("developer.config.object_art") or {}).station_state_fallbacks)
+    self.used = false
+    self.player_in_range = false
+    self.prompt_text = self.prompt_text or "Reveal Map"
+
+    load_used_state(self)
+    apply_used_visual(self)
+    sync_interaction(self)
+end
+
+function on_message(self, message_id, message, sender)
+    if message_id == hash("trigger_response") then
+        if message.group == PLAYER_GROUP then
+            if message.enter then
+                self.player_in_range = true
+            else
+                self.player_in_range = false
+            end
+        end
+
+    elseif message_id == hash("mvtk_interact") then
+        if not self.used then
+            activate(self)
+        end
+
+    elseif message_id == hash("interact") then
+        -- Legacy fallback
+        if self.player_in_range and not self.used then
+            activate(self)
+        end
+
+    elseif message_id == hash("apply_tiled_props") then
+        local props = message.properties or {}
+        if props.prompt_text ~= nil then self.prompt_text = tostring(props.prompt_text) end
+        if props.label ~= nil and (props.prompt_text == nil) then
+            self.prompt_text = tostring(props.label)
+        end
+        if props.reveal_area then
+            self.reveal_area = props.reveal_area
+        end
+        if props.reveal_radius then self.reveal_radius = tonumber(props.reveal_radius) or self.reveal_radius end
+        if props.reveal_full_biome ~= nil then
+            self.reveal_full_biome = to_bool(props.reveal_full_biome, self.reveal_full_biome)
+        end
+        if props.range ~= nil then self.range = tonumber(props.range) or self.range end
+        if props.cost then self.cost = tonumber(props.cost) or self.cost end
+        if props.trigger_once ~= nil then self.trigger_once = to_bool(props.trigger_once, self.trigger_once) end
+        if props.station_id then
+            self.station_id = props.station_id
+        end
+        if props.sound_id then
+            self.sound_id = props.sound_id
+        end
+        if props.particle_id then
+            self.particle_id = props.particle_id
+        end
+        load_used_state(self)
+        apply_used_visual(self)
+        sync_interaction(self)
+    end
+end
+
+function final(self)
+    local im = PU.get_interaction()
+    if im and im.unregister then
+        im.unregister(msg.url())
+    end
+end

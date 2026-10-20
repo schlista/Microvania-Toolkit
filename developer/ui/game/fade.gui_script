@@ -1,0 +1,65 @@
+-- developer/ui/game/fade.gui_script
+local C = require("mvtk.core.constants")
+
+function init(self)
+	self.rect = gui.get_node("fade")  -- a full-screen box node named "fade"
+	self.duration = 0.25
+	self.t = 0
+	self.mode = "idle"
+	gui.set_color(self.rect, vmath.vector4(0, 0, 0, 0))
+	C.URL.FADE_GUI = msg.url()
+end
+
+local function set_alpha(node, a)
+	local c = gui.get_color(node); c.w = a; gui.set_color(node, c)
+end
+
+function update(self, dt)
+	if self.mode == "in" then
+		self.t = math.min(1, self.t + dt / self.duration)
+		set_alpha(self.rect, self.t)
+	elseif self.mode == "out" then
+		self.t = math.max(0, self.t - dt / self.duration)
+		set_alpha(self.rect, self.t)
+	end
+end
+
+function on_message(self, message_id, message, sender)
+	if message_id == C.MSG.FADE_TO_BLACK then
+		if message and message.duration then
+			self.duration = tonumber(message.duration) or self.duration
+		end
+		self.mode = "in"; self.t = 0
+		if message and message.done then
+			timer.delay(self.duration, false, function()
+				msg.post(message.done, hash("fade_done"), {})
+			end)
+		end
+	elseif message_id == C.MSG.FADE_FROM_BLACK then
+		if message and message.duration then
+			self.duration = tonumber(message.duration) or self.duration
+		end
+		if message and (message.instant or message.force) then
+			self.mode = "idle"
+			self.t = 0
+			set_alpha(self.rect, 0)
+			return
+		end
+		-- Ensure we start fully black before fading out
+		self.t = 1
+		set_alpha(self.rect, 1)
+		local delay = tonumber(message and message.delay) or 0
+		if delay > 0 then
+			-- Stay black for a moment before fading out
+			timer.delay(delay, false, function()
+				self.mode = "out"
+			end)
+		else
+			self.mode = "out"
+		end
+	end
+end
+ 
+ 
+
+

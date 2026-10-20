@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<template>
+ <object name="Health Station" type="health_station" width="32" height="32">
+  <properties>
+   <property name="station_id" type="string" value=""/>
+   <property name="prompt_text" type="string" value="Heal"/>
+   <property name="healing" type="class" propertytype="health_station_healing">
+    <properties>
+     <property name="heal_amount" type="int" value="0"/>
+     <property name="heal_percent" type="float" value="0.0"/>
+    </properties>
+   </property>
+   <property name="availability" type="class" propertytype="health_station_availability">
+    <properties>
+     <property name="uses" type="int" value="0"/>
+     <property name="recharge_time" type="float" value="0.0"/>
+     <property name="cost_currency" type="int" value="0"/>
+     <property name="requires_flag" type="string" value=""/>
+    </properties>
+   </property>
+   <property name="interaction" type="class" propertytype="health_station_interaction">
+    <properties>
+     <property name="require_interact" type="bool" value="true"/>
+     <property name="range" type="int" value="96"/>
+    </properties>
+   </property>
+   <property name="feedback" type="class" propertytype="health_station_feedback">
+    <properties>
+     <property name="sound_id" propertytype="sound_effects" value="collect_health"/>
+    </properties>
+   </property>
+   <property name="art_item" type="string" value=""/>
+   <property name="art_feedback" type="class" propertytype="health_station_art_feedback">
+    <properties>
+     <property name="consume_effect" type="string" propertytype="particle_effects" value="none"/>
+     <property name="interact_effect" type="string" propertytype="particle_effects" value="none"/>
+     <property name="effect_offset_x" type="float" value="0"/>
+     <property name="effect_offset_y" type="float" value="0"/>
+     <property name="effect_scale" type="float" value="1"/>
+     <property name="effect_cooldown" type="float" value="0"/>
+    </properties>
+   </property>
+   <property name="mvtk_template_version" type="string" value="2.7.0"/>
+  </properties>
+ </object>
+</template>

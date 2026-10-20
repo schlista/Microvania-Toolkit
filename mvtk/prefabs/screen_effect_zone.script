@@ -1,0 +1,175 @@
+-- mvtk/prefabs/screen_effect_zone.script
+-- Applies screen effects when player enters a zone.
+
+local C = require "mvtk.core.constants"
+local Gamefeel = require "mvtk.core.gamefeel"
+local PU = require "mvtk.prefabs.prefab_utils"
+
+go.property("zone_id", "")
+go.property("effect_type", "")
+go.property("intensity", 0.5)
+go.property("tint_color", "")
+go.property("duration", 0.3)
+go.property("trigger_once", false)
+go.property("exit_darkness", 0)
+
+go.property("exit_tint", "")
+
+go.property("underwater_overlay", true)
+
+local function parse_color_string(value)
+    if type(value) ~= "string" then return nil end
+    local s = value:gsub("%s+", "")
+    if s == "" then return nil end
+    if s:sub(1, 1) == "#" then
+        local hex = s:sub(2)
+        if #hex == 6 or #hex == 8 then
+            local r = tonumber(hex:sub(1, 2), 16) or 0
+            local g = tonumber(hex:sub(3, 4), 16) or 0
+            local b = tonumber(hex:sub(5, 6), 16) or 0
+            local a = 255
+            if #hex == 8 then
+                a = tonumber(hex:sub(7, 8), 16) or 255
+            end
+            return vmath.vector4(r / 255, g / 255, b / 255, a / 255)
+        end
+        return nil
+    end
+    if s:find(",") then
+        local parts = {}
+        for part in string.gmatch(s, "([^,]+)") do
+            parts[#parts + 1] = tonumber(part)
+        end
+        if #parts >= 3 then
+            local r, g, b = parts[1], parts[2], parts[3]
+            local a = parts[4] or 1
+            local max = math.max(r, g, b, a)
+            if max and max > 1 then
+                r, g, b, a = r / 255, g / 255, b / 255, a / 255
+            end
+            return vmath.vector4(r or 1, g or 1, b or 1, a or 1)
+        end
+    end
+    return nil
+end
+
+local function apply_tint(self, color)
+    if not color then return end
+    pcall(msg.post, msg.url("main:/screen_effect_overlay#gui"), hash("set_effect"), {
+        color = color,
+        alpha = color.w,
+    })
+end
+
+local function clear_tint()
+    pcall(msg.post, msg.url("main:/screen_effect_overlay#gui"), hash("clear_effect"), {})
+end
+
+local function resolve_effect_type(self)
+    local s = self.effect_type_str
+    if s and s ~= "" then return s end
+    return ""
+end
+
+local function apply_effect(self)
+    local effect = resolve_effect_type(self)
+    if effect == "underwater" then
+        if self.underwater_overlay ~= false then
+            pcall(msg.post, msg.url("main:/underwater_overlay#underwater_overlay"), hash("underwater_set"), { enabled = true })
+        end
+    elseif effect == "darkness" then
+        pcall(msg.post, msg.url("main:/light_manager#script"), hash("set_darkness"), { level = tonumber(self.intensity) or 0.5 })
+    elseif effect == "shake" then
+        Gamefeel.shake(self.intensity or 4, self.duration or 0.3)
+    else
+        local color = self.tint_color_v
+        if not color then
+            color = parse_color_string("#00000080")
+        end
+        apply_tint(self, color)
+    end
+end
+
+local function clear_effect(self)
+    local effect = resolve_effect_type(self)
+    if effect == "underwater" then
+        if self.underwater_overlay ~= false then
+            pcall(msg.post, msg.url("main:/underwater_overlay#underwater_overlay"), hash("underwater_set"), { enabled = false })
+        end
+    elseif effect == "darkness" then
+        if self.exit_darkness ~= nil then
+            if self.exit_darkness == 0 then
+                pcall(msg.post, msg.url("main:/light_manager#script"), hash("set_darkness"), { level = nil })
+            else
+                pcall(msg.post, msg.url("main:/light_manager#script"), hash("set_darkness"), { level = self.exit_darkness })
+            end
+        else
+            pcall(msg.post, msg.url("main:/light_manager#script"), hash("set_darkness"), { level = nil })
+        end
+    elseif effect == "shake" then
+        -- no-op
+    else
+        if self.exit_tint_v then
+            apply_tint(self, self.exit_tint_v)
+        else
+            clear_tint()
+        end
+    end
+end
+
+local function apply_props(self, props)
+    props = props or {}
+    if props.effect_type ~= nil then
+        self.effect_type_str = tostring(props.effect_type)
+    end
+    if props.intensity ~= nil then self.intensity = tonumber(props.intensity) or self.intensity end
+    if props.level ~= nil then self.intensity = tonumber(props.level) or self.intensity end
+    if props.tint_color ~= nil then self.tint_color_v = parse_color_string(tostring(props.tint_color)) end
+    if props.duration ~= nil then self.duration = tonumber(props.duration) or self.duration end
+    if props.trigger_once ~= nil then self.trigger_once = props.trigger_once == true end
+    if props.exit_darkness ~= nil then self.exit_darkness = tonumber(props.exit_darkness) end
+    if props.exit_tint ~= nil then self.exit_tint_v = parse_color_string(tostring(props.exit_tint)) end
+    if props.underwater_overlay ~= nil then self.underwater_overlay = props.underwater_overlay ~= false end
+end
+
+function init(self)
+    self.zone_id_key = PU.resolve_id(self.zone_id) or tostring(go.get_id())
+    self.effect_type_str = PU.normalize_hash_string(self.effect_type)
+    self.tint_color_v = parse_color_string(PU.normalize_hash_string(self.tint_color) or "")
+    self.exit_tint_v = parse_color_string(PU.normalize_hash_string(self.exit_tint) or "")
+    self.inside = false
+end
+
+function on_message(self, message_id, message, sender)
+    if message_id == hash("apply_tiled_props") and message and message.properties then
+        apply_props(self, message.properties)
+        return
+    end
+
+    if message_id ~= hash("trigger_response") then
+        return
+    end
+
+    local other_group = message.other_group or message.group
+    if other_group ~= hash("player") then
+        return
+    end
+
+    if message.enter then
+        if self.trigger_once and self._used then
+            return
+        end
+        if not self.inside then
+            self.inside = true
+            apply_effect(self)
+            if self.trigger_once then
+                self._used = true
+            end
+        end
+    else
+        if self.inside then
+            self.inside = false
+            clear_effect(self)
+        end
+    end
+end

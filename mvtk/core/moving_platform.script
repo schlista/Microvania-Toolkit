@@ -1,0 +1,202 @@
+-- mvtk/core/moving_platform.script
+-- Versatile platform movement: linear, circular, or path-based
+-- Supports ping-pong, loop, and one-shot modes
+
+go.property("path_dx", 0.0)  -- Linear X distance
+go.property("path_dy", 0.0)  -- Linear Y distance
+go.property("duration", 2.0)  -- Time for one cycle
+go.property("wait", 0.0)  -- Pause at endpoints
+go.property("platform_type", "horizontal")  -- "horizontal", "vertical", "path", "circular"
+go.property("loop_mode", "pingpong")  -- "pingpong", "loop", "once"
+go.property("enabled", true)  -- Can be toggled by triggers/puzzles
+-- Circular motion
+go.property("radius", 0.0)  -- Radius for circular motion
+go.property("start_angle", 0.0)  -- Starting angle in degrees
+-- Path-based (set via message)
+go.property("path_id", "")  -- Reference to path polyline object
+
+local v3 = vmath.vector3
+local TWO_PI = math.pi * 2
+local C = require "mvtk.core.constants"
+local PassengerCarrier = require "mvtk.prefabs.passenger_carrier"
+local ToggleMessages = require "mvtk.prefabs.toggle_messages"
+
+function init(self)
+  self.start = go.get_position()
+  self.center = v3(self.start)
+  self.t = 0
+  self.dir = 1
+  self.last_pos = v3(self.start)
+  self.waiting = false
+  self.waypoints = nil  -- Path waypoints (set via set_waypoints message)
+  self.current_waypoint = 1
+  self.passenger_carrier = PassengerCarrier.new()
+
+  print(string.format("[MOVING_PLATFORM] Init at (%.0f, %.0f) type=%s dx=%.0f dy=%.0f duration=%.2f",
+    self.start.x, self.start.y, tostring(self.platform_type), self.path_dx, self.path_dy, self.duration))
+
+  -- Configure based on platform_type
+  if self.platform_type == "horizontal" and self.path_dx == 0 then
+    self.path_dx = 200  -- Default horizontal distance
+    print("[MOVING_PLATFORM] Using default horizontal distance: 200")
+  elseif self.platform_type == "vertical" and self.path_dy == 0 then
+    self.path_dy = 200  -- Default vertical distance
+    print("[MOVING_PLATFORM] Using default vertical distance: 200")
+  elseif self.platform_type == "circular" then
+    if self.radius == 0 then self.radius = 100 end
+    -- Store center as starting point for circular
+    self.center = v3(self.start)
+  end
+end
+
+local function ease_in_out(t)
+  -- Smooth easing for natural motion
+  return t < 0.5 and 2 * t * t or 1 - math.pow(-2 * t + 2, 2) / 2
+end
+
+local function move_linear(self, t01)
+  local eased = ease_in_out(t01)
+  local x = self.start.x + (self.path_dx or 0) * eased
+  local y = self.start.y + (self.path_dy or 0) * eased
+  return v3(x, y, self.start.z)
+end
+
+local function move_circular(self, t01)
+  local angle = math.rad(self.start_angle or 0) + t01 * TWO_PI
+  local x = self.center.x + self.radius * math.cos(angle)
+  local y = self.center.y + self.radius * math.sin(angle)
+  return v3(x, y, self.start.z)
+end
+
+local function move_path(self, t01)
+  if not self.waypoints or #self.waypoints < 2 then
+    return self.start
+  end
+  
+  -- Calculate total path length and find current segment
+  local total_segments = #self.waypoints - 1
+  local segment_progress = t01 * total_segments
+  local segment_index = math.floor(segment_progress)
+  local segment_t = segment_progress - segment_index
+  
+  -- Clamp to valid range
+  segment_index = math.max(0, math.min(segment_index, total_segments - 1))
+  
+  local wp1 = self.waypoints[segment_index + 1]
+  local wp2 = self.waypoints[segment_index + 2] or wp1
+  
+  -- Lerp between waypoints
+  local x = wp1.x + (wp2.x - wp1.x) * segment_t
+  local y = wp1.y + (wp2.y - wp1.y) * segment_t
+  return v3(x, y, self.start.z)
+end
+
+local function move_to(self, target_pos)
+  local delta = target_pos - self.last_pos
+  go.set_position(target_pos)
+  self.last_pos = v3(target_pos)
+  
+  self.passenger_carrier:apply_delta(delta.x, delta.y)
+end
+
+local function start_wait(self)
+  if (self.wait or 0) > 0 then
+    self.waiting = true
+    timer.delay(self.wait, false, function()
+      self.waiting = false
+    end)
+  end
+end
+
+local function apply_enabled(self, enabled, message_id)
+  self.enabled = enabled
+  if message_id == hash("set_enabled") then
+    print(string.format("[PLATFORM] %s", self.enabled and "Enabled" or "Disabled"))
+  end
+end
+
+function update(self, dt)
+  -- Skip movement if disabled or waiting
+  if not self.enabled or self.waiting then return end
+
+  local dur = math.max(0.0001, self.duration or 2.0)
+  
+  -- Update time based on loop mode
+  if self.loop_mode == "loop" or self.platform_type == "circular" then
+    self.t = self.t + dt
+    if self.t >= dur then
+      self.t = self.t - dur
+    end
+  elseif self.loop_mode == "once" then
+    if self.dir > 0 then
+      self.t = math.min(self.t + dt, dur)
+    end
+  else  -- pingpong (default)
+    if self.dir > 0 then
+      self.t = self.t + dt
+      if self.t >= dur then
+        self.t = dur
+        self.dir = -1
+        start_wait(self)
+      end
+    else
+      self.t = self.t - dt
+      if self.t <= 0 then
+        self.t = 0
+        self.dir = 1
+        start_wait(self)
+      end
+    end
+  end
+  
+  local t01 = self.t / dur
+  local target_pos
+  
+  -- Calculate position based on platform type
+  if self.platform_type == "circular" then
+    target_pos = move_circular(self, t01)
+  elseif self.platform_type == "path" and self.waypoints then
+    target_pos = move_path(self, t01)
+  else
+    -- Linear (horizontal/vertical)
+    target_pos = move_linear(self, t01)
+  end
+  
+  move_to(self, target_pos)
+end
+
+function on_message(self, message_id, message, sender)
+  if message_id == hash("trigger_response") then
+    local entity = message.other_id or sender
+    local other_group = message.other_group or message.group
+    if other_group == C.GROUPS.PLAYER or other_group == C.GROUPS.ENEMY then
+      if message.enter then
+        self.passenger_carrier:add(entity, other_group)
+      else
+        self.passenger_carrier:remove(entity)
+      end
+    end
+  elseif message_id == hash("set_waypoints") then
+    -- Set path waypoints from external source (e.g., Tiled polyline)
+    if message.waypoints and type(message.waypoints) == "table" then
+      self.waypoints = message.waypoints
+      self.platform_type = "path"
+      print(string.format("[PLATFORM] Set %d waypoints for path motion", #self.waypoints))
+    end
+  elseif message_id == hash("set_center") then
+    -- Set center for circular motion
+    if message.x and message.y then
+      self.center = v3(message.x, message.y, self.start.z)
+    end
+
+  elseif ToggleMessages.handle(self, message_id, message, apply_enabled, { truthy = true }) then
+
+  elseif message_id == hash("reset") then
+    -- Reset platform to starting position
+    self.t = 0
+    self.dir = 1
+    self.waiting = false
+    go.set_position(self.start)
+    self.last_pos = v3(self.start)
+  end
+end

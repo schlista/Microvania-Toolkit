@@ -1,0 +1,24 @@
+-- mvtk/hazards/conveyor_belt.script
+go.property("belt_speed", 100)
+go.property("direction", "right")
+
+function init(self)
+    self.force = vmath.vector3(0, 0, 0)
+    if self.direction == "right" then
+        self.force.x = self.belt_speed
+    elseif self.direction == "left" then
+        self.force.x = -self.belt_speed
+    elseif self.direction == "up" then
+        self.force.y = self.belt_speed
+    elseif self.direction == "down" then
+        self.force.y = -self.belt_speed
+    end
+end
+
+function on_message(self, message_id, message, sender)
+    if message_id == hash("collision_response") then
+        if message.other_group == hash("player") then
+            msg.post(message.other_id, "apply_force", { force = self.force })
+        end
+    end
+end

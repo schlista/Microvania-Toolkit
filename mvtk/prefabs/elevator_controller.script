@@ -1,0 +1,119 @@
+-- Streamed Tiled controller marker for a persistent world-owned elevator.
+-- Geometry is resolved globally from developer/config/elevators_generated.lua;
+-- this marker is supplemental and may unload without destroying the elevator.
+
+local ElevatorManager = require "mvtk.elevators.elevator_manager"
+local PU = require "mvtk.prefabs.prefab_utils"
+
+go.property("elevator_id", "")
+go.property("trigger_id", "")
+go.property("cabin_resource_key", "")
+go.property("start_node_id", "")
+go.property("home_stop", "bottom")
+
+go.property("speed", 96)
+go.property("acceleration", 384)
+go.property("deceleration", 384)
+go.property("endpoint_wait", 0.35)
+go.property("start_delay", 0)
+go.property("close_time", 0.25)
+go.property("open_time", 0.25)
+go.property("ready_timeout", 5)
+go.property("seam_y", 0)
+go.property("seam_y_authored", false)
+go.property("route_mode", "pingpong")
+go.property("enabled", true)
+
+go.property("activation_mode", "on_board")
+go.property("require_interact", false)
+go.property("floor_offset", 32)
+go.property("carry_player", true)
+go.property("carry_enemies", false)
+go.property("carry_pushables", true)
+go.property("require_rider", true)
+go.property("shaft_clearance", 0)
+go.property("shaft_tolerance", 0.5)
+
+go.property("camera_follow", true)
+go.property("camera_lock_x", true)
+go.property("camera_look_ahead", 96)
+go.property("camera_blend_time", 0.2)
+go.property("camera_priority", 50)
+go.property("persist_landing", true)
+go.property("restore_to_last_landing", true)
+go.property("width", 128)
+go.property("height", 32)
+
+local function marker_definition(self, overrides)
+    overrides = overrides or {}
+    local function value(name, fallback)
+        if overrides[name] ~= nil then return overrides[name] end
+        return fallback
+    end
+    return {
+        elevator_id = value("elevator_id", self.elevator_id_key),
+        trigger_id = value("trigger_id", self.trigger_id),
+        cabin_resource_key = value("cabin_resource_key", self.cabin_resource_key),
+        start_node_id = value("start_node_id", self.start_node_id),
+        home_stop = value("home_stop", self.home_stop),
+        speed = value("speed", self.speed),
+        acceleration = value("acceleration", self.acceleration),
+        deceleration = value("deceleration", self.deceleration),
+        endpoint_wait = value("endpoint_wait", self.endpoint_wait),
+        start_delay = value("start_delay", self.start_delay),
+        close_time = value("close_time", self.close_time),
+        open_time = value("open_time", self.open_time),
+        ready_timeout = value("ready_timeout", self.ready_timeout),
+        seam_y = value("seam_y", self.seam_y),
+        seam_y_authored = value("seam_y_authored", self.seam_y_authored),
+        route_mode = value("route_mode", self.route_mode),
+        enabled = value("enabled", self.enabled),
+        activation_mode = value("activation_mode", self.activation_mode),
+        require_interact = value("require_interact", self.require_interact),
+        floor_offset = value("floor_offset", self.floor_offset),
+        carry_player = value("carry_player", self.carry_player),
+        carry_enemies = value("carry_enemies", self.carry_enemies),
+        carry_pushables = value("carry_pushables", self.carry_pushables),
+        require_rider = value("require_rider", self.require_rider),
+        shaft_clearance = value("shaft_clearance", self.shaft_clearance),
+        shaft_tolerance = value("shaft_tolerance", self.shaft_tolerance),
+        camera_follow = value("camera_follow", self.camera_follow),
+        camera_lock_x = value("camera_lock_x", self.camera_lock_x),
+        camera_look_ahead = value("camera_look_ahead", self.camera_look_ahead),
+        camera_blend_time = value("camera_blend_time", self.camera_blend_time),
+        camera_priority = value("camera_priority", self.camera_priority),
+        persist_landing = value("persist_landing", self.persist_landing),
+        restore_to_last_landing = value("restore_to_last_landing", self.restore_to_last_landing),
+        width = value("width", self.width),
+        height = value("height", self.height),
+        url = msg.url(),
+    }
+end
+
+local function register(self, overrides)
+    if not self.elevator_id_key then return end
+    local registration, err = ElevatorManager.register_controller(marker_definition(self, overrides))
+    if registration then
+        self.registration = registration
+    elseif err and err ~= "waiting_for_two_nodes" then
+        print(string.format("[ELEVATOR] controller '%s' registration: %s",
+            tostring(self.elevator_id_key), tostring(err)))
+    end
+end
+
+function init(self)
+    self.elevator_id_key = PU.resolve_id(self.elevator_id)
+    register(self)
+end
+
+function final(self)
+    if self.elevator_id_key and self.registration then
+        ElevatorManager.unregister_controller(self.elevator_id_key, msg.url(), self.registration)
+    end
+end
+
+function on_message(self, message_id, message)
+    if message_id == hash("apply_tiled_props") and message and message.properties then
+        register(self, message.properties)
+    end
+end

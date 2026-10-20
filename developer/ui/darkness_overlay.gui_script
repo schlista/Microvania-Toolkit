@@ -1,0 +1,123 @@
+local Viewport = require "mvtk.ui.viewport"
+-- developer/ui/darkness_overlay.gui_script
+-- Fullscreen darkness overlay using multiply blending plus additive local lights.
+
+local LIGHT_TEXTURE = hash("gameplay_visuals")
+local LIGHT_FLIPBOOK = hash("light_glow_soft")
+local LIGHT_TINT = vmath.vector4(1.0, 0.92, 0.70, 1.0)
+local LIGHT_Z = 0.05
+local MIN_LIGHT_SIZE = 8
+local DEFAULT_INTENSITY_SCALE = 0.6
+
+local function clamp(x, a, b)
+    if x < a then return a end
+    if x > b then return b end
+    return x
+end
+
+local function ensure_overlay_size(self)
+    local w, h = Viewport.design_size()
+    if w ~= self._w or h ~= self._h then
+        self._w = w
+        self._h = h
+        gui.set_size(self.overlay, vmath.vector3(w, h, 0))
+    end
+end
+
+local function apply_darkness(self)
+    -- Multiply blend darkens while keeping texture detail.
+    local darkness = clamp(tonumber(self.darkness_level) or 0, 0, 1)
+    local mult = 1.0 - darkness
+    gui.set_color(self.overlay, vmath.vector4(mult, mult, mult, 1.0))
+end
+
+local function hide_unused_light_nodes(self, first_index)
+    for i = first_index, #self.light_nodes do
+        gui.set_enabled(self.light_nodes[i], false)
+    end
+end
+
+local function ensure_light_node(self, index)
+    local node = self.light_nodes[index]
+    if node then return node end
+
+    node = gui.new_box_node(vmath.vector3(-2048, -2048, LIGHT_Z), vmath.vector3(MIN_LIGHT_SIZE, MIN_LIGHT_SIZE, 0))
+    gui.set_pivot(node, gui.PIVOT_CENTER)
+    gui.set_color(node, vmath.vector4(LIGHT_TINT.x, LIGHT_TINT.y, LIGHT_TINT.z, 0))
+    gui.set_blend_mode(node, gui.BLEND_ADD)
+    gui.set_enabled(node, false)
+
+    pcall(function()
+        gui.set_texture(node, LIGHT_TEXTURE)
+    end)
+    pcall(function()
+        gui.play_flipbook(node, LIGHT_FLIPBOOK)
+    end)
+
+    self.light_nodes[index] = node
+    return node
+end
+
+local function apply_light_sources(self, lights, intensity_scale)
+    ensure_overlay_size(self)
+    local count = 0
+    local strength_scale = tonumber(intensity_scale) or DEFAULT_INTENSITY_SCALE
+
+    for i = 1, #lights do
+        local item = lights[i]
+        if type(item) == "table" then
+            local nx = tonumber(item.nx) or 0
+            local ny = tonumber(item.ny) or 0
+            local radius_x = math.max(0, tonumber(item.radius_x) or tonumber(item.radius) or 0)
+            local radius_y = math.max(0, tonumber(item.radius_y) or radius_x)
+            local intensity = clamp(tonumber(item.intensity) or 0, 0, 4)
+
+            if radius_x > 0 and intensity > 0 then
+                count = count + 1
+                local node = ensure_light_node(self, count)
+
+                local px = nx * self._w
+                local py = ny * self._h
+                local sx = math.max(MIN_LIGHT_SIZE, self._w * radius_x * 2.0)
+                local sy = math.max(MIN_LIGHT_SIZE, self._h * radius_y * 2.0)
+
+                -- Slightly boost light punch in darker rooms.
+                local darkness_boost = 0.45 + (self.darkness_level or 0) * 0.9
+                local alpha = clamp(intensity * strength_scale * darkness_boost, 0, 1)
+
+                gui.set_position(node, vmath.vector3(px, py, LIGHT_Z))
+                gui.set_size(node, vmath.vector3(sx, sy, 0))
+                gui.set_color(node, vmath.vector4(LIGHT_TINT.x, LIGHT_TINT.y, LIGHT_TINT.z, alpha))
+                gui.set_enabled(node, alpha > 0.001)
+            end
+        end
+    end
+
+    hide_unused_light_nodes(self, count + 1)
+end
+
+function init(self)
+    self.overlay = gui.get_node("overlay")
+    self.light_nodes = {}
+    self._w = 0
+    self._h = 0
+    self.darkness_level = 0
+
+    ensure_overlay_size(self)
+    apply_darkness(self)
+end
+
+function on_message(self, message_id, message, sender)
+    if message_id == hash("set_darkness") then
+        self.darkness_level = clamp(tonumber(message and message.level) or 0, 0, 1)
+        apply_darkness(self)
+    elseif message_id == hash("set_light_sources") then
+        local lights = (message and message.lights) or {}
+        if type(lights) ~= "table" then lights = {} end
+        apply_light_sources(self, lights, message and message.intensity_scale)
+    end
+end
+
+function update(self, dt)
+    ensure_overlay_size(self)
+end

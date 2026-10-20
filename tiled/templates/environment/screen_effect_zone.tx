@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<template>
+ <object name="Screen Effect Zone" type="screen_effect_zone" width="128" height="128">
+  <properties>
+   <property name="effect_type" propertytype="screen_effects" value="tint"/>
+   <property name="zone_id" type="string" value=""/>
+   <property name="effect" type="class" propertytype="screen_effect_zone_effect">
+    <properties>
+     <property name="intensity" type="float" value="0.5"/>
+     <property name="tint_color" type="string" value="#00000080"/>
+     <property name="duration" type="float" value="0.3"/>
+     <property name="underwater_overlay" type="bool" value="true"/>
+    </properties>
+   </property>
+   <property name="lifecycle" type="class" propertytype="screen_effect_zone_lifecycle">
+    <properties>
+     <property name="trigger_once" type="bool" value="false"/>
+     <property name="exit_darkness" type="float" value="0"/>
+     <property name="exit_tint" type="string" value=""/>
+    </properties>
+   </property>
+   <property name="mvtk_template_version" type="string" value="2.7.0"/>
+  </properties>
+ </object>
+</template>

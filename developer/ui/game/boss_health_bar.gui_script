@@ -1,0 +1,378 @@
+local Viewport = require "mvtk.ui.viewport"
+-- developer/ui/game/boss_health_bar.gui_script
+-- Displays boss health bar at the configured screen edge.
+-- Styling is driven by developer/config/boss_ui.lua.
+
+local ok_boss_ui, BossUI = pcall(require, "mvtk.bosses.boss_ui")
+if not ok_boss_ui then BossUI = nil end
+
+local ok_util, Util = pcall(require, "mvtk.core.util")
+
+local UiConfig = {}
+if ok_util and Util and Util.require_config then
+    UiConfig = Util.require_config("developer.config.boss_ui", {}) or {}
+else
+    local ok_cfg, cfg = pcall(require, "developer.config.boss_ui")
+    if ok_cfg and type(cfg) == "table" then
+        UiConfig = cfg
+    end
+end
+
+local M = {}
+
+local DEFAULTS = {
+    bar_width = 600,
+    bar_height = 24,
+    health_bar_position = "top",
+    margin_top = 40,
+    margin_bottom = 40,
+    name_offset_y = 20,
+    phase_offset_y = 10,
+    bar_padding = 2,
+    color_name = { 1.0, 1.0, 0.7, 1.0 },
+    color_bg = { 0.1, 0.1, 0.1, 0.8 },
+    color_hp_text = { 1.0, 1.0, 1.0, 1.0 },
+    color_phase = { 1.0, 0.5, 0.5, 0.9 },
+    color_phase_flash = { 1.0, 1.0, 0.0, 1.0 },
+    health_fill_tiers = {
+        { above = 0.6, color = { 0.9, 0.2, 0.2, 1.0 } },
+        { above = 0.3, color = { 0.9, 0.5, 0.1, 1.0 } },
+        { above = 0.0, color = { 0.9, 0.9, 0.1, 1.0 } },
+    },
+    fade_in_duration = 0.3,
+    fade_out_duration = 1.0,
+    phase_flash_duration = 0.5,
+}
+
+local function cfg_number(key, fallback)
+    local value = tonumber(UiConfig[key])
+    return value or fallback
+end
+
+local function normalize_position(value, fallback)
+    local function normalize_one(candidate)
+        local raw_value = candidate
+        if ok_util and Util and Util.normalize_hash_string then
+            raw_value = Util.normalize_hash_string(candidate) or candidate
+        end
+        local raw = tostring(raw_value or ""):lower()
+        if raw == "top" or raw == "bottom" then
+            return raw
+        end
+        return nil
+    end
+
+    return normalize_one(value)
+        or normalize_one(fallback)
+        or DEFAULTS.health_bar_position
+end
+
+local function color_to_v4(rgba, fallback)
+    local src = type(rgba) == "table" and rgba or fallback
+    return vmath.vector4(
+        tonumber(src[1]) or fallback[1],
+        tonumber(src[2]) or fallback[2],
+        tonumber(src[3]) or fallback[3],
+        tonumber(src[4]) or fallback[4]
+    )
+end
+
+local function normalize_fill_tiers(tiers)
+    local source = type(tiers) == "table" and tiers or DEFAULTS.health_fill_tiers
+    local normalized = {}
+
+    for _, tier in ipairs(source) do
+        if type(tier) == "table" then
+            table.insert(normalized, {
+                above = tonumber(tier.above) or 0,
+                color = color_to_v4(tier.color, DEFAULTS.health_fill_tiers[#normalized + 1]
+                    and DEFAULTS.health_fill_tiers[#normalized + 1].color
+                    or DEFAULTS.health_fill_tiers[#DEFAULTS.health_fill_tiers].color),
+            })
+        end
+    end
+
+    if #normalized == 0 then
+        for _, tier in ipairs(DEFAULTS.health_fill_tiers) do
+            table.insert(normalized, {
+                above = tier.above,
+                color = color_to_v4(tier.color, tier.color),
+            })
+        end
+    end
+
+    return normalized
+end
+
+local STYLE = {
+    bar_width = cfg_number("bar_width", DEFAULTS.bar_width),
+    bar_height = cfg_number("bar_height", DEFAULTS.bar_height),
+    health_bar_position = normalize_position(UiConfig.health_bar_position or UiConfig.position, DEFAULTS.health_bar_position),
+    margin_top = cfg_number("margin_top", DEFAULTS.margin_top),
+    margin_bottom = cfg_number("margin_bottom", DEFAULTS.margin_bottom),
+    name_offset_y = cfg_number("name_offset_y", DEFAULTS.name_offset_y),
+    phase_offset_y = cfg_number("phase_offset_y", DEFAULTS.phase_offset_y),
+    bar_padding = cfg_number("bar_padding", DEFAULTS.bar_padding),
+    color_name = color_to_v4(UiConfig.color_name, DEFAULTS.color_name),
+    color_bg = color_to_v4(UiConfig.color_bg, DEFAULTS.color_bg),
+    color_hp_text = color_to_v4(UiConfig.color_hp_text, DEFAULTS.color_hp_text),
+    color_phase = color_to_v4(UiConfig.color_phase, DEFAULTS.color_phase),
+    color_phase_flash = color_to_v4(UiConfig.color_phase_flash, DEFAULTS.color_phase_flash),
+    health_fill_tiers = normalize_fill_tiers(UiConfig.health_fill_tiers),
+    fade_in_duration = cfg_number("fade_in_duration", DEFAULTS.fade_in_duration),
+    fade_out_duration = cfg_number("fade_out_duration", DEFAULTS.fade_out_duration),
+    phase_flash_duration = cfg_number("phase_flash_duration", DEFAULTS.phase_flash_duration),
+}
+
+local function with_alpha(color, alpha)
+    return vmath.vector4(color.x, color.y, color.z, alpha)
+end
+
+local function clamp01(value)
+    return math.max(0, math.min(1, tonumber(value) or 0))
+end
+
+local function get_fill_color(fraction)
+    for _, tier in ipairs(STYLE.health_fill_tiers) do
+        if fraction > tier.above then
+            return tier.color
+        end
+    end
+    return STYLE.health_fill_tiers[#STYLE.health_fill_tiers].color
+end
+
+local function get_bar_position(self)
+    local x = self._w / 2 - STYLE.bar_width / 2
+    if self.health_bar_position == "bottom" then
+        return vmath.vector3(x, STYLE.margin_bottom + STYLE.bar_height, 0)
+    end
+    return vmath.vector3(x, self._h - STYLE.margin_top, 0)
+end
+
+local function get_fill_position(self)
+    local bar_pos = get_bar_position(self)
+    return vmath.vector3(bar_pos.x + STYLE.bar_padding, bar_pos.y - STYLE.bar_padding, 0)
+end
+
+local function get_name_position(self)
+    local bar_pos = get_bar_position(self)
+    return vmath.vector3(self._w / 2, bar_pos.y + STYLE.name_offset_y, 0)
+end
+
+local function get_phase_position(self)
+    local bar_pos = get_bar_position(self)
+    return vmath.vector3(self._w / 2, bar_pos.y - (STYLE.bar_height + STYLE.phase_offset_y), 0)
+end
+
+local function get_hp_text_position(self)
+    local bar_pos = get_bar_position(self)
+    return vmath.vector3(self._w / 2, bar_pos.y - STYLE.bar_height / 2, 0)
+end
+
+local function get_fill_size(fraction)
+    local inner_width = math.max(0, STYLE.bar_width - STYLE.bar_padding * 2)
+    local inner_height = math.max(0, STYLE.bar_height - STYLE.bar_padding * 2)
+    return vmath.vector3(inner_width * fraction, inner_height, 0)
+end
+
+local function set_ui_enabled(self, enabled)
+    gui.set_enabled(self.boss_name, enabled)
+    gui.set_enabled(self.hp_bg, enabled)
+    gui.set_enabled(self.hp_fg, enabled)
+    gui.set_enabled(self.hp_text, enabled)
+    gui.set_enabled(self.phase_text, enabled)
+end
+
+local function update_phase_label(self)
+    if self.total_phases > 1 then
+        gui.set_text(self.phase_text, string.format("Boss phase %d / %d", self.current_phase, self.total_phases))
+    else
+        gui.set_text(self.phase_text, "")
+    end
+end
+
+local function refresh_bar_visuals(self)
+    local fraction = clamp01(self.hp / math.max(1, self.hp_max))
+    gui.set_size(self.hp_fg, get_fill_size(fraction))
+    gui.set_color(self.hp_fg, get_fill_color(fraction))
+    gui.set_text(self.hp_text, string.format("%d%% (%d / %d)", math.floor(fraction * 100), self.hp, self.hp_max))
+end
+
+local function apply_base_colors(self)
+    gui.set_color(self.boss_name, STYLE.color_name)
+    gui.set_color(self.hp_bg, STYLE.color_bg)
+    gui.set_color(self.hp_text, STYLE.color_hp_text)
+    gui.set_color(self.phase_text, STYLE.color_phase)
+    refresh_bar_visuals(self)
+end
+
+function init(self)
+    -- Register this GUI with the boss UI registry so boss_manager can find
+    -- it without a hardcoded URL. Works regardless of where the GUI lives.
+    self._boss_ui_url = msg.url()
+    if BossUI then
+        BossUI.register(self._boss_ui_url)
+    end
+
+    -- If the boss spawned before this GUI initialized, replay current HUD state.
+    local ok_mgr, BossManager = pcall(require, "mvtk.bosses.boss_manager")
+    if ok_mgr and BossManager and BossManager.refresh_boss_health_bars then
+        BossManager.refresh_boss_health_bars()
+    end
+
+    self._w, self._h = Viewport.design_size()
+    self.health_bar_position = STYLE.health_bar_position
+
+    self.boss_name = gui.new_text_node(get_name_position(self), "")
+    gui.set_pivot(self.boss_name, gui.PIVOT_N)
+
+    self.hp_bg = gui.new_box_node(get_bar_position(self), vmath.vector3(STYLE.bar_width, STYLE.bar_height, 0))
+    gui.set_pivot(self.hp_bg, gui.PIVOT_NW)
+
+    self.hp_fg = gui.new_box_node(get_fill_position(self), get_fill_size(1))
+    gui.set_pivot(self.hp_fg, gui.PIVOT_NW)
+
+    self.hp_text = gui.new_text_node(get_hp_text_position(self), "")
+    gui.set_pivot(self.hp_text, gui.PIVOT_CENTER)
+
+    self.phase_text = gui.new_text_node(get_phase_position(self), "")
+    gui.set_pivot(self.phase_text, gui.PIVOT_N)
+
+    self.visible = false
+    self.boss_id = nil
+    self.boss_name_str = ""
+    self.hp = 0
+    self.hp_max = 1
+    self.current_phase = 1
+    self.total_phases = 1
+
+    self.show = M.show
+    self.hide = M.hide
+    self.fade_out = M.fade_out
+    self.reposition = M.reposition
+
+    apply_base_colors(self)
+    self:hide()
+end
+
+function final(self)
+    if BossUI and self._boss_ui_url then
+        BossUI.unregister(self._boss_ui_url)
+    end
+end
+
+function update(self, dt)
+    local w, h = Viewport.design_size()
+    if w ~= self._w or h ~= self._h then
+        self._w, self._h = w, h
+        self:reposition()
+    end
+
+    if self.visible then
+        refresh_bar_visuals(self)
+    end
+end
+
+function on_message(self, message_id, message, sender)
+    if message_id == hash("show_boss_health") then
+        self.boss_id = message.boss_id
+        self.boss_name_str = message.boss_name or "BOSS"
+        self.hp = message.hp or 100
+        self.hp_max = message.hp_max or 100
+        self.current_phase = message.current_phase or 1
+        self.total_phases = message.total_phases or 1
+        self.health_bar_position = normalize_position(
+            message.health_bar_position or message.boss_health_bar_position or message.hud_position,
+            STYLE.health_bar_position
+        )
+
+        self:reposition()
+        gui.set_text(self.boss_name, self.boss_name_str)
+        update_phase_label(self)
+        apply_base_colors(self)
+        self:show()
+
+    elseif message_id == hash("update_boss_health") then
+        self.hp = message.hp or self.hp
+        self.hp_max = message.hp_max or self.hp_max
+
+    elseif message_id == hash("update_boss_phase") then
+        self.current_phase = message.current_phase or self.current_phase
+        self.total_phases = message.total_phases or self.total_phases
+        update_phase_label(self)
+
+        if message.phase_changed then
+            gui.set_color(self.phase_text, STYLE.color_phase_flash)
+            gui.animate(
+                self.phase_text,
+                gui.PROP_COLOR,
+                STYLE.color_phase,
+                gui.EASING_INOUTQUAD,
+                STYLE.phase_flash_duration
+            )
+        end
+
+    elseif message_id == hash("hide_boss_health") then
+        self:hide()
+
+    elseif message_id == hash("boss_defeated") then
+        self:fade_out()
+    end
+end
+
+function M.show(self)
+    self.visible = true
+    set_ui_enabled(self, true)
+    apply_base_colors(self)
+    gui.set_color(self.boss_name, with_alpha(STYLE.color_name, 0))
+    gui.animate(
+        self.boss_name,
+        gui.PROP_COLOR,
+        STYLE.color_name,
+        gui.EASING_INOUTQUAD,
+        STYLE.fade_in_duration
+    )
+end
+
+function M.hide(self)
+    self.visible = false
+    set_ui_enabled(self, false)
+end
+
+function M.fade_out(self)
+    gui.animate(
+        self.boss_name,
+        gui.PROP_COLOR,
+        with_alpha(STYLE.color_name, 0),
+        gui.EASING_INOUTQUAD,
+        STYLE.fade_out_duration,
+        0,
+        function()
+            self:hide()
+        end
+    )
+    gui.animate(self.hp_bg, gui.PROP_COLOR, with_alpha(STYLE.color_bg, 0), gui.EASING_INOUTQUAD, STYLE.fade_out_duration)
+    gui.animate(self.hp_fg, gui.PROP_COLOR, with_alpha(get_fill_color(clamp01(self.hp / math.max(1, self.hp_max))), 0), gui.EASING_INOUTQUAD, STYLE.fade_out_duration)
+    gui.animate(self.hp_text, gui.PROP_COLOR, with_alpha(STYLE.color_hp_text, 0), gui.EASING_INOUTQUAD, STYLE.fade_out_duration)
+    gui.animate(self.phase_text, gui.PROP_COLOR, with_alpha(STYLE.color_phase, 0), gui.EASING_INOUTQUAD, STYLE.fade_out_duration)
+end
+
+function M.reposition(self)
+    if self.boss_name then
+        gui.set_position(self.boss_name, get_name_position(self))
+    end
+    if self.hp_bg then
+        gui.set_position(self.hp_bg, get_bar_position(self))
+    end
+    if self.hp_fg then
+        gui.set_position(self.hp_fg, get_fill_position(self))
+    end
+    if self.hp_text then
+        gui.set_position(self.hp_text, get_hp_text_position(self))
+    end
+    if self.phase_text then
+        gui.set_position(self.phase_text, get_phase_position(self))
+    end
+end
+
+return M

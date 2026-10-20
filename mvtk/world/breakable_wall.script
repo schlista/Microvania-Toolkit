@@ -1,0 +1,586 @@
+-- mvtk/world/breakable_wall.script
+-- Breakable wall component for destructible walls/floors
+-- Spawned from Tiled objects or layer tiles
+
+local CollectibleManager = require "mvtk.collectibles.collectible_manager"
+local Flags = require "mvtk.core.flags"
+local SurfaceClassifier = require "mvtk.core.surface_classifier"
+local SafeSound = require "mvtk.audio.safe_sound"
+local Util = require "mvtk.core.util"
+local Debug = require "developer.config.debug_config"
+local RoomManager = nil
+local TileFrame = nil
+
+-- Build hash-to-string reverse lookup for collectible types
+local collectible_types = nil
+local collectible_hash_to_string = {}
+do
+    local ok, types = pcall(require, "developer.config.collectible_types")
+    if ok and types then
+        collectible_types = types
+        for key, _ in pairs(collectible_types) do
+            collectible_hash_to_string[hash(key)] = key
+        end
+    end
+end
+
+-- Properties - authored identifiers and names are text
+go.property("wall_id", "")
+go.property("wall_type", "cracked")           -- cracked, bomb_only, subtle, invisible
+go.property("required_ability", "")           -- e.g. "bomb", "charge_attack"
+go.property("health", 3)                            -- hits to destroy
+go.property("room_id", "")
+go.property("reveals_secret", "")             -- secret area text ID, or ""
+go.property("drop_collectible", "")           -- collectible type hash to spawn on break
+go.property("swap_tiles_on_break", true)            -- when true, update wall tiles to broken variants
+go.property("wall_layer", "solid")            -- source layer to clear/replace
+go.property("broken_wall_layer", "broken_wall") -- pre-authored broken tiles to copy from
+go.property("swap_width", 64)                       -- world-space width for tile swap area
+go.property("swap_height", 64)                      -- world-space height for tile swap area
+go.property("debug_tile_swap", false)               -- verbose logging for tile swap troubleshooting
+go.property("particle_effect_name", "hit_impact") -- VFX played on break (empty = use prefab default)
+go.property("sound_break", "wall_break")      -- SFX played on break (empty = use prefab default)
+go.property("show_sprite", true)                    -- false when the Tiled layer owns the visible art
+
+local EMPTY_HASH = hash("")
+
+local function wall_log(msg)
+    if (Debug.global and Debug.global.enable) or
+        (Debug.rooms and Debug.rooms.loading) then
+        print("[BREAKABLE_WALL]", msg)
+    end
+end
+
+local function wall_dbg(self, msg)
+    if self and self.debug_tile_swap then
+        wall_log(msg)
+    end
+end
+
+-- Keep authored text readable in logs; engine hashes may still use hex.
+local function log_id(value)
+    if type(value) == "string" then return value end
+    if value == nil or value == EMPTY_HASH then return "" end
+    return Util.hash_key_hex(value) or ""
+end
+
+-- Resolve collectible type hash to string key
+local function resolve_collectible_type(type_hash)
+    if type(type_hash) == "string" then return type_hash ~= "" and type_hash or nil end
+    return collectible_hash_to_string[type_hash]
+end
+
+local function get_wall_position()
+    local ok, world_pos = pcall(go.get_world_position)
+    if ok and world_pos then
+        return world_pos
+    end
+    return go.get_position()
+end
+
+local normalize_hash_string = Util.normalize_hash_string
+
+local function get_room_manager()
+    if RoomManager == nil then
+        local ok, mod = pcall(require, "mvtk.map.streaming.room_manager")
+        RoomManager = ok and mod or false
+    end
+    return RoomManager or nil
+end
+
+local function get_tile_frame()
+    if TileFrame == nil then
+        local ok, mod = pcall(require, "mvtk.rooms.tile_frame")
+        TileFrame = ok and mod or false
+    end
+    return TileFrame or nil
+end
+
+-- Try to find the room tilemap URL by probing common GO/component name patterns.
+-- Works for both directly-loaded collections and room_manager-proxied rooms.
+local function discover_tilemap_url()
+    local go_names   = { "level", "tilemap", "tm", "map" }
+    local comp_names = { "tilemap", "tm", "map", "level" }
+    for _, go_name in ipairs(go_names) do
+        local ok_id, go_id = pcall(go.get_id, go_name)
+        if not ok_id then
+            -- try with leading slash
+            ok_id, go_id = pcall(go.get_id, "/" .. go_name)
+        end
+        if ok_id and go_id then
+            for _, comp in ipairs(comp_names) do
+                local url = msg.url(nil, go_id, hash(comp))
+                local ok_b = pcall(tilemap.get_bounds, url)
+                if ok_b then
+                    local pos = vmath.vector3(0, 0, 0)
+                    local ok_p, wp = pcall(go.get_world_position, go_id)
+                    if ok_p and wp then pos = wp end
+                    wall_log(string.format("Discovered tilemap: %s (GO=%s comp=%s)", tostring(url), go_name, comp))
+                    return url, pos
+                end
+            end
+        end
+    end
+    return nil, nil
+end
+
+local function resolve_tile_bounds(frame, pos, width, height, tile_frame)
+    if not (frame and pos and width and height and tile_frame) then
+        return nil
+    end
+
+    local half_w = math.max(width * 0.5, 0.5)
+    local half_h = math.max(height * 0.5, 0.5)
+    local eps_x = math.min(0.1, half_w * 0.5)
+    local eps_y = math.min(0.1, half_h * 0.5)
+
+    local corners = {
+        { pos.x - half_w + eps_x, pos.y - half_h + eps_y },
+        { pos.x - half_w + eps_x, pos.y + half_h - eps_y },
+        { pos.x + half_w - eps_x, pos.y - half_h + eps_y },
+        { pos.x + half_w - eps_x, pos.y + half_h - eps_y },
+    }
+
+    local min_tx, max_tx, min_ty, max_ty
+    local valid = 0
+    for _, corner in ipairs(corners) do
+        local tx, ty = tile_frame.world_to_tiles(frame, corner[1], corner[2])
+        if tx and ty then
+            valid = valid + 1
+            min_tx = min_tx and math.min(min_tx, tx) or tx
+            max_tx = max_tx and math.max(max_tx, tx) or tx
+            min_ty = min_ty and math.min(min_ty, ty) or ty
+            max_ty = max_ty and math.max(max_ty, ty) or ty
+        end
+    end
+
+    -- Fallback: if all corners missed due edge clamping, use center tile.
+    if valid == 0 then
+        local cx, cy = tile_frame.world_to_tiles(frame, pos.x, pos.y)
+        if cx and cy then
+            min_tx, max_tx = cx, cx
+            min_ty, max_ty = cy, cy
+        end
+    end
+
+    if not min_tx or not max_tx or not min_ty or not max_ty then
+        return nil
+    end
+
+    min_tx = math.max(frame.min_tx, min_tx)
+    max_tx = math.min(frame.max_tx, max_tx)
+    min_ty = math.max(frame.min_ty, min_ty)
+    max_ty = math.min(frame.max_ty, max_ty)
+
+    if min_tx > max_tx or min_ty > max_ty then
+        return nil
+    end
+
+    return min_tx, max_tx, min_ty, max_ty
+end
+
+local function swap_wall_tiles(self)
+    if not self.swap_tiles_on_break or self.tiles_swapped then
+        return false
+    end
+    if self.wall_layer == "" then
+        return false
+    end
+
+    local tile_frame = get_tile_frame()
+    if not tile_frame then
+        wall_log(string.format("Wall %s tile swap skipped: tile_frame unavailable", self.wall_id_key))
+        return false
+    end
+
+    -- Resolve tilemap URL: prefer cached (from init), then room_manager, then bail.
+    local tilemap_url = self.cached_tilemap_url
+    local tilemap_pos = self.cached_tilemap_pos
+    if not tilemap_url then
+        local room_manager = get_room_manager()
+        if room_manager and room_manager.get_tilemap_url then
+            local room_id = self.room_id_str
+            if (not room_id or room_id == "") and room_manager.get_current_room then
+                room_id = room_manager.get_current_room()
+            end
+            if room_id and room_id ~= "" then
+                tilemap_url, tilemap_pos = room_manager.get_tilemap_url(room_id)
+            end
+        end
+    end
+    if not tilemap_url then
+        wall_log(string.format("Wall %s tile swap skipped: could not find tilemap", self.wall_id_key))
+        return false
+    end
+    tilemap_pos = tilemap_pos or vmath.vector3(0, 0, 0)
+
+    local frame = tile_frame.build(tilemap_url, tilemap_pos)
+    if not frame then
+        wall_log(string.format("Wall %s tile swap skipped: tile_frame.build failed", self.wall_id_key))
+        return false
+    end
+
+    if self.debug_tile_swap then
+        -- Layer list from the Create Rooms manifest (no tilemap.get_layers in Defold).
+        local ok_tl, TilemapLayers = pcall(require, "mvtk.rooms.tilemap_layers")
+        local layers = ok_tl and TilemapLayers and TilemapLayers.for_url(tilemap_url) or nil
+        wall_log(string.format("Wall %s tilemap layers: %s", self.wall_id_key,
+            type(layers) == "table" and table.concat(layers, ", ") or "(not in manifest; re-run Prepare & Check)"))
+    end
+
+    local resolved_wall_layer = SurfaceClassifier.resolve_first_existing_layer(tilemap_url, {
+        self.wall_layer,
+        SurfaceClassifier.GROUPS.SOLID,
+        SurfaceClassifier.GROUPS.WALL,
+        SurfaceClassifier.GROUPS.GROUND,
+    }, self.wall_layer)
+    -- Layer resolution may return an engine hash; keep the authored property text.
+    local wall_layer = resolved_wall_layer or self.wall_layer
+
+    local wall_layer_exists = tile_frame.layer_exists(frame, wall_layer)
+    if not wall_layer_exists then
+        local ok_probe = pcall(tilemap.get_tile, tilemap_url, wall_layer, frame.min_tx, frame.min_ty)
+        if ok_probe then
+            wall_layer_exists = true
+            wall_log(string.format("Wall %s wall_layer existence fallback probe succeeded for '%s'", self.wall_id_key, log_id(wall_layer)))
+        end
+    end
+    if not wall_layer_exists then
+        wall_log(string.format("Wall %s tile swap skipped: wall_layer '%s' not found in tilemap", self.wall_id_key, log_id(wall_layer)))
+        return false
+    end
+
+    local swap_width = tonumber(self.swap_width) or 0
+    local swap_height = tonumber(self.swap_height) or 0
+    if swap_width <= 0 then swap_width = frame.tile_w end
+    if swap_height <= 0 then swap_height = frame.tile_h end
+
+    local wall_pos = get_wall_position()
+    wall_dbg(self, string.format(
+        "Wall %s swap debug: wall_pos=(%.2f,%.2f) swap_px=(%.1f,%.1f) tilemap_url=%s tilemap_pos=(%.2f,%.2f) frame=min(%d,%d) max(%d,%d) tile=(%d,%d)",
+        self.wall_id_key,
+        wall_pos.x, wall_pos.y,
+        swap_width, swap_height,
+        tostring(tilemap_url),
+        tilemap_pos.x, tilemap_pos.y,
+        frame.min_tx, frame.min_ty, frame.max_tx, frame.max_ty,
+        frame.tile_w, frame.tile_h
+    ))
+
+    local min_tx, max_tx, min_ty, max_ty = resolve_tile_bounds(
+        frame,
+        wall_pos,
+        swap_width,
+        swap_height,
+        tile_frame
+    )
+    if not min_tx then
+        wall_log(string.format("Wall %s tile swap skipped: resolve_tile_bounds returned nil", self.wall_id_key))
+        return false
+    end
+
+    wall_log(string.format("Wall %s swapping tiles at x=%d-%d y=%d-%d", self.wall_id_key, min_tx, max_tx, min_ty, max_ty))
+
+    local has_broken_layer = false
+    if self.broken_wall_layer ~= "" then
+        has_broken_layer = tile_frame.layer_exists(frame, self.broken_wall_layer)
+        if not has_broken_layer then
+            local ok_probe = pcall(tilemap.get_tile, tilemap_url, self.broken_wall_layer, min_tx, min_ty)
+            if ok_probe then
+                has_broken_layer = true
+                wall_log(string.format("Wall %s broken_wall_layer existence fallback probe succeeded for '%s'", self.wall_id_key, log_id(self.broken_wall_layer)))
+            end
+        end
+    end
+    wall_dbg(self, string.format(
+        "Wall %s layer status: wall_layer=%s exists=%s broken_wall_layer=%s exists=%s",
+        self.wall_id_key,
+        log_id(wall_layer), tostring(tile_frame.layer_exists(frame, wall_layer)),
+        log_id(self.broken_wall_layer), tostring(has_broken_layer)
+    ))
+    if not has_broken_layer then
+        wall_log(string.format("Wall %s note: broken_wall_layer '%s' is missing or empty; only clearing wall layer", self.wall_id_key, log_id(self.broken_wall_layer)))
+    end
+
+    -- Ensure replacement layer is visible if authored hidden in Tiled.
+    local ok_vis_wall, err_vis_wall = pcall(tilemap.set_visible, tilemap_url, wall_layer, true)
+    if not ok_vis_wall then
+        wall_log(string.format("Wall %s set_visible failed for wall_layer '%s': %s", self.wall_id_key, log_id(wall_layer), tostring(err_vis_wall)))
+    end
+    if has_broken_layer then
+        local ok_vis_broken, err_vis_broken = pcall(tilemap.set_visible, tilemap_url, self.broken_wall_layer, true)
+        if not ok_vis_broken then
+            wall_log(string.format("Wall %s set_visible failed for broken_wall_layer '%s': %s", self.wall_id_key, log_id(self.broken_wall_layer), tostring(err_vis_broken)))
+        end
+    end
+
+    local cells = 0
+    local samples_logged = 0
+    local max_samples = 24
+    local wall_nonzero_before = 0
+    local wall_zero_after = 0
+    local wall_get_fail = 0
+    local wall_set_fail = 0
+    local broken_nonzero_before = 0
+    local broken_nonzero_after = 0
+    local broken_get_fail = 0
+    local broken_set_fail = 0
+    local broken_set_attempts = 0
+
+    for ty = min_ty, max_ty do
+        for tx = min_tx, max_tx do
+            local wall_before = 0
+            local broken_before = 0
+            local wall_after = 0
+            local broken_after = 0
+
+            local ok_wall_before, wall_before_result = pcall(tilemap.get_tile, tilemap_url, wall_layer, tx, ty)
+            if ok_wall_before then
+                wall_before = wall_before_result or 0
+                if wall_before ~= 0 then
+                    wall_nonzero_before = wall_nonzero_before + 1
+                end
+            else
+                wall_get_fail = wall_get_fail + 1
+                wall_log(string.format("Wall %s get_tile failed on wall_layer at (%d,%d): %s", self.wall_id_key, tx, ty, tostring(wall_before_result)))
+            end
+
+            if has_broken_layer then
+                local ok_broken_before, broken_before_result = pcall(tilemap.get_tile, tilemap_url, self.broken_wall_layer, tx, ty)
+                if ok_broken_before then
+                    broken_before = broken_before_result or 0
+                    if broken_before ~= 0 then
+                        broken_nonzero_before = broken_nonzero_before + 1
+                    end
+                else
+                    broken_get_fail = broken_get_fail + 1
+                    wall_log(string.format("Wall %s get_tile failed on broken_wall_layer at (%d,%d): %s", self.wall_id_key, tx, ty, tostring(broken_before_result)))
+                end
+            end
+
+            -- Turn off: clear the wall layer tile only when it actually has
+            -- content. set_tile broadcasts a tile-grid hull update, so a
+            -- no-op write can still produce collision-system noise.
+            if not ok_wall_before or wall_before ~= 0 then
+                local ok_set_wall, wall_set_err = pcall(tilemap.set_tile, tilemap_url, wall_layer, tx, ty, 0)
+                if not ok_set_wall then
+                    wall_set_fail = wall_set_fail + 1
+                    wall_log(string.format("Wall %s set_tile failed clearing wall_layer at (%d,%d): %s", self.wall_id_key, tx, ty, tostring(wall_set_err)))
+                end
+            end
+
+            local ok_wall_after, wall_after_result = pcall(tilemap.get_tile, tilemap_url, wall_layer, tx, ty)
+            if ok_wall_after then
+                wall_after = wall_after_result or 0
+                if wall_after == 0 then
+                    wall_zero_after = wall_zero_after + 1
+                end
+            else
+                wall_get_fail = wall_get_fail + 1
+                wall_log(string.format("Wall %s get_tile failed verifying wall_layer at (%d,%d): %s", self.wall_id_key, tx, ty, tostring(wall_after_result)))
+            end
+
+            -- The broken layer is pre-painted in Tiled and made visible above.
+            -- Re-writing the value we just read is a no-op that still broadcasts
+            -- a hull update, so only verify it here.
+            if has_broken_layer then
+                local ok_broken_after, broken_after_result = pcall(tilemap.get_tile, tilemap_url, self.broken_wall_layer, tx, ty)
+                if ok_broken_after then
+                    broken_after = broken_after_result or 0
+                    if broken_after ~= 0 then
+                        broken_nonzero_after = broken_nonzero_after + 1
+                    end
+                else
+                    broken_get_fail = broken_get_fail + 1
+                    wall_log(string.format("Wall %s get_tile failed verifying broken_wall_layer at (%d,%d): %s", self.wall_id_key, tx, ty, tostring(broken_after_result)))
+                end
+            end
+
+            if self.debug_tile_swap and samples_logged < max_samples then
+                wall_log(string.format(
+                    "Wall %s tile (%d,%d): wall %d -> %d | broken %d -> %d",
+                    self.wall_id_key,
+                    tx, ty,
+                    wall_before, wall_after,
+                    broken_before, broken_after
+                ))
+                samples_logged = samples_logged + 1
+            end
+
+            cells = cells + 1
+        end
+    end
+
+    self.tiles_swapped = true
+    wall_log(string.format(
+        "Wall %s swap summary: cells=%d wall_nonzero_before=%d wall_zero_after=%d wall_get_fail=%d wall_set_fail=%d broken_nonzero_before=%d broken_set_attempts=%d broken_nonzero_after=%d broken_get_fail=%d broken_set_fail=%d",
+        self.wall_id_key,
+        cells,
+        wall_nonzero_before,
+        wall_zero_after,
+        wall_get_fail,
+        wall_set_fail,
+        broken_nonzero_before,
+        broken_set_attempts,
+        broken_nonzero_after,
+        broken_get_fail,
+        broken_set_fail
+    ))
+    return true
+end
+
+-----------------------------------------------------------
+-- Local Helper Functions
+-----------------------------------------------------------
+
+local function disable_wall_collision()
+    -- Keep the effect owner alive for its cleanup delay without leaving an
+    -- invisible blocker. Recorded component state also survives room enables.
+    Util.post_component_enabled("#collision", false)
+    Util.post_component_enabled("#attack_trigger", false)
+end
+
+local function destroy_wall(self)
+    if self.destroyed then return end
+    self.destroyed = true
+    disable_wall_collision()
+    require("mvtk.tiled.object_presentation").emit("destroyed", nil, true)
+
+    wall_log(string.format("Wall %s destroyed!", self.wall_id_key))
+
+    -- Set persistent flag using hex key
+    local flag_name = "wall_broken_" .. self.wall_id_key
+    Flags.set(flag_name, true)
+
+    -- Replace wall tiles with broken-wall variants (if configured)
+    swap_wall_tiles(self)
+
+    -- Play break effects using authored IDs, fall back to prefab components
+    if self.particle_effect_name ~= "" then
+        pcall(msg.post, "main:/main_go#script", hash("play_effect"), { effect_id = self.particle_effect_name, position = go.get_world_position() })
+    end
+    pcall(particlefx.play, "#break_effect")
+    if self.sound_break ~= "" then
+        pcall(msg.post, "main:/main_go#script", hash("play_sound"), { sound_id = self.sound_break })
+    end
+    SafeSound.play("#break_sound")
+
+    -- Spawn collectible if configured (use resolved string key)
+    if self.drop_collectible_key then
+        local pos = get_wall_position()
+        CollectibleManager.spawn_collectible(self.drop_collectible_key, pos, {
+            room_id = self.room_id,
+            from_breakable = true
+        })
+        wall_log(string.format("Spawned drop: %s", self.drop_collectible_key))
+    end
+
+    -- Notify minimap if this reveals a secret
+    if self.reveals_secret ~= "" then
+        pcall(msg.post, "main:/minimap_gui#minimap", "secret_revealed", {
+            secret_id = self.reveals_secret,
+            wall_id = self.wall_id,
+            position = get_wall_position()
+        })
+        -- Tell the linked secret object itself (it registers with TriggerBus
+        -- under its secret_id); the minimap notice alone never revealed it.
+        pcall(require("mvtk.world.trigger_bus").emit, self.reveals_secret, hash("reveal_secret"), {
+            wall_id = self.wall_id,
+        })
+        wall_log("Secret revealed: " .. log_id(self.reveals_secret))
+    end
+
+    -- Short delay then delete
+    timer.delay(0.3, false, function()
+        go.delete()
+    end)
+end
+
+-----------------------------------------------------------
+-- Lifecycle Functions
+-----------------------------------------------------------
+
+function init(self)
+    if not self.show_sprite then
+        Util.set_component_enabled("#sprite", false)
+    end
+    if self.required_ability == "none" then
+        self.required_ability = ""
+    end
+
+    -- Wall broken flags retain their hexadecimal authored identity.
+    self.wall_id_key = Util.hash_key_hex(self.wall_id) or ""
+    -- Resolve drop_collectible hash to string key for spawning
+    self.drop_collectible_key = resolve_collectible_type(self.drop_collectible)
+    self.room_id_str = normalize_hash_string(self.room_id)
+    self.current_health = self.health or 3
+    self.max_health = self.current_health
+    self.tiles_swapped = false
+
+    -- Discover and cache the tilemap URL at startup so swap_wall_tiles
+    -- works even when the room is not tracked by room_manager (e.g. direct test play).
+    self.cached_tilemap_url, self.cached_tilemap_pos = discover_tilemap_url()
+
+    -- Check if already broken (persistent) using hex key
+    local flag_name = "wall_broken_" .. self.wall_id_key
+    if Flags.has(flag_name) then
+        self.destroyed = true
+        disable_wall_collision()
+        -- Authored artwork is a separate baked gameobject. Restore its removed
+        -- state even when its presentation component initializes after this one.
+        require("mvtk.tiled.object_presentation").restore(nil, true)
+        swap_wall_tiles(self)
+        wall_log(string.format("Wall %s already broken, deleting", self.wall_id_key))
+        go.delete()
+        return
+    end
+
+    self.destroyed = false
+
+    wall_log(string.format("Breakable wall initialized: %s (type: %s, health: %d)",
+        self.wall_id_key, log_id(self.wall_type), self.current_health))
+end
+
+function on_message(self, message_id, message, sender)
+    if self.destroyed then return end
+
+    if message_id == hash("damage") or message_id == hash("attack_hit") or message_id == hash("mvtk_apply_damage") then
+        -- Remap mvtk_apply_damage fields to the common 'damage' field
+        if message_id == hash("mvtk_apply_damage") and message.amount and not message.damage then
+            message.damage = message.amount
+        end
+        -- Authored attack types and ability requirements use text ids.
+        if self.required_ability ~= "" then
+            local attack_type = message.attack_type or message.damage_type or ""
+            local matches = attack_type == self.required_ability
+                or (type(attack_type) == "userdata" and attack_type == hash(self.required_ability))
+            if attack_type ~= "" and attack_type ~= EMPTY_HASH and not matches then
+                wall_log(string.format("Wall %s requires %s ability, got %s",
+                    self.wall_id_key, log_id(self.required_ability), log_id(attack_type)))
+                return
+            end
+        end
+
+        -- Take damage
+        local damage = message.damage or message.amount or 1
+        if damage <= 0 then
+            return
+        end
+        self.current_health = self.current_health - damage
+
+        wall_log(string.format("Wall %s hit! Health: %d", self.wall_id_key, self.current_health))
+
+        -- Visual: the wall_layer tiles are the visual â€” no sprite needed.
+        -- Developers can add optional #hit_sound component to the GO for audio feedback.
+        SafeSound.play("#hit_sound")
+
+        -- Check if destroyed
+        if self.current_health <= 0 then
+            destroy_wall(self)
+        end
+
+    elseif message_id == hash("explosion") then
+        -- Instant destroy from explosion (for bomb_only walls too)
+        destroy_wall(self)
+    end
+end

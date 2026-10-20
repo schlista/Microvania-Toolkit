@@ -1,0 +1,5 @@
+animations { id: "invincibility" images { image: "/developer/assets/atlas/collectibles/powerup_invincibility.png" } playback: PLAYBACK_NONE fps: 1 }
+animations { id: "speed" images { image: "/developer/assets/atlas/collectibles/powerup_speed.png" } playback: PLAYBACK_NONE fps: 1 }
+margin: 2
+extrude_borders: 0
+inner_padding: 0

@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<template>
+ <object name="Conveyor" type="conveyor" width="128" height="16">
+  <properties>
+   <property name="conveyor_id" type="string" value=""/>
+   <property name="direction" propertytype="directions" value="right"/>
+   <property name="motion" type="class" propertytype="conveyor_motion">
+    <properties>
+     <property name="speed" type="float" value="100"/>
+     <property name="enabled" type="bool" value="true"/>
+     <property name="animation_speed" type="float" value="1.0"/>
+    </properties>
+   </property>
+   <property name="affected_objects" type="class" propertytype="conveyor_affected_objects">
+    <properties>
+     <property name="affects_enemies" type="bool" value="true"/>
+     <property name="affects_items" type="bool" value="false"/>
+    </properties>
+   </property>
+   <property name="mvtk_template_version" type="string" value="2.7.0"/>
+  </properties>
+ </object>
+</template>

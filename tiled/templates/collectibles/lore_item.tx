@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<template>
+ <object name="Lore Item" type="lore_item" width="32" height="32">
+  <properties>
+   <property name="lore_id" type="string" value=""/>
+   <property name="category" propertytype="lore_categories" value="notes"/>
+   <property name="content" type="class" propertytype="lore_item_content">
+    <properties>
+     <property name="title" type="string" value=""/>
+     <property name="text" type="string" value=""/>
+    </properties>
+   </property>
+   <property name="interaction" type="class" propertytype="lore_item_interaction">
+    <properties>
+     <property name="prompt_text" type="string" value="Read"/>
+     <property name="range" type="float" value="96"/>
+     <property name="auto_pickup" type="bool" value="false"/>
+    </properties>
+   </property>
+   <property name="conditions_and_persistence" type="class" propertytype="lore_item_conditions_and_persistence">
+    <properties>
+     <property name="destroyable" type="bool" value="false"/>
+     <property name="trigger_once" type="bool" value="false"/>
+     <property name="requires_flag" type="string" value=""/>
+     <property name="unlock_flag" type="string" value=""/>
+    </properties>
+   </property>
+   <property name="feedback_and_visuals" type="class" propertytype="lore_item_feedback_and_visuals">
+    <properties>
+     <property name="sound_id" propertytype="sound_effects" value="none"/>
+    </properties>
+   </property>
+   <property name="art_item" type="string" value=""/>
+   <property name="art_feedback" type="class" propertytype="lore_item_art_feedback">
+    <properties>
+     <property name="consume_effect" type="string" propertytype="particle_effects" value="none"/>
+     <property name="interact_effect" type="string" propertytype="particle_effects" value="none"/>
+     <property name="effect_offset_x" type="float" value="0"/>
+     <property name="effect_offset_y" type="float" value="0"/>
+     <property name="effect_scale" type="float" value="1"/>
+     <property name="effect_cooldown" type="float" value="0"/>
+    </properties>
+   </property>
+   <property name="mvtk_template_version" type="string" value="2.7.0"/>
+  </properties>
+ </object>
+</template>

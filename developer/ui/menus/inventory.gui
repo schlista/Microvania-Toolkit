@@ -1,0 +1,187 @@
+script: "/developer/ui/menus/inventory.gui_script"
+fonts {
+  name: "main"
+  font: "/builtins/fonts/default.font"
+}
+nodes {
+  position {
+    x: 960.0
+    y: 540.0
+  }
+  size {
+    x: 1920.0
+    y: 1080.0
+  }
+  color {
+    x: 0.0
+    y: 0.0
+    z: 0.0
+  }
+  type: TYPE_BOX
+  id: "backdrop"
+  adjust_mode: ADJUST_MODE_FIT
+  alpha: 0.85
+}
+nodes {
+  position {
+    x: 960.0
+    y: 540.0
+  }
+  size {
+    x: 700.0
+    y: 600.0
+  }
+  color {
+    x: 0.08
+    y: 0.08
+    z: 0.12
+  }
+  type: TYPE_BOX
+  id: "root"
+  inherit_alpha: true
+  alpha: 0.94
+}
+nodes {
+  position {
+    x: -120.0
+    y: 265.0
+  }
+  size {
+    x: 300.0
+    y: 40.0
+  }
+  color {
+    x: 0.50
+    y: 0.75
+    z: 1.0
+  }
+  type: TYPE_TEXT
+  text: "Inventory"
+  font: "main"
+  id: "title"
+  pivot: PIVOT_W
+  parent: "root"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    x: 280.0
+    y: 265.0
+  }
+  size {
+    x: 200.0
+    y: 30.0
+  }
+  color {
+    x: 0.88
+    y: 0.88
+    z: 0.90
+  }
+  type: TYPE_TEXT
+  text: "$ 0"
+  font: "main"
+  id: "cash"
+  pivot: PIVOT_E
+  parent: "root"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    y: 230.0
+  }
+  size {
+    x: 640.0
+    y: 2.0
+  }
+  color {
+    x: 0.50
+    y: 0.75
+    z: 1.0
+  }
+  type: TYPE_BOX
+  id: "separator"
+  parent: "root"
+  inherit_alpha: true
+  alpha: 0.4
+}
+nodes {
+  position {
+    y: -260.0
+  }
+  size {
+    x: 600.0
+    y: 25.0
+  }
+  color {
+    x: 0.55
+    y: 0.55
+    z: 0.62
+  }
+  type: TYPE_TEXT
+  text: "Up/Down: Navigate | B: Close"
+  font: "main"
+  id: "hint"
+  parent: "root"
+  inherit_alpha: true
+  alpha: 0.85
+}
+nodes {
+  position {
+    y: 200.0
+  }
+  size {
+    x: 640.0
+    y: 420.0
+  }
+  type: TYPE_BOX
+  id: "content_area"
+  parent: "root"
+  inherit_alpha: true
+  alpha: 0.0
+}
+nodes {
+  position {
+    x: -200.0
+  }
+  size {
+    x: 300.0
+    y: 28.0
+  }
+  color {
+    x: 0.88
+    y: 0.88
+    z: 0.90
+  }
+  type: TYPE_TEXT
+  text: "Item Name"
+  font: "main"
+  id: "row_label"
+  pivot: PIVOT_W
+  parent: "content_area"
+  inherit_alpha: true
+  enabled: false
+}
+nodes {
+  position {
+    x: 200.0
+  }
+  size {
+    x: 100.0
+    y: 28.0
+  }
+  color {
+    x: 0.88
+    y: 0.88
+    z: 0.90
+  }
+  type: TYPE_TEXT
+  text: "x1"
+  font: "main"
+  id: "row_val"
+  pivot: PIVOT_E
+  parent: "content_area"
+  inherit_alpha: true
+  enabled: false
+}
+material: "/builtins/materials/gui.material"
+adjust_reference: ADJUST_REFERENCE_PARENT

@@ -1,0 +1,24 @@
+type: COLLISION_OBJECT_TYPE_KINEMATIC
+mass: 0.0
+friction: 0.1
+restitution: 0.0
+group: "player"
+mask: "surface"
+mask: "world"
+mask: "solid"
+mask: "platform"
+embedded_collision_shape {
+  shapes {
+    shape_type: TYPE_BOX
+    position {
+    }
+    rotation {
+    }
+    index: 0
+    count: 3
+  }
+  data: 23.22579
+  data: 15.48386
+  data: 19.354825
+}
+locked_rotation: true

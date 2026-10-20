@@ -1,0 +1,357 @@
+-- mvtk/prefabs/health_station.script
+-- ============================================================================
+-- HEALTH STATION (Healing Fountain)
+-- ============================================================================
+-- An interactable station that restores player health.
+-- Can be unlimited use, limited uses, or one-time with recharge.
+--
+-- TILED PROPERTIES:
+--   station_id     - Unique identifier
+--   heal_amount    - Health to restore (0 = full heal)
+--   heal_percent   - Percentage of max health to restore (0.0-1.0)
+--   uses           - Number of uses (0 = unlimited)
+--   recharge_time  - Seconds before can be used again (0 = one-time)
+--   cost_currency  - Currency cost to use
+--   require_interact - If true requires button press, false auto-triggers on touch
+--   requires_flag  - Flag required to use
+--   sound_id       - Sound to play when used
+--   particle_id    - Particle effect when used
+--
+-- CONFIGURATION:
+--   All values come from Tiled properties.
+--   DO NOT hardcode values here.
+-- ============================================================================
+
+go.property("station_id", "")
+go.property("label", "Heal")
+go.property("range", 96)
+go.property("heal_amount", 0)
+go.property("heal_percent", 0)
+go.property("uses", 0)
+go.property("recharge_time", 0)
+go.property("cost_currency", 0)
+go.property("require_interact", true)
+go.property("requires_flag", "")
+go.property("sound_id", "heal")
+go.property("particle_id", "heal_sparkle")
+
+local C = require "mvtk.core.constants"
+local PU = require "mvtk.prefabs.prefab_utils"
+local Util = require "mvtk.core.util"
+
+local function play_sprite_animation(animation)
+    local states = { depleted="depleted", used="used", health_station_idle="default", energy_station_idle="default" }
+    if states[animation] then require("mvtk.tiled.object_presentation").restore(states[animation]) end
+    if Util.component_exists("#sprite") then
+        msg.post("#sprite", hash("play_animation"), { id = hash(animation) })
+    end
+end
+
+local PLAYER_GROUP = hash("player")
+local HEAL_MSG = hash("heal")
+
+local function to_bool(value, default)
+    if value == nil then return default end
+    if type(value) == "boolean" then return value end
+    if type(value) == "number" then return value ~= 0 end
+    if type(value) == "string" then
+        local lower = value:lower()
+        if lower == "true" or lower == "1" or lower == "yes" then return true end
+        if lower == "false" or lower == "0" or lower == "no" then return false end
+    end
+    return default
+end
+
+local resolve_flag_key = Util.normalize_hash_string
+
+local function resolve_label(self)
+    return Util.hash_text(self.label, "Heal")
+end
+
+local function sync_interaction(self)
+    local im = PU.get_interaction()
+    if not im then return end
+
+    if self.require_interact and not self.depleted then
+        if im.register then
+            im.register(msg.url(), {
+                label = resolve_label(self),
+                range = self.range or 96,
+            })
+        end
+    elseif im.unregister then
+        im.unregister(msg.url())
+    end
+end
+
+local function flag_requirement_passes(self)
+    if not self.requires_flag_key and self.requires_flag == "" then
+        return true
+    end
+
+    local ok, Flags = pcall(require, "mvtk.core.flags")
+    if not ok or not Flags then
+        return false
+    end
+
+    if self.requires_flag_key then
+        if (Flags.has and Flags.has(self.requires_flag_key)) or (Flags.get and Flags.get(self.requires_flag_key)) then
+            return true
+        end
+    end
+
+    if self.requires_flag ~= "" then
+        if (Flags.has and Flags.has(self.requires_flag)) or (Flags.get and Flags.get(self.requires_flag)) then
+            return true
+        end
+    end
+
+    return false
+end
+
+local function spend_currency(amount)
+    amount = tonumber(amount) or 0
+    if amount <= 0 then return true end
+
+    local ok_currency, Currency = pcall(require, "mvtk.game.currency")
+    if ok_currency and Currency then
+        local can_afford = true
+        if Currency.can_afford then
+            local ok, result = pcall(Currency.can_afford, amount)
+            can_afford = ok and result and true or false
+        elseif Currency.get then
+            local ok, result = pcall(Currency.get)
+            can_afford = ok and ((tonumber(result) or 0) >= amount)
+        end
+
+        if not can_afford then
+            return false
+        end
+
+        if Currency.spend then
+            local ok = pcall(Currency.spend, amount)
+            if ok then return true end
+        elseif Currency.remove then
+            local ok = pcall(Currency.remove, amount)
+            if ok then return true end
+        end
+    end
+
+    local ok_inv, Inv = pcall(require, "mvtk.core.inventory")
+    if not ok_inv or not Inv then
+        return false
+    end
+
+    local current = tonumber((Inv.get_currency and Inv.get_currency()) or 0) or 0
+    if current < amount then
+        return false
+    end
+
+    if Inv.set_currency then
+        Inv.set_currency(current - amount)
+        return true
+    end
+    if Inv.add_currency then
+        Inv.add_currency(-amount)
+        return true
+    end
+
+    return false
+end
+
+local function send_heal_to_player(payload)
+    pcall(msg.post, C.URL.PLAYER, HEAL_MSG, payload)
+end
+
+-----------------------------------------------------------
+-- Local Helper Functions
+-----------------------------------------------------------
+
+local function use_station(self)
+    if require("mvtk.player.health_state").is_full() then
+        PU.toast("Health already full", 2.0)
+        return false
+    end
+    -- Check if depleted
+    if self.depleted then
+        print("[HEALTH_STATION] Station is depleted")
+        return false
+    end
+
+    -- Check cooldown
+    if self.on_cooldown then
+        print("[HEALTH_STATION] Station is on cooldown")
+        return false
+    end
+
+    -- Check flag requirement
+    if not flag_requirement_passes(self) then
+            print("[HEALTH_STATION] Required flag not set")
+            return false
+    end
+
+    -- Check currency cost
+    if (tonumber(self.cost_currency) or 0) > 0 then
+        if not spend_currency(self.cost_currency) then
+            print("[HEALTH_STATION] Not enough currency")
+            return false
+        end
+    end
+
+    -- Build heal payload. Full heal is explicit so player script can handle it safely.
+    local payload = { source = "health_station" }
+    local heal_desc = "full"
+    local amount = tonumber(self.heal_amount) or 0
+    local percent = tonumber(self.heal_percent) or 0
+    if amount > 0 then
+        payload.amount = amount
+        heal_desc = tostring(amount)
+    elseif percent > 0 then
+        payload.percent = percent
+        heal_desc = string.format("%.0f%%", percent * 100)
+    else
+        payload.full = true
+    end
+
+    -- Send heal to player
+    send_heal_to_player(payload)
+
+    -- Play sound
+    PU.play_sound(self.sound_id)
+
+    -- Play particle effect
+    require("mvtk.tiled.object_presentation").emit("interacted")
+
+    -- Visual feedback
+    play_sprite_animation("activate")
+
+    -- Handle uses
+    if self.uses > 0 then
+        self.uses_remaining = self.uses_remaining - 1
+        if self.uses_remaining <= 0 then
+            self.depleted = true
+            play_sprite_animation("depleted")
+            sync_interaction(self)
+            print("[HEALTH_STATION] Station depleted")
+            return true
+        end
+    end
+
+    -- Handle cooldown
+    if self.recharge_time > 0 then
+        self.on_cooldown = true
+        self.cooldown_timer = self.recharge_time
+        play_sprite_animation("cooldown")
+    end
+
+    print(string.format("[HEALTH_STATION] Healed player (%s)", heal_desc))
+    return true
+end
+
+-----------------------------------------------------------
+-- Lifecycle Functions
+-----------------------------------------------------------
+
+function init(self)
+    self.uses_remaining = self.uses  -- 0 = unlimited
+    self.on_cooldown = false
+    self.cooldown_timer = 0
+    self.depleted = false
+    self.player_in_range = false
+    self.require_interact = to_bool(self.require_interact, true)
+    self.requires_flag_key = resolve_flag_key(self.requires_flag)
+    self.label = self.label or "Heal"
+
+    sync_interaction(self)
+end
+
+function update(self, dt)
+    -- Handle cooldown timer
+    if self.on_cooldown then
+        self.cooldown_timer = self.cooldown_timer - dt
+        if self.cooldown_timer <= 0 then
+            self.on_cooldown = false
+            -- Visual feedback that station is ready
+            play_sprite_animation("health_station_idle")
+        end
+    end
+end
+
+function on_message(self, message_id, message, sender)
+    if message_id == hash("trigger_response") then
+        local other_group = message and (message.other_group or message.group)
+        if other_group == PLAYER_GROUP then
+            if message.enter then
+                self.player_in_range = true
+                if not self.require_interact then
+                    use_station(self)
+                end
+            else
+                self.player_in_range = false
+            end
+        end
+    elseif message_id == hash("mvtk_interact") then
+        if self.require_interact and not self.depleted then
+            use_station(self)
+        end
+    elseif message_id == hash("interact") then
+        if self.require_interact and self.player_in_range and not self.depleted then
+            use_station(self)
+        end
+
+    elseif message_id == hash("apply_tiled_props") then
+        local props = message.properties or {}
+        if props.station_id ~= nil then
+            self.station_id = props.station_id
+        end
+        if props.label ~= nil then self.label = tostring(props.label) end
+        if props.prompt_text ~= nil then self.label = tostring(props.prompt_text) end  -- alias for label
+        if props.range ~= nil then self.range = tonumber(props.range) or self.range end
+        if props.heal_amount then self.heal_amount = tonumber(props.heal_amount) or self.heal_amount end
+        if props.heal_percent then self.heal_percent = tonumber(props.heal_percent) or self.heal_percent end
+        if props.uses then
+            self.uses = tonumber(props.uses) or self.uses
+            self.uses_remaining = self.uses
+        end
+        if props.recharge_time then self.recharge_time = tonumber(props.recharge_time) or self.recharge_time end
+        if props.cost_currency then self.cost_currency = tonumber(props.cost_currency) or self.cost_currency end
+        local require_interact = props.require_interact
+        if require_interact == nil then require_interact = props.requires_interact end
+        if require_interact ~= nil then
+            self.require_interact = to_bool(require_interact, self.require_interact)
+        end
+        if props.requires_flag ~= nil then
+            self.requires_flag_key = resolve_flag_key(props.requires_flag)
+            if type(props.requires_flag) == "string" then
+                self.requires_flag = self.requires_flag_key or ""
+            else
+                self.requires_flag = props.requires_flag
+            end
+        end
+        if props.sound_id then
+            self.sound_id = props.sound_id
+        end
+        if props.particle_id then
+            self.particle_id = props.particle_id
+        end
+
+        sync_interaction(self)
+
+    elseif message_id == hash("reset") then
+        -- Reset station to initial state
+        self.uses_remaining = self.uses
+        self.depleted = false
+        self.on_cooldown = false
+        self.player_in_range = false
+        play_sprite_animation("health_station_idle")
+        sync_interaction(self)
+    end
+end
+
+function final(self)
+    -- Unregister from interaction manager
+    local im = PU.get_interaction()
+    if im and im.unregister then
+        im.unregister(msg.url())
+    end
+end

@@ -1,0 +1,47 @@
+-- editor/rooms_manifest.script
+local SAVE_APP  = "mvtk_layout_editor"
+local SAVE_NAME = "rooms_auto"
+
+local function debounce_save(self)
+	if self._t then timer.cancel(self._t) end
+	self._t = timer.delay(0.10, false, function()
+		self._t = nil
+		local path  = sys.get_save_file(SAVE_APP, SAVE_NAME)
+		local count = 0
+		for _ in pairs(self.rooms) do count = count + 1 end
+		local ok = sys.save(path, { rooms = self.rooms })
+		print(string.format("[MANIFEST] Save(table) -> %s  (ok=%s, rooms=%d)", path, tostring(ok), count))
+		local payload = { source = "rooms_manifest", rooms = count, ok = ok }
+		-- Notify GUI within the same collection (works regardless of proxy socket name)
+		msg.post(msg.url(nil, "ui", "gui"), "manifest_saved", payload)
+		msg.post(msg.url(nil, "ui", "gui"), "rescan_rooms", payload)
+	end)
+end
+
+function init(self)
+	self.rooms = {}
+	self.build = {}
+	print("[MANIFEST] init on url:", msg.url(), "; awaiting register_room messages")
+end
+
+function on_message(self, mid, m, sender)
+	if mid == hash("register_room_begin") then
+		self.build[m.id] = { id=m.id, tile=m.tile, w=m.w, h=m.h, rects={}, diags={} }
+
+	elseif mid == hash("register_rect") then
+		local t = self.build[m.id]; if t then t.rects[#t.rects+1] = { x=m.x, y=m.y, w=m.w, h=m.h } end
+
+	elseif mid == hash("register_diag") then
+		local t = self.build[m.id]; if t then t.diags[#t.diags+1] = { x=m.x, y=m.y, dir=m.dir } end
+
+	elseif mid == hash("register_room_end") then
+		local t = self.build[m.id]
+		if t then
+			self.rooms[m.id] = t
+			self.build[m.id] = nil
+			print(string.format("[MANIFEST] collected %s  rects=%d diags=%d", m.id, #t.rects, #t.diags))
+		end
+		debounce_save(self)
+	end
+end
+

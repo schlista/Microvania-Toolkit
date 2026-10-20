@@ -1,0 +1,560 @@
+-- mvtk/prefabs/particle_emitter.script
+-- Decorative particle emitter with configurable effect id.
+-- Defold 1.12.2+ supports emitter property get/set via go.get/go.set.
+
+local DEFAULT_EMITTER_ID = "emitter"
+local DEFAULT_LOOP_INTERVAL = 0.5
+local DEFAULT_IMAGE = "/builtins/graphics/particle_blob.tilesource"
+local DEFAULT_ANIMATION = "anim"
+local DEFAULT_MATERIAL = "/builtins/materials/particlefx.material"
+local Util = require "mvtk.core.util"
+local C = require "mvtk.core.constants"
+
+local function load_particle_config()
+    local ok, cfg = pcall(require, "developer.config.particle_effects")
+    if ok and type(cfg) == "table" then
+        return cfg, true, nil
+    end
+    -- Fallback: try loading as a raw resource (useful in proxy contexts)
+    local ok_res, data = pcall(sys.load_resource, "/developer/config/particle_effects.lua")
+    if ok_res and data then
+        local loader = loadstring or load
+        if loader then
+            local chunk, err = loader(data, "particle_effects.lua")
+            if chunk then
+                local ok_chunk, tbl = pcall(chunk)
+                if ok_chunk and type(tbl) == "table" then
+                    return tbl, true, nil
+                end
+                return nil, false, tbl
+            end
+            return nil, false, err
+        end
+    end
+    return nil, false, cfg
+end
+
+local Config, ConfigOk, ConfigErr = load_particle_config()
+local Debug = require "developer.config.debug_config"
+
+-- Log config load error if it failed
+if not ConfigOk then
+    print("[PARTICLE_EMITTER] Config load FAILED:", tostring(ConfigErr))
+end
+
+go.property("emitter_id", "")
+go.property("effect_id", "")
+go.property("auto_play", true)
+go.property("loop", true)
+go.property("loop_interval", 0.5) -- seconds between repeats when `loop = true` on one-shot effects
+go.property("start_delay", 0)
+go.property("run_duration", 0) -- seconds to keep the emitter running before auto-stop (0 = no auto-stop)
+go.property("debug_marker", false) -- show debug sprite marker at emitter position
+go.property("debug_follow_player", false) -- move emitter to player each frame (debug)
+
+local EFFECT_ID_BY_HASH = {}
+local EFFECT_SPECS = {}
+
+-- Aliases for legacy/short effect ids used in some maps.
+local EFFECT_ALIASES = {
+    sparkle = "ambient_sparkle",
+    dust = "jump_dust",
+    mist = "land_puff",
+}
+
+-- Built-in fallback ids (used for hash->string resolution if config doesn't load).
+local FALLBACK_EFFECT_IDS = {
+    ambient_sparkle = true,
+    boss_phase_transition = true,
+    collectible_sparkle = true,
+    crit_hit = true,
+    dash_puff = true,
+    dash_trail = true,
+    death_explosion = true,
+    hit_impact = true,
+    jump_dust = true,
+    land_puff = true,
+    sparkle = true,
+    dust = true,
+    mist = true,
+}
+
+local function particle_log(...)
+    if Debug.global.enable or (Debug.fx and Debug.fx.particles) then
+        print("[PARTICLE_EMITTER]", ...)
+    end
+end
+
+local function set_debug_marker(enabled)
+    if not Util.component_exists("#debug_marker") then return false end
+    pcall(Util.post_component_enabled, "#debug_marker", enabled)
+    local ok_tint = false
+    if enabled then
+        -- Make the marker obnoxiously visible if it exists
+        ok_tint = pcall(go.set, "#debug_marker", "tint", vmath.vector4(1, 0, 1, 1))
+    end
+    return ok_tint
+end
+
+local function apply_debug_overrides(_self)
+    -- Debug overrides disabled - particle stays at its configured position
+    -- To enable debug following, set debug_follow_player property in Tiled or collection
+end
+
+local function normalize_hash_string(value)
+    if EFFECT_ID_BY_HASH and EFFECT_ID_BY_HASH[value] then
+        return EFFECT_ID_BY_HASH[value]
+    end
+    return Util.normalize_hash_string(value)
+end
+
+local function resolve_id(value)
+    local s = normalize_hash_string(value)
+    if s then return s end
+    return Util.resolve_id(value)
+end
+
+local function register_effect_id(effect_id)
+    if effect_id and effect_id ~= "" then
+        local h = hash(effect_id)
+        EFFECT_ID_BY_HASH[h] = effect_id
+    end
+end
+
+local function parse_particlefx_resource(path)
+    if type(path) ~= "string" or path == "" then
+        return nil
+    end
+    local ok, text = pcall(sys.load_resource, path)
+    if not ok or type(text) ~= "string" then
+        return nil
+    end
+    -- Parse first emitter properties from source particlefx text.
+    local emitter_id = text:match('id:%s*"([^"]+)"') or DEFAULT_EMITTER_ID
+    local image = text:match('tile_source:%s*"([^"]+)"')
+    local animation = text:match('animation:%s*"([^"]+)"')
+    local material = text:match('material:%s*"([^"]+)"')
+    if not image and not animation and not material then
+        return nil
+    end
+    return {
+        emitter_id = emitter_id,
+        image = image,
+        animation = animation,
+        material = material,
+        path = path,
+    }
+end
+
+local function normalize_effect_spec(raw)
+    if raw == nil then
+        return nil
+    end
+
+    if type(raw) == "string" then
+        local parsed = parse_particlefx_resource(raw) or {}
+        parsed.path = raw
+        parsed.emitter_id = parsed.emitter_id or DEFAULT_EMITTER_ID
+        parsed.image = parsed.image or DEFAULT_IMAGE
+        parsed.animation = parsed.animation or DEFAULT_ANIMATION
+        parsed.material = parsed.material or DEFAULT_MATERIAL
+        return parsed
+    end
+
+    if type(raw) ~= "table" then
+        return nil
+    end
+
+    local spec = {
+        emitter_id = raw.emitter_id or raw.emitter or DEFAULT_EMITTER_ID,
+        image = raw.image or raw.tile_source or DEFAULT_IMAGE,
+        animation = raw.animation or DEFAULT_ANIMATION,
+        material = raw.material or DEFAULT_MATERIAL,
+        path = raw.path or raw.resource_path or raw.effect or raw.particlefx,
+    }
+
+    if spec.path and (not spec.image or not spec.animation or not spec.material) then
+        local parsed = parse_particlefx_resource(spec.path)
+        if parsed then
+            spec.image = spec.image or parsed.image
+            spec.animation = spec.animation or parsed.animation
+            spec.material = spec.material or parsed.material
+        end
+    end
+
+    return spec
+end
+
+local function load_effect_specs()
+    if ConfigOk and Config then
+        local map = Config.effects or Config
+        if type(map) == "table" then
+            for effect_id, raw in pairs(map) do
+                register_effect_id(effect_id)
+                EFFECT_SPECS[effect_id] = normalize_effect_spec(raw)
+            end
+        end
+    end
+
+    for effect_id in pairs(FALLBACK_EFFECT_IDS) do
+        register_effect_id(effect_id)
+    end
+
+    if Debug.global.enable or (Debug.fx and Debug.fx.particles) then
+        local cfg_count = 0
+        local map = Config and (Config.effects or Config) or nil
+        if type(map) == "table" then
+            for _ in pairs(map) do cfg_count = cfg_count + 1 end
+        end
+        local spec_count = 0
+        for _ in pairs(EFFECT_SPECS) do spec_count = spec_count + 1 end
+        particle_log("config loaded=", tostring(ConfigOk),
+            "config_effects=", tostring(cfg_count),
+            "resolved_specs=", tostring(spec_count))
+    end
+end
+
+load_effect_specs()
+
+local function set_emitter_property(property, value, emitter_id)
+    if value == nil then
+        return false
+    end
+    local key_value = value
+    if type(value) == "string" then
+        key_value = hash(value)
+    end
+    local ok, err = pcall(go.set, "#particlefx", property, key_value, { keys = { emitter_id or DEFAULT_EMITTER_ID } })
+    if not ok then
+        particle_log("go.set failed", property, tostring(value), tostring(err))
+        return false
+    end
+    return true
+end
+
+local function apply_effect(self, effect_id)
+    local effect_id_str = normalize_hash_string(effect_id)
+    if (not effect_id_str) and effect_id ~= nil and type(effect_id) ~= "string" then
+        effect_id_str = EFFECT_ID_BY_HASH[effect_id]
+    end
+    if not effect_id_str or effect_id_str == "" then
+        self.effect_id_str = nil
+        self.effect_spec = nil
+        self.has_effect = false
+        particle_log("No particlefx id for effect:", tostring(effect_id))
+        return false
+    end
+
+    effect_id_str = EFFECT_ALIASES[effect_id_str] or effect_id_str
+    self.effect_id_str = effect_id_str
+    self.has_effect = true
+
+    local spec = EFFECT_SPECS[effect_id_str]
+    self.effect_spec = spec
+    if not spec then
+        -- Keep running even without a local emitter spec: fx_manager fallback may still render this effect.
+        particle_log("No emitter property spec found for", tostring(effect_id_str), "- using current component defaults")
+        return true
+    end
+
+    local emitter_id = spec.emitter_id or DEFAULT_EMITTER_ID
+    local applied_any = false
+    applied_any = set_emitter_property("image", spec.image, emitter_id) or applied_any
+    applied_any = set_emitter_property("animation", spec.animation, emitter_id) or applied_any
+    applied_any = set_emitter_property("material", spec.material, emitter_id) or applied_any
+
+    if Debug.global.enable or (Debug.fx and Debug.fx.particles) then
+        local img = nil
+        local anim = nil
+        local mat = nil
+        pcall(function()
+            img = go.get("#particlefx", "image", { keys = { emitter_id } })
+            anim = go.get("#particlefx", "animation", { keys = { emitter_id } })
+            mat = go.get("#particlefx", "material", { keys = { emitter_id } })
+        end)
+        particle_log("Applied effect:",
+            tostring(effect_id_str),
+            "emitter_id=", tostring(emitter_id),
+            "image=", tostring(img),
+            "animation=", tostring(anim),
+            "material=", tostring(mat),
+            "applied_any=", tostring(applied_any))
+    end
+
+    return true
+end
+
+local play_particle
+
+local function schedule_loop(self, gen)
+    if not self.loop or self.loop_generation ~= gen then
+        return
+    end
+    -- Defensive: some Defold versions/callback modes may invoke our completion callback
+    -- more than once. Ensure we only schedule one repeat timer per generation.
+    if self._loop_scheduled_gen == gen then
+        return
+    end
+    self._loop_scheduled_gen = gen
+    local delay = tonumber(self.loop_interval) or DEFAULT_LOOP_INTERVAL
+    if delay <= 0 then
+        delay = DEFAULT_LOOP_INTERVAL
+    end
+    self._loop_timer = timer.delay(delay, false, function()
+        if self._loop_scheduled_gen == gen then
+            self._loop_scheduled_gen = nil
+        end
+        self._loop_timer = nil
+        if self.loop and self.loop_generation == gen then
+            play_particle(self)
+        end
+    end)
+end
+
+local function schedule_stop(self)
+    if self._stop_timer then
+        pcall(timer.cancel, self._stop_timer)
+        self._stop_timer = nil
+    end
+    local duration = tonumber(self.run_duration) or 0
+    if duration <= 0 then
+        return
+    end
+    self._stop_timer = timer.delay(duration, false, function()
+        self._stop_timer = nil
+        self.loop_generation = (self.loop_generation or 0) + 1
+        self.loop = false
+        if self._loop_timer then
+            pcall(timer.cancel, self._loop_timer)
+            self._loop_timer = nil
+        end
+        self._loop_scheduled_gen = nil
+        particle_log("auto-stop after run_duration:", tostring(duration))
+        pcall(particlefx.stop, "#particlefx")
+    end)
+end
+
+play_particle = function(self)
+    local component = "#particlefx"
+    local world_pos = nil
+    local okwp, wp = pcall(go.get_world_position)
+    if okwp then world_pos = wp end
+
+    -- Log first play only
+    if not self._play_logged then
+        self._play_logged = true
+        print("[PARTICLE_EMITTER] play effect=" .. tostring(self.effect_id_str) ..
+            " component=" .. component .. " pos=" .. tostring(world_pos))
+    end
+
+    -- Stop any existing particles first to ensure clean restart.
+    pcall(particlefx.stop, component)
+
+    local gen = (self.loop_generation or 0) + 1
+    self.loop_generation = gen
+
+    -- Cancel any pending loop timer.
+    if self._loop_timer then
+        pcall(timer.cancel, self._loop_timer)
+        self._loop_timer = nil
+    end
+    self._loop_scheduled_gen = nil
+
+    local function on_emitter_state(_, _, _, state)
+        -- Defold reports every state transition, including the start of
+        -- spawning. Only a sleeping emitter has finished its one-shot effect.
+        -- Native looping effects keep spawning without script-driven restarts.
+        if state == particlefx.EMITTER_STATE_SLEEPING then
+            schedule_loop(self, gen)
+        end
+    end
+
+    -- Repeat one-shot effects only after all of their particles have expired.
+    local played_locally = false
+    local ok, err = pcall(particlefx.play, component, on_emitter_state)
+    if not ok then
+        -- Retry without callback (some Defold versions don't support it).
+        print("[PARTICLE_EMITTER] play failed (" .. tostring(err) .. "), retrying without callback")
+        played_locally = pcall(particlefx.play, component)
+        -- Schedule loop manually since callback won't fire.
+        schedule_loop(self, gen)
+    else
+        played_locally = true
+    end
+
+    -- Fallback to the main-collection FX manager only if local playback failed.
+    if world_pos and not played_locally then
+        particle_log("local play unavailable, using fx_manager fallback", tostring(self.effect_id_str))
+        msg.post("main:/fx_manager#fx_manager", "play_fx", {
+            fx_type = self.effect_id_str or "death_explosion",
+            position = world_pos,
+        })
+    end
+end
+
+local function start_emitter(self)
+    self._debug_play_logged = nil
+    if self.start_delay and self.start_delay > 0 then
+        particle_log("start_emitter delay:", tostring(self.start_delay))
+        timer.delay(self.start_delay, false, function()
+            play_particle(self)
+            schedule_stop(self)
+        end)
+    else
+        particle_log("start_emitter immediate")
+        play_particle(self)
+        schedule_stop(self)
+    end
+end
+
+function init(self)
+    self.emitter_id_key = resolve_id(self.emitter_id) or tostring(go.get_id())
+    self.effect_id_str = nil
+    self.effect_spec = nil
+    self.has_effect = false
+    self._auto_started = false
+
+    local effect_value = resolve_id(self.effect_id)
+    if effect_value ~= nil then
+        apply_effect(self, effect_value)
+    end
+
+    apply_debug_overrides(self)
+    local ok_marker = set_debug_marker(self.debug_marker or (Debug.fx and Debug.fx.particles))
+    if self.debug_marker then
+        -- Make the marker large and in front for visibility.
+        pcall(go.set_scale, vmath.vector3(4, 4, 1))
+        local p = go.get_position()
+        p.z = 1.0
+        pcall(go.set_position, p)
+    end
+
+    local ok_res, res = pcall(sys.load_resource, "/developer/game/prefabs/particle_emitter.go")
+    local res_has_marker = ok_res and res and res:find("debug_marker", 1, true) ~= nil
+    local world_pos = nil
+    local ok_world, wp = pcall(go.get_world_position)
+    if ok_world then world_pos = wp end
+    particle_log("init",
+        "emitter_id=", tostring(self.emitter_id_key),
+        "effect_id=", tostring(self.effect_id_str),
+        "raw_effect_id=", tostring(self.effect_id),
+        "raw_type=", tostring(type(self.effect_id)),
+        "url=", tostring(msg.url()),
+        "auto_play=", tostring(self.auto_play),
+        "loop=", tostring(self.loop),
+        "start_delay=", tostring(self.start_delay),
+        "run_duration=", tostring(self.run_duration),
+        "pos=", tostring(go.get_position()),
+        "world_pos=", tostring(world_pos),
+        "debug_marker=", tostring(self.debug_marker),
+        "debug_follow_player=", tostring(self.debug_follow_player),
+        "debug_marker_component=", tostring(ok_marker),
+        "debug_marker_in_resource=", tostring(res_has_marker))
+
+    if self.auto_play ~= false and self.has_effect then
+        self._auto_started = true
+        start_emitter(self)
+    end
+end
+
+function on_message(self, message_id, message, sender)
+    if message_id == hash("debug_set_pos") and message and message.pos then
+        local p = vmath.vector3(message.pos.x, message.pos.y, message.pos.z or 1.0)
+        local ok = pcall(go.set_world_position, p)
+        if not ok then
+            go.set_position(p)
+        end
+        particle_log("debug_set_pos ->", tostring(p), "from", tostring(sender))
+        return
+    end
+
+    if message_id == hash("apply_tiled_props") and message and message.properties then
+        local props = message.properties
+        local prev_effect_id_str = self.effect_id_str
+        if props.effect_id ~= nil then
+            apply_effect(self, props.effect_id)
+        end
+        if props.auto_play ~= nil then self.auto_play = props.auto_play ~= false end
+        if props.loop ~= nil then self.loop = props.loop ~= false end
+        if props.start_delay ~= nil then self.start_delay = tonumber(props.start_delay) or self.start_delay end
+        if props.loop_interval ~= nil then self.loop_interval = tonumber(props.loop_interval) or self.loop_interval end
+        if props.run_duration ~= nil then self.run_duration = tonumber(props.run_duration) or self.run_duration end
+        if props.debug_marker ~= nil then
+            self.debug_marker = props.debug_marker ~= false
+            set_debug_marker(self.debug_marker or (Debug.fx and Debug.fx.particles))
+        end
+        if props.debug_follow_player ~= nil then
+            self.debug_follow_player = props.debug_follow_player ~= false
+        end
+        particle_log("apply_tiled_props",
+            "effect_id=", tostring(self.effect_id_str),
+            "auto_play=", tostring(self.auto_play),
+            "loop=", tostring(self.loop),
+            "start_delay=", tostring(self.start_delay),
+            "run_duration=", tostring(self.run_duration),
+            "debug_marker=", tostring(self.debug_marker),
+            "debug_follow_player=", tostring(self.debug_follow_player))
+
+        if self.auto_play ~= false and self.has_effect then
+            if self._auto_started and prev_effect_id_str == self.effect_id_str then
+                particle_log("Skipping auto_play after apply_tiled_props; already started")
+                return
+            end
+            self._auto_started = true
+            start_emitter(self)
+        end
+        return
+    end
+
+    if message_id == hash("play") then
+        particle_log("message: play")
+        if self.has_effect then
+            start_emitter(self)
+        end
+    elseif message_id == hash("stop") then
+        particle_log("message: stop")
+        self.loop_generation = (self.loop_generation or 0) + 1
+        if self._loop_timer then
+            pcall(timer.cancel, self._loop_timer)
+            self._loop_timer = nil
+        end
+        self._loop_scheduled_gen = nil
+        if self._stop_timer then
+            pcall(timer.cancel, self._stop_timer)
+            self._stop_timer = nil
+        end
+        pcall(particlefx.stop, "#particlefx")
+    elseif message_id == hash("set_effect") and message and message.effect_id then
+        particle_log("message: set_effect", tostring(message.effect_id))
+        apply_effect(self, message.effect_id)
+    end
+end
+
+function update(self, dt)
+    if not self.debug_follow_player then
+        return
+    end
+    self._dbg_follow_t = (self._dbg_follow_t or 0) - (dt or 0)
+    local player_url = (C and C.URL and C.URL.PLAYER) or nil
+    if player_url and go.exists(player_url) then
+        local ok, p = pcall(go.get_world_position, player_url)
+        if ok and p then
+            p.z = 1.0
+            local ok_set = pcall(go.set_world_position, p)
+            if not ok_set then
+                go.set_position(p)
+            end
+            if self._dbg_follow_t <= 0 then
+                self._dbg_follow_t = 1.0
+                particle_log("debug_follow_player move ->", tostring(p))
+            end
+        end
+    else
+        if self._dbg_follow_t <= 0 then
+            self._dbg_follow_t = 1.0
+            particle_log("debug_follow_player missing player url:", tostring(player_url))
+            -- Ask main collection for player position (collectionfactory rooms have separate Lua state)
+            pcall(msg.post, "main:/main_go#script", hash("debug_request_player_pos"), { emitter = msg.url() })
+        end
+    end
+end

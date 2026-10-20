@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<template>
+ <object name="Pressure Plate" type="pressure_plate" width="128" height="32">
+  <properties>
+   <property name="target_ref" type="object" value="0"/>
+   <property name="plate_id" type="string" value=""/>
+   <property name="target_id" type="string" value=""/>
+   <property name="required_count" type="int" value="1"/>
+   <property name="activation_sources" type="class" propertytype="pressure_plate_activation_sources">
+    <properties>
+     <property name="allow_player" type="bool" value="true"/>
+     <property name="allow_world" type="bool" value="true"/>
+     <property name="allow_enemy" type="bool" value="false"/>
+    </properties>
+   </property>
+   <property name="response" type="class" propertytype="pressure_plate_response">
+    <properties>
+     <property name="stays_pressed" type="bool" value="false"/>
+     <property name="message_on" type="string" value="activate"/>
+     <property name="message_off" type="string" value="deactivate"/>
+     <property name="set_flag" type="string" value=""/>
+    </properties>
+   </property>
+   <property name="feedback" type="class" propertytype="pressure_plate_feedback">
+    <properties>
+     <property name="sound_on" propertytype="sound_effects" value="none"/>
+     <property name="sound_off" propertytype="sound_effects" value="none"/>
+    </properties>
+   </property>
+   <property name="tile_animation" type="class" propertytype="pressure_plate_tile_animation">
+    <properties>
+     <property name="anim_tilemap" type="string" value=""/>
+     <property name="anim_layer" type="string" value=""/>
+     <property name="anim_offset_x" type="int" value="0"/>
+     <property name="anim_offset_y" type="int" value="0"/>
+     <property name="tile_on" type="int" value="0"/>
+     <property name="tile_off" type="int" value="0"/>
+    </properties>
+   </property>
+   <property name="art_item" type="string" value=""/>
+   <property name="art_feedback" type="class" propertytype="pressure_plate_art_feedback">
+    <properties>
+     <property name="consume_effect" type="string" propertytype="particle_effects" value="none"/>
+     <property name="interact_effect" type="string" propertytype="particle_effects" value="none"/>
+     <property name="effect_offset_x" type="float" value="0"/>
+     <property name="effect_offset_y" type="float" value="0"/>
+     <property name="effect_scale" type="float" value="1"/>
+     <property name="effect_cooldown" type="float" value="0"/>
+    </properties>
+   </property>
+   <property name="mvtk_template_version" type="string" value="2.7.0"/>
+  </properties>
+ </object>
+</template>

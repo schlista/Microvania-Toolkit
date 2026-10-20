@@ -1,0 +1,59 @@
+-- Runtime-only recovery marker. Persistent contents/lifetime belong to the
+-- death-drop provider; this script owns overlap and collection feedback.
+go.property("pickup_radius", 16) -- World pixels, independent of player/art scale.
+go.property("sound_id", "collect_gem")
+local Drop = require "mvtk.game.death_drop"
+local PU = require "mvtk.prefabs.prefab_utils"
+local PLAYER_GROUP = hash("player")
+
+local function collect(self)
+    if self.collected then return end
+    local amount = Drop.collect(self.instance_id)
+    if not amount then return end
+    self.collected = true
+    msg.post("#co", "disable")
+    msg.post("#sprite", "disable")
+    particlefx.stop("#particles")
+    particlefx.play("#collect_particles")
+    PU.play_sound(self.sound_id)
+    PU.toast(string.format("Recovered %d currency", amount))
+    timer.delay(0.5, false, function() go.delete() end)
+end
+
+function init(self)
+    self.instance_id = go.get_id()
+    self.collected = false
+    self.players_in_range = {}
+    local radius = math.max(0.001, self.pickup_radius)
+    if not physics or type(physics.set_shape) ~= "function" then
+        Drop.instance_failed(self.instance_id, "physics.set_shape is unavailable")
+        go.delete()
+        return
+    end
+    local ok, err = pcall(physics.set_shape, "#co", "pickup", {
+        type = physics.SHAPE_TYPE_SPHERE, diameter = radius * 2,
+    })
+    if not ok then
+        Drop.instance_failed(self.instance_id, err)
+        go.delete()
+        return
+    end
+    particlefx.play("#particles")
+end
+
+function update(self, dt)
+    if not self.collected and next(self.players_in_range) then collect(self) end
+end
+
+function on_message(self, message_id, message, sender)
+    if message_id == hash("death_drop_remove") then go.delete(); return end
+    if message_id ~= hash("trigger_response") or message.other_group ~= PLAYER_GROUP then return end
+    local id = message.other_id
+    if message.enter then
+        self.players_in_range[id] = (self.players_in_range[id] or 0) + 1
+        collect(self)
+    else
+        local count = (self.players_in_range[id] or 1) - 1
+        self.players_in_range[id] = count > 0 and count or nil
+    end
+end

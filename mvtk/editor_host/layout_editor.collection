@@ -1,0 +1,22 @@
+name: "layout_editor"
+instances {
+  id: "ui"
+  prototype: "/mvtk/editor_host/layout_editor.go"
+}
+scale_along_z: 0
+embedded_instances {
+  id: "scan"
+  data: "components {\n"
+  "  id: \"auto_room_scan\"\n"
+  "  component: \"/mvtk/editor_host/auto_room_scan.script\"\n"
+  "}\n"
+  ""
+}
+embedded_instances {
+  id: "manifest_loader"
+  data: "components {\n"
+  "  id: \"manifest_loader\"\n"
+  "  component: \"/mvtk/editor_host/manifest_loader.script\"\n"
+  "}\n"
+  ""
+}

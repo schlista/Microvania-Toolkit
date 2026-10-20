@@ -1,0 +1,36 @@
+-- Boss AOE Effect
+-- Short-lived expanding ring used by boss_attacks.lua for authored AOE strikes.
+
+go.property("radius", 150.0)
+go.property("duration", 0.35)
+go.property("color_r", 1.0)
+go.property("color_g", 0.35)
+go.property("color_b", 0.2)
+go.property("color_a", 0.45)
+
+local function clamp(v, lo, hi)
+    return math.max(lo, math.min(hi, v))
+end
+
+local function set_visual(self, alpha, scale_mult)
+    local base_scale = math.max(16, self.radius * 2) / 64
+    pcall(go.set_scale, vmath.vector3(base_scale * scale_mult, base_scale * scale_mult, 1))
+    pcall(go.set, "#sprite", "tint", vmath.vector4(self.color_r, self.color_g, self.color_b, alpha))
+end
+
+function init(self)
+    self.elapsed = 0
+    set_visual(self, 0.0, 0.7)
+end
+
+function update(self, dt)
+    self.elapsed = self.elapsed + dt
+    local t = clamp(self.elapsed / math.max(self.duration, 0.0001), 0, 1)
+    local alpha = (1.0 - t) * self.color_a
+    local scale_mult = 0.7 + (0.5 * t)
+    set_visual(self, alpha, scale_mult)
+
+    if self.elapsed >= self.duration then
+        go.delete()
+    end
+end

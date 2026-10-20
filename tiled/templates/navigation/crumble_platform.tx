@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<template>
+ <object name="Crumble Platform" type="crumble_platform" width="128" height="32">
+  <properties>
+   <property name="platform_id" type="string" value=""/>
+   <property name="timing" type="class" propertytype="crumble_platform_timing">
+    <properties>
+     <property name="crumble_delay" type="float" value="0.5"/>
+     <property name="respawn_delay" type="float" value="3.0"/>
+     <property name="shake_before_crumble" type="bool" value="true"/>
+    </properties>
+   </property>
+   <property name="collision" type="class" propertytype="crumble_platform_collision">
+    <properties>
+     <property name="one_way" type="bool" value="true"/>
+     <property name="co_y_offset" type="float" value="0"/>
+     <property name="sensor_y_offset" type="float" value="0"/>
+    </properties>
+   </property>
+   <property name="tile_visuals" type="class" propertytype="crumble_platform_tile_visuals">
+    <properties>
+     <property name="clear_visual_layer_tiles" type="bool" value="true"/>
+     <property name="visual_layer" type="string" value="environment"/>
+    </properties>
+   </property>
+   <property name="feedback" type="class" propertytype="crumble_platform_feedback">
+    <properties>
+     <property name="sound_crumble" propertytype="sound_effects" value="none"/>
+     <property name="sound_respawn" propertytype="sound_effects" value="none"/>
+    </properties>
+   </property>
+   <property name="mvtk_template_version" type="string" value="2.7.0"/>
+  </properties>
+ </object>
+</template>

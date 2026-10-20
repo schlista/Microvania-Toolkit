@@ -1,0 +1,27 @@
+#version 140
+
+// Adapted from Defold's extension-spine (defold-spine/assets/spine.vp), which is
+// licensed under the Defold License: https://www.defold.com/license
+// Modified for the Microvania Toolkit. This file remains under the Defold License
+// and is free for everyone. It is never sold or charged for as part of any
+// Microvania Toolkit license.
+
+// positions are in world space
+in highp vec4 position;
+in mediump vec2 texcoord0;
+in lowp vec4 color;
+
+out mediump vec2 var_texcoord0;
+out lowp vec4 var_color;
+
+uniform vs_uniforms
+{
+    highp mat4 world_view_proj;
+};
+
+void main()
+{
+    gl_Position = world_view_proj * vec4(position.xyz, 1.0);
+    var_texcoord0 = texcoord0;
+    var_color = vec4(color.rgb * color.a, color.a);
+}

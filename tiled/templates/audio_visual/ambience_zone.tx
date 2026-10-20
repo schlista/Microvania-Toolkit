@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<template>
+ <object name="Ambience Zone" type="ambience_zone" width="384" height="384">
+  <properties>
+   <property name="ambience_id" propertytype="ambient_sounds" value="none"/>
+   <property name="zone_id" type="string" value=""/>
+   <property name="mixing" type="class" propertytype="ambience_zone_mixing">
+    <properties>
+     <property name="gain" type="float" value="1.0"/>
+     <property name="music_volume_percent" type="float" value="100.0"/>
+    </properties>
+   </property>
+   <property name="activation" type="class" propertytype="ambience_zone_activation">
+    <properties>
+     <property name="stop_on_exit" type="bool" value="true"/>
+     <property name="trigger_once" type="bool" value="false"/>
+    </properties>
+   </property>
+   <property name="mvtk_template_version" type="string" value="2.7.0"/>
+  </properties>
+ </object>
+</template>

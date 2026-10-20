@@ -1,0 +1,11 @@
+animations { id: "small" images { image: "/developer/assets/atlas/collectibles/gem_small.png" } playback: PLAYBACK_NONE fps: 1 }
+animations { id: "medium" images { image: "/developer/assets/atlas/collectibles/gem_medium.png" } playback: PLAYBACK_NONE fps: 1 }
+animations { id: "large" images { image: "/developer/assets/atlas/collectibles/gem_large.png" } playback: PLAYBACK_NONE fps: 1 }
+animations { id: "currency" images { image: "/developer/assets/atlas/collectibles/currency.png" } playback: PLAYBACK_NONE fps: 1 }
+animations { id: "currency_large" images { image: "/developer/assets/atlas/collectibles/currency_large.png" } playback: PLAYBACK_NONE fps: 1 }
+animations { id: "gem_red" images { image: "/developer/assets/atlas/collectibles/gem_red.png" } playback: PLAYBACK_NONE fps: 1 }
+animations { id: "gem_green" images { image: "/developer/assets/atlas/collectibles/gem_green.png" } playback: PLAYBACK_NONE fps: 1 }
+animations { id: "gem_blue" images { image: "/developer/assets/atlas/collectibles/gem_blue.png" } playback: PLAYBACK_NONE fps: 1 }
+margin: 2
+extrude_borders: 0
+inner_padding: 0

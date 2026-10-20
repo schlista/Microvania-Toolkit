@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<template>
+ <object name="Moving Platform" type="platform" width="128" height="32">
+  <properties>
+   <property name="platform_type" propertytype="platform_types" value="horizontal"/>
+   <property name="platform_id" type="string" value=""/>
+   <property name="path" type="class" propertytype="moving_platform_path">
+    <properties>
+     <property name="path_name" type="string" value=""/>
+     <property name="distance" type="int" value="200"/>
+     <property name="loop_mode" propertytype="loop_modes" value="pingpong"/>
+    </properties>
+   </property>
+   <property name="motion_and_timing" type="class" propertytype="moving_platform_motion_and_timing">
+    <properties>
+     <property name="speed" type="int" value="50"/>
+     <property name="wait_time" type="float" value="1.0"/>
+     <property name="start_delay" type="float" value="0"/>
+    </properties>
+   </property>
+   <property name="collision_and_rider" type="class" propertytype="moving_platform_collision_and_rider">
+    <properties>
+     <property name="co_y_offset" type="float" value="0"/>
+     <property name="sensor_y_offset" type="float" value="0"/>
+     <property name="player_parent" type="bool" value="true"/>
+    </properties>
+   </property>
+   <property name="activation" type="class" propertytype="moving_platform_activation">
+    <properties>
+     <property name="enabled" type="bool" value="true"/>
+     <property name="trigger_id" type="string" value=""/>
+    </properties>
+   </property>
+   <property name="mvtk_template_version" type="string" value="2.7.0"/>
+  </properties>
+ </object>
+</template>

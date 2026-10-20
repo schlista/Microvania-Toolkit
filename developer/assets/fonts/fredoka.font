@@ -1,0 +1,4 @@
+font: "/developer/assets/fonts/Fredoka-Medium.ttf"
+material: "/builtins/fonts/font.material"
+size: 150
+characters: " !\"#$%&\'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"

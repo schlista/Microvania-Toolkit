@@ -1,0 +1,55 @@
+# Defold ignore file
+# Project-root paths to exclude from loading (not .gitignore glob patterns).
+
+# Build outputs
+/build
+/export
+/.build
+
+# Version control
+/.git
+
+# Python cache
+/__pycache__
+
+# Documentation
+/docs
+
+# Asset generation tools (Python scripts)
+/developer/examples/forest/tools
+
+# Temp files
+/temp
+/tmp
+
+# Editor diagnostics (written frequently; never compile as project resources)
+/debug_output.txt
+/debug_output.txt.1
+/perf_report.txt
+/mvtk_reset_pending
+
+# Cleanup backups (Delete My Rooms / Reset Project move removed files here).
+# Must be ignored so Defold does not try to compile orphaned .collection/.go/
+# .atlas/.tilesource resources that reference now-deleted paths.
+/developer/.trash
+
+# Recoverable authoring transaction journals are not game resources.
+/developer/.wizard
+/.wizard
+/.mvtk_tmp
+
+# Downloaded engine/extension sources are for reading, never project resources.
+/.deps
+
+# Disposable authoring relationship index and diagnostics.
+/developer/assets/tiled/content_index.json
+/developer/assets/tiled/relationship_diagnostics.txt
+/developer/assets/tiled/progression_diagnostics.txt
+/developer/assets/tiled/progression_analysis.json
+
+# Authoring preparation reports and draft revisions.
+/developer/assets/tiled/preparation*
+/developer/assets/tiled/build_revision.lua
+/developer/assets/tiled/build_pending.lua
+/developer/runtime/layout/draft_revision.lua
+/developer/addons/spine

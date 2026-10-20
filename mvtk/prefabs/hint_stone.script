@@ -1,0 +1,96 @@
+-- mvtk/prefabs/hint_stone.script
+-- Interactive hint stone that shows tutorial-style popup text.
+
+local Flags = require "mvtk.core.flags"
+local PU = require "mvtk.prefabs.prefab_utils"
+
+local DEFAULT_LABEL = "Inspect"
+
+go.property("room_id", "") -- Room ownership emitted by Create Rooms.
+go.property("hint_id", "")
+go.property("label", "")
+go.property("range", 96)
+go.property("title", "")
+go.property("body", "")
+go.property("position", "")
+go.property("duration", 4.0)
+go.property("trigger_once", false)
+go.property("set_flag", "")
+go.property("requires_flag", "")
+go.property("sound_id", "")
+
+
+local function update_label(self)
+    local label = self.label_str or DEFAULT_LABEL
+    PU.update_interaction_label(label)
+end
+
+local function apply_props(self, props)
+    props = props or {}
+    if props.title ~= nil then self.title_str = tostring(props.title) end
+    if props.body ~= nil then self.body_str = tostring(props.body) end
+    if props.position ~= nil then self.position_str = tostring(props.position) end
+    if props.label ~= nil then self.label_str = tostring(props.label) end
+    if props.duration ~= nil then self.duration = tonumber(props.duration) or self.duration end
+    update_label(self)
+end
+
+local function show_hint(self)
+    local title = self.title_str or "Hint"
+    local body = self.body_str or ""
+    local pos = self.position_str or "top"
+    pcall(msg.post, msg.url("main:/mode_hud#mode_hud"), hash("show_tutorial"), {
+        title = title,
+        description = body,
+        duration = self.duration,
+        position = pos,
+    })
+end
+
+function init(self)
+    self.hint_id_key = PU.resolve_id(self.hint_id) or tostring(go.get_id())
+    self.label_str = PU.normalize_hash_string(self.label) or DEFAULT_LABEL
+    self.title_str = PU.normalize_hash_string(self.title) or "Hint"
+    self.body_str = PU.normalize_hash_string(self.body) or ""
+    self.position_str = PU.normalize_hash_string(self.position) or "top"
+    self.flag_id_str = PU.normalize_hash_string(self.set_flag)
+    self.requires_flag_str = PU.normalize_hash_string(self.requires_flag)
+
+    PU.register_interaction(self.label_str or DEFAULT_LABEL, self.range, 4)
+end
+
+function final(self)
+    PU.unregister_interaction()
+end
+
+function on_message(self, message_id, message, sender)
+    if message_id == hash("apply_tiled_props") and message and message.properties then
+        apply_props(self, message.properties)
+        return
+    end
+
+    if message_id ~= hash("mvtk_interact") then
+        return
+    end
+
+    if self.trigger_once and self._used then
+        return
+    end
+
+    if self.requires_flag_str and not Flags.has(self.requires_flag_str) then
+        return
+    end
+
+    if self.flag_id_str then
+        Flags.set(self.flag_id_str, true)
+    end
+
+    PU.play_sound(self.sound_id)
+    show_hint(self)
+    require("mvtk.tiled.object_presentation").emit("interacted")
+
+    if self.trigger_once then
+        self._used = true
+        PU.unregister_interaction()
+    end
+end
