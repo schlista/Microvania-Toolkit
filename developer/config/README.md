@@ -107,7 +107,7 @@ The first Save in Game Settings establishes a permanent `game_id` in
 later title renames keep the ID. Working copies retain it; clear `game_id` in
 a copy intended as a different game and Save once. A toolkit placeholder name
 shows a warning without blocking Save. The editor does not copy older player
-data; use fresh beta saves.
+data; start a fresh save slot after updating the toolkit.
 
 `save_migrations.lua` holds reviewed identifier aliases for compatible content
 updates. Supported saves/preferences upgrade on a copy, with verified backups;

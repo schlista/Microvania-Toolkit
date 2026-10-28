@@ -97,7 +97,7 @@ IF SOMETHING GOES WRONG
 
 ABOUT THIS TOOLKIT
 
-  Windows is the verified beta platform. macOS and Linux use the same steps but are
+  Windows is the verified platform. macOS and Linux use the same steps but are
   experimental; the Creator Guide lists each platform's prerequisites.
 
   This toolkit ships without example rooms or a ready-made campaign.
