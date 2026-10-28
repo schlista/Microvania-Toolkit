@@ -1,0 +1,169 @@
+MICROVANIA TOOLKIT COMMERCIAL LICENSE (SINGLE USER)
+
+Copyright (c) 2025-2026 Michael Swisher ("Licensor"). All rights reserved.
+
+This Commercial License is a single-user license. Each license covers ONE
+named person. It is granted, once the license fee has been paid in full,
+to the person named on the purchase receipt or license certificate (the
+"Licensed User"). If a company buys the license, the company is the
+"Purchaser" and must name the one person who will use it; that person is
+the Licensed User.
+
+This Commercial License adds to the Microvania Toolkit License (the "Base
+License") distributed with the Toolkit. Words defined in the Base License
+have the same meaning here. If the two conflict, this Commercial License
+controls for the Licensed User.
+
+Companies that want one license for many people need a separate
+Enterprise License. Contact: MVTK@swishermail.com.
+
+1. DEFINITIONS
+"Toolkit Component" means any part of the Toolkit, including:
+  (a) the framework, runtime and source code (including everything under
+      mvtk/, hooks/, renderer/ and tools/);
+  (b) the Defold editor scripts and Project menu commands;
+  (c) the Tiled extensions, scripts and plugins;
+  (d) the Tiled templates, custom property types and object types;
+  (e) the MVTK.tiled-project file and any project settings it supplies;
+  (f) the Game Settings window, Layout Editor, export tools and other
+      features the Toolkit adds to Defold or Tiled; and
+  (g) any modified version of, or work derived from, any of the above,
+      including code that Export Game copies into a standalone project.
+To "use" a Toolkit Component means to install, open, run, edit, build
+with or export with it. Playing or testing a built Game is not use.
+
+2. ONE PERSON PER LICENSE
+  (a) Only the Licensed User may use the Toolkit under this Commercial
+      License. It may not be shared with, or used by, anyone else,
+      including other employees, contractors or members of the same
+      company, team or household.
+  (b) Every person who uses a Toolkit Component for Commercial Use needs
+      their own Commercial License. A team of three people using the
+      Toolkit needs three Commercial Licenses.
+  (c) A Purchaser may reassign a license to a different person only when
+      the current Licensed User permanently stops using the Toolkit (for
+      example, leaves the company). The Purchaser must notify the
+      Licensor at MVTK@swishermail.com, and the previous Licensed User
+      must delete their copies.
+
+3. GRANT
+Subject to this Commercial License, the Licensor grants the Licensed User
+a perpetual, worldwide, non-exclusive license, for Commercial Use, to:
+  (a) install, use, copy and modify the Toolkit on the computers the
+      Licensed User works on;
+  (b) make any number of Games with the Toolkit; and
+  (c) sell, publish, monetize and distribute those Games, alone or with
+      a Purchaser or publisher, on any platform and in any market,
+      including the Toolkit Components built into each Game.
+A Game may be sold under this Commercial License only if every person who
+used a Toolkit Component on that Game holds their own Commercial License
+(or is covered by an Enterprise License).
+
+4. PERPETUAL, ONE-TIME PURCHASE
+The license fee is a single payment. There are no royalties, revenue
+share, subscription or maintenance fees. The license never expires and
+covers every version of the Microvania Toolkit, including future updates,
+at no further cost. A Game properly released under this Commercial
+License stays licensed permanently, even if the Licensed User stops using
+the Toolkit. This Commercial License does not cover separate products,
+including the planned Metroidvania Toolkit.
+
+5. WHEN A COMMERCIAL LICENSE IS NOT NEEDED (TILED ART AND MAPS)
+Tiled is a separate program owned by its developers. Anyone may create
+art, tilesets and maps in Tiled without any license from the Licensor, as
+long as they use no Toolkit Component to do it.
+A Commercial License IS needed for Commercial Use whenever a person uses
+any Toolkit Component, for example placing the Toolkit's templates, using
+its custom property types, object types, extensions or scripts, opening
+MVTK.tiled-project, or building or exporting maps for the Toolkit. This
+applies to artists and level designers as well as programmers.
+
+6. NO RESALE OR REDISTRIBUTION
+Toolkit Components may be distributed only as built into a Game, or
+inside a Game's project files shared privately with other Commercial
+License holders working on that same Game. The Licensed User and any
+Purchaser may not:
+  (a) sell, resell, rent, lease, sublicense, give away or otherwise
+      distribute the Toolkit or any Toolkit Component on its own;
+  (b) offer any Toolkit Component as, or inside, another engine,
+      toolkit, framework, template, starter kit, asset pack, Tiled
+      template or extension pack, game kit, "reskin" project, or other
+      development tool or product, free or paid;
+  (c) sell, or publish publicly, the source code or project files of a
+      Game where they include Toolkit Components;
+  (d) share this Commercial License, or let anyone other than the
+      Licensed User rely on it; or
+  (e) remove or change copyright, license or attribution notices.
+
+7. TRANSFER
+Apart from reassignment under Section 2(c), this Commercial License may
+be transferred only together with the sale of the Games made under it,
+and only if the new owner agrees in writing to this Commercial License
+and the previous Licensed User deletes their copies. Notify the Licensor
+at MVTK@swishermail.com when a transfer happens.
+
+8. DEMONSTRATION ASSETS
+This Commercial License grants no rights to Demonstration Assets.
+Section 5 of the Base License still applies: replace every Demonstration
+Asset before you distribute a Game.
+
+9. PROOF OF LICENSE
+Keep your purchase receipt or license certificate. The Licensor may ask
+for proof that every person who used Toolkit Components on a Game held a
+Commercial License.
+
+10. UNLICENSED SALES
+"Unlicensed Commercial Use" means any Commercial Use of the Toolkit, or
+any sale or monetization of a Game, that this Commercial License does not
+cover, including when:
+  (a) a person who used Toolkit Components on the Game did not hold their
+      own Commercial License;
+  (b) one license was shared by more than one person;
+  (c) the Game was sold or monetized after this Commercial License ended;
+      or
+  (d) the Toolkit was resold or redistributed in breach of Section 6.
+For any Unlicensed Commercial Use, the Licensed User and any Purchaser
+(each of them fully) must pay the Licensor:
+  (e) the Licensor's then-current Commercial License fee for every person
+      who needed a license and did not have one; and
+  (f) the Licensor's damages, or, at the Licensor's choice, the profits
+      earned from the Unlicensed Commercial Use, to the extent the law
+      allows; and
+  (g) the Licensor's reasonable legal fees and collection costs, to the
+      extent the law allows.
+The Licensor may also require the affected Game to be removed from sale
+until every required license has been bought. Section 12 does not limit
+any amount owed under this Section.
+
+11. BREACH
+If the Licensed User or Purchaser breaks this Commercial License, the
+Licensor may give written notice. If the breach is not fixed within 30
+days of that notice, this Commercial License ends, and the Licensed User
+must stop using the Toolkit and stop selling or distributing Games made
+under it. Customers who bought or downloaded a copy of a Game before the
+license ended may keep using that copy; this protects only those end
+customers, not the Licensed User or Purchaser. Sections 6, 8, 10, 12 and
+13 continue to apply after this Commercial License ends.
+
+12. NO WARRANTY; LIMIT ON THE LICENSOR'S LIABILITY
+THE TOOLKIT IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NON-INFRINGEMENT. Updates and support are offered
+at the Licensor's discretion; this Commercial License does not promise
+them.
+TO THE MAXIMUM EXTENT PERMITTED BY LAW, THE LICENSOR'S TOTAL LIABILITY
+ARISING FROM THE TOOLKIT OR THIS COMMERCIAL LICENSE IS LIMITED TO THE
+LICENSE FEE PAID. THE LICENSOR IS NOT LIABLE FOR ANY INDIRECT,
+INCIDENTAL, SPECIAL OR CONSEQUENTIAL DAMAGES, INCLUDING LOST PROFITS OR
+REVENUE.
+
+13. THIRD-PARTY SOFTWARE
+Section 7 of the Base License still applies. Defold, Tiled, Spine and
+the other third-party software are licensed by their owners under their
+own terms. This Commercial License grants no rights to them.
+
+14. GOVERNING LAW
+This Commercial License is governed by the laws of the United States of
+America.
+
+Contact: MVTK@swishermail.com

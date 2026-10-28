@@ -109,6 +109,7 @@ ABOUT THIS TOOLKIT
   into Tiled itself.
 
   License: free for personal, non-commercial use. Selling or monetizing a game made
-  with the toolkit requires a paid Commercial License: see LICENSE, or email
-  MVTK@swishermail.com. The included art, music and sound are for demonstration
-  only; replace them before you release a game.
+  with the toolkit requires a paid Commercial License, one per person: see
+  COMMERCIAL_LICENSE.txt and LICENSE, or email MVTK@swishermail.com. The included
+  art, music and sound are for demonstration only; replace them before you
+  release a game.

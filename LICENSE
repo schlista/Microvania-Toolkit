@@ -34,10 +34,25 @@ non-exclusive, non-transferable license to:
 
 3. COMMERCIAL USE
 Commercial Use requires a paid Commercial License from the Licensor,
-obtained before the Commercial Use begins. If a Game made under Section 2
-later becomes commercial, you need a Commercial License from that point on.
-A business may evaluate the Toolkit for up to 30 days before buying one.
-Contact: MVTK@swishermail.com.
+obtained before the Commercial Use begins. Its terms are in
+COMMERCIAL_LICENSE.txt. Each Commercial License covers one person: every
+person who uses the Toolkit for Commercial Use needs their own. If a Game
+made under Section 2 later becomes commercial, you need a Commercial
+License from that point on. A business may evaluate the Toolkit for up
+to 30 days before buying one. Contact: MVTK@swishermail.com.
+
+3A. UNLICENSED COMMERCIAL USE
+If you make Commercial Use of the Toolkit, or sell or monetize a Game,
+without the Commercial Licenses that Section 3 requires, you must pay the
+Licensor:
+  (a) the Licensor's then-current Commercial License fee for every person
+      who needed a license and did not have one;
+  (b) the Licensor's damages, or, at the Licensor's choice, the profits
+      earned from the unlicensed use, to the extent the law allows; and
+  (c) the Licensor's reasonable legal fees and collection costs, to the
+      extent the law allows.
+The Licensor may also require the Game to be removed from sale until
+every required license has been bought.
 
 4. RESTRICTIONS
 You may not:
@@ -87,7 +102,7 @@ WHETHER IN CONTRACT, TORT OR OTHERWISE.
 
 10. TERMINATION
 If you break this License, your rights under it end automatically.
-Sections 5, 8 and 9 continue to apply.
+Sections 3A, 5, 8 and 9 continue to apply.
 
 11. GOVERNING LAW
 This License is governed by the laws of the United States of America.

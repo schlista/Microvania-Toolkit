@@ -11,6 +11,7 @@ Thumbs.db
 # Debug files
 /*.txt
 !/START_HERE.txt
+!/COMMERCIAL_LICENSE.txt
 luac.out
 debug_output.txt
 debug_output.txt.1
